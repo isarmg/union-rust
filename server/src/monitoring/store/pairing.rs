@@ -551,6 +551,26 @@ where
     }
 
     let token_hash: String = pairing.try_get("token_hash")?;
+    // Re-pairing starts a new credential generation for the same durable
+    // instance. Historical summaries remain useful, but the previous
+    // generation's current-state pointer and full payload must not be exposed
+    // as if they belonged to the newly approved identity. Clear the payload
+    // before dropping the pointer so the "only current keeps JSON" invariant
+    // remains true while preserving every history row.
+    query(
+        r#"
+        UPDATE agent_metric_reports
+        SET payload=NULL
+        WHERE report_id=(
+            SELECT latest_report_id
+            FROM monitored_hosts
+            WHERE host_id=?1
+        )
+        "#,
+    )
+    .bind(&instance_id)
+    .execute(tx.connection())
+    .await?;
     query(
         r#"
         INSERT INTO monitored_hosts(
@@ -564,9 +584,13 @@ where
             kernel_version=EXCLUDED.kernel_version,
             arch=EXCLUDED.arch,
             agent_version=EXCLUDED.agent_version,
+            capabilities='[]',
             lifecycle_status='active',
             revoked_at=NULL,
-            last_seen_at=?8
+            last_seen_at=?8,
+            latest_report_id=NULL,
+            latest_collected_at=NULL,
+            latest_interval_seconds=NULL
         "#,
     )
     .bind(&instance_id)

@@ -930,8 +930,29 @@ async fn revoke_is_terminal_until_an_admin_re_pairs_the_same_instance() {
         StatusCode::OK
     );
     assert_eq!(
-        report(&app, instance_id, &first_token).await.0,
-        StatusCode::ACCEPTED
+        {
+            let mut old_report = report_body(instance_id, "old-generation-host");
+            old_report["report_id"] = serde_json::Value::String(Uuid::new_v4().to_string());
+            old_report["collected_at"] =
+                serde_json::to_value(Utc::now() + Duration::minutes(4)).unwrap();
+            old_report["capabilities"] = serde_json::json!([{
+                "name": "old-generation-capability",
+                "available": true,
+                "source": "test",
+                "error_kind": null,
+                "message": null
+            }]);
+            call_json(
+                &app,
+                Request::post("/api/agent/v1/report")
+                    .header("authorization", format!("Bearer {first_token}")),
+                old_report,
+            )
+            .await
+            .0
+        },
+        StatusCode::ACCEPTED,
+        "the first credential generation must establish an intentionally future latest point"
     );
 
     // An invite issued before decommissioning is an outstanding capability to
@@ -1014,9 +1035,64 @@ async fn revoke_is_terminal_until_an_admin_re_pairs_the_same_instance() {
     .await;
     assert_eq!(second_activation, StatusCode::OK, "{body}");
     assert_eq!(body["instance_id"], instance_id);
+
+    let reset = unionc::monitoring::store::get_monitored_host(&pool, instance_id)
+        .await
+        .expect("read re-paired host")
+        .expect("re-paired host exists");
+    assert!(reset.latest.is_none());
+    assert!(reset.latest_collected_at.is_none());
+    assert!(reset.latest_interval_seconds.is_none());
+    assert!(reset.capabilities.is_empty());
+    let retained_old_payload: Option<String> =
+        query("SELECT payload FROM agent_metric_reports WHERE host_id=?1")
+            .bind(instance_id)
+            .fetch_one(&pool)
+            .await
+            .expect("retained old report")
+            .try_get("payload")
+            .unwrap();
+    assert!(
+        retained_old_payload.is_none(),
+        "the previous generation must not retain a detail payload after re-pairing"
+    );
+
+    let new_report_id = Uuid::new_v4().to_string();
+    let mut new_report = report_body(instance_id, "new-generation-host");
+    new_report["report_id"] = serde_json::Value::String(new_report_id.clone());
+    new_report["collected_at"] = serde_json::to_value(Utc::now()).unwrap();
+    new_report["capabilities"] = serde_json::json!([{
+        "name": "new-generation-capability",
+        "available": true,
+        "source": "test",
+        "error_kind": null,
+        "message": null
+    }]);
     assert_eq!(
-        report(&app, instance_id, &second_token).await.0,
-        StatusCode::ACCEPTED
+        call_json(
+            &app,
+            Request::post("/api/agent/v1/report")
+                .header("authorization", format!("Bearer {second_token}")),
+            new_report,
+        )
+        .await
+        .0,
+        StatusCode::ACCEPTED,
+        "a new-generation report must become current despite the old future timestamp"
+    );
+    let current = unionc::monitoring::store::get_monitored_host(&pool, instance_id)
+        .await
+        .expect("read current host")
+        .expect("current host exists");
+    assert_eq!(current.identity.name, "new-generation-host");
+    assert_eq!(current.capabilities.len(), 1);
+    assert_eq!(current.capabilities[0].name, "new-generation-capability");
+    assert_eq!(
+        current
+            .latest
+            .as_ref()
+            .map(|report| report.report_id.as_str()),
+        Some(new_report_id.as_str())
     );
     assert_eq!(
         report(&app, instance_id, &first_token).await.0,
