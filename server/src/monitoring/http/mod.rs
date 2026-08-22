@@ -160,6 +160,12 @@ async fn create_pairing_request(
                     .to_string(),
             ));
         }
+        crate::monitoring::store::CreatePairingResult::AtCapacity => {
+            return Err(AppError::TooManyRequests(
+                "too many pending agent pairing requests; retry after an earlier request expires"
+                    .to_string(),
+            ));
+        }
     };
     let expires_in = (stored.expires_at - Utc::now()).num_seconds().max(1) as u64;
     let activation_url = format!("/agent/activate/{}", stored.request_id);
@@ -313,9 +319,10 @@ async fn report_metrics(
     let client = require_agent_reverse_proxy(&state, &headers)?;
     check_report_auth_rate(&state, client).await?;
     let credential = bearer_token(&headers).ok_or(AppError::Unauthorized)?;
+    let credential_hash = token_hash(credential);
     let authenticated_host = match crate::monitoring::store::monitoring_host_for_token(
         state.db().as_ref(),
-        &token_hash(credential),
+        &credential_hash,
     )
     .await
     .map_err(|error| {
@@ -344,22 +351,28 @@ async fn report_metrics(
             "agent token does not belong to the reported host".to_string(),
         ));
     }
-    let (accepted, received_at) =
-        crate::monitoring::store::store_monitoring_report(state.db().as_ref(), &report)
-            .await
-            .map_err(|error| {
-                // report_id 由 Agent 生成，撞上另一台主机的 id 属于客户端输入冲突，
-                // 应当是 409 而不是 500——重试同一个 id 永远不会成功。
-                match error.downcast_ref::<crate::monitoring::store::StoreReportError>() {
-                    Some(
-                        crate::monitoring::store::StoreReportError::ReportIdBelongsToAnotherHost,
-                    ) => AppError::Conflict(error.to_string()),
-                    Some(crate::monitoring::store::StoreReportError::HostNotActive) => {
-                        AppError::AgentRevoked
-                    }
-                    None => AppError::Anyhow(error),
-                }
-            })?;
+    let (accepted, received_at) = crate::monitoring::store::store_authenticated_monitoring_report(
+        state.db().as_ref(),
+        &report,
+        &credential_hash,
+    )
+    .await
+    .map_err(|error| {
+        // report_id 由 Agent 生成，撞上另一台主机的 id 属于客户端输入冲突，
+        // 应当是 409 而不是 500——重试同一个 id 永远不会成功。
+        match error.downcast_ref::<crate::monitoring::store::StoreReportError>() {
+            Some(crate::monitoring::store::StoreReportError::ReportIdBelongsToAnotherHost) => {
+                AppError::Conflict(error.to_string())
+            }
+            Some(crate::monitoring::store::StoreReportError::HostNotActive) => {
+                AppError::AgentRevoked
+            }
+            Some(crate::monitoring::store::StoreReportError::CredentialNotActive) => {
+                AppError::Unauthorized
+            }
+            None => AppError::Anyhow(error),
+        }
+    })?;
     Ok((
         StatusCode::ACCEPTED,
         Json(AgentReportAck {

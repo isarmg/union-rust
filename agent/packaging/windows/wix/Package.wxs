@@ -51,7 +51,7 @@
       Message="PURGE accepts only the value 1. Omit it for a state-preserving uninstall." />
 
     <Property Id="ARPCONTACT" Value="UnionC maintainers" />
-    <Property Id="ARPURLINFOABOUT" Value="https://github.com/unionc" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/isarmg/union-rust" />
     <Property Id="ARPNOMODIFY" Value="1" />
     <Property Id="ARPNOREPAIR" Value="1" />
     <Property Id="PURGE" Secure="yes" />

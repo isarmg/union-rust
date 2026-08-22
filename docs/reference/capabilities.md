@@ -483,7 +483,7 @@ Sunshine 管理是 Server 直接访问管理员显式配置的 Sunshine API，�
 | Rust 单元测试 | 报文校验、采样转换、spool、配置、错误分类、密钥与 URL 处理 |
 | Server + SQLite 集成测试 | 临时数据库上的当前 schema、认证、CSRF、配对、限流、生命周期、乱序、保留、查询成本 |
 | Agent 合同测试 | 配对状态、ACK 验证、断线补传、撤销语义 |
-| Web 单元测试 | 会话错误页、严格 UUID 激活路由、SSE、日志截断、监控转换、Sunshine 当前契约与 mutation 竞态 |
+| Web 单元测试 | 会话错误页与跨会话缓存隔离、严格 UUID 激活路由、SSE、日志截断、监控转换、Sunshine 当前契约与 mutation 竞态 |
 | 三平台 CI | Agent 在 Linux、Windows、macOS 编译与测试 |
 | OTLP live 测试 | 验证 Agent → 真实 OpenTelemetry Collector 的接收合同；不覆盖 exporter/时序库查询 |
 | 发布验证 | 独立发布工程应覆盖 fresh install、同版本 reinstall、卸载、签名与恢复；不属于 Web 功能 |
@@ -551,8 +551,10 @@ Sunshine 管理是 Server 直接访问管理员显式配置的 Sunshine API，�
 | 全局工具 | 手工刷新、SSE 状态、深浅主题、退出 | 主题保存在浏览器 localStorage | 主导航是内存状态，刷新回总览，不能深链 |
 
 Web 的统一请求层提供 15 秒超时、Cookie 会话、非只读请求自动附加 CSRF 头、401 会话失效
-广播、错误 JSON 归一化和路径段编码。除总览外的四个主视图懒加载；顶层错误边界可处理
-渲染阶段崩溃。SSE 只更新服务状态，系统资源与 Agent 遥测仍使用普通查询。
+广播、错误 JSON 归一化和路径段编码。注销或 401 会立即替换整个 QueryClient，隔离旧会话
+仍在途的 mutation 回调；logout 完成前禁止新登录，避免 Cookie 写入竞态。除总览外的四个
+主视图懒加载；顶层错误边界可处理渲染阶段崩溃。SSE 只更新服务状态，系统资源与 Agent
+遥测仍使用普通查询。
 
 ### 15.3 Server 有、Web 尚未提供入口
 
@@ -821,20 +823,20 @@ Windows release 制品包含 NVIDIA 支持而不含 OTLP；当前 macOS release 
 
 ### 19.2 本轮可执行验证
 
-2026-08-20 在当前工作区执行了下列无外部状态依赖的检查：
+2026-08-21 在当前工作区执行了下列无外部状态依赖的检查：
 
 | 检查 | 结果 | 说明 |
 |---|---|---|
-| `cargo test --workspace --all-features` | 249 项通过 | 覆盖三个 crate 的单元/SQLite 集成/协议/OTLP 编码测试；无真实 Collector 环境时 live 用例按代码约定提前返回 |
+| `cargo test --workspace --all-features` | 全部通过 | 覆盖三个 crate 的单元/SQLite 集成/协议/OTLP 编码测试；无真实 Collector 环境时 live 用例按代码约定提前返回 |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | 通过 | 三个 crate 的全部本机 target/feature 无警告 |
 | `cargo fmt --all -- --check` | 通过 | Rust 源码格式无偏差 |
-| `npm test -- --run` | 11 个文件、42 项通过 | Web API 当前状态码/媒体类型、SSE、激活、日志截断、Sunshine mutation 竞态等 |
+| `npm test` | 12 个文件、52 项通过 | Web API 当前状态码/媒体类型、SSE、激活、跨会话缓存隔离、配对密钥生命周期、日志截断、Sunshine mutation 竞态等 |
 | `npm run lint` | 通过 | ESLint 无错误 |
 | `npm run typecheck` | 通过 | TypeScript build graph 类型检查通过 |
-| Vite 临时目录生产构建 | 通过 | 116 个模块完成转换，不覆盖现有 `web/dist` |
+| `npm run build` | 通过 | Vite 先构建到 `dist.next`，再由发布脚本原子换入本地 `web/dist` |
 | `git diff --check` | 通过 | 文档与现有工作树无空白错误 |
 
-本轮没有覆盖或发布现有 `web/dist`，也没有在本机重做 DEB/RPM/MSI/pkg
+本轮生产构建已通过原子发布脚本更新本地 `web/dist`；没有在本机重做 DEB/RPM/MSI/pkg
 安装/同版本重装、平台签名、公证或真实 OTLP Collector 验证；这些路径由 CI/release workflow 和平台
 生命周期脚本覆盖。测试通过证明的是当前代码契约，不等于对目标机器、反代、证书、磁盘容量、
 Sunshine 版本和长期负载的生产验收。

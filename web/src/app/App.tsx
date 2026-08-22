@@ -1,9 +1,9 @@
-import { FormEvent, lazy, Suspense, useEffect, useState } from "react";
+import { FormEvent, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
   Check, Gamepad2, LayoutDashboard, Lock, LogIn, MonitorCog, Moon, Plus, Power,
   RefreshCw, Settings, Sun, Terminal, User, X,
 } from "lucide-react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "../shared/api/client";
 import { authApi } from "../features/auth/api";
 import { authQueryKeys } from "../features/auth/queryKeys";
@@ -134,13 +134,21 @@ function AuthedApp({ onLogout }: { onLogout: () => Promise<void> }) {
   );
 }
 
-function LoginScreen({ onLogin }: { onLogin: (username: string, password: string) => Promise<void> }) {
+function LoginScreen({
+  onLogin,
+  loginBlocked = false,
+}: {
+  onLogin: (username: string, password: string) => Promise<void>;
+  loginBlocked?: boolean;
+}) {
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault(); setError(""); setSubmitting(true);
+    event.preventDefault();
+    if (loginBlocked) return;
+    setError(""); setSubmitting(true);
     try { await onLogin(username.trim(), password); }
     catch (loginError) { setError(loginError instanceof Error ? loginError.message : "登录失败"); }
     finally { setSubmitting(false); }
@@ -155,8 +163,8 @@ function LoginScreen({ onLogin }: { onLogin: (username: string, password: string
           <CardRow label=""><input className="login-input" aria-label="密码" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /></CardRow>
           <CardRow label="" row={5}>{error ? <span className="login-error" role="alert">{error}</span> : null}</CardRow>
           <CardActions label={<><span className="login-label-icon"><LogIn /></span>操作</>}>
-            <button className="card-action-button primary" type="submit" disabled={submitting || !username.trim() || !password}>
-              <span>{submitting ? "正在登录…" : "登录"}</span>
+            <button className="card-action-button primary" type="submit" disabled={loginBlocked || submitting || !username.trim() || !password}>
+              <span>{loginBlocked ? "正在退出…" : submitting ? "正在登录…" : "登录"}</span>
             </button>
           </CardActions>
         </CardInner>
@@ -165,26 +173,18 @@ function LoginScreen({ onLogin }: { onLogin: (username: string, password: string
   );
 }
 
-function AuthenticatedAppRoot() {
-  const queryClient = useQueryClient();
+function SessionBoundary({
+  onLogin,
+  onLogout,
+}: {
+  onLogin: (username: string, password: string) => Promise<void>;
+  onLogout: () => Promise<void>;
+}) {
   const meQuery = useQuery({ queryKey: authQueryKeys.me, queryFn: authApi.authenticate, retry: false });
-  useEffect(() => {
-    const expire = () => { void queryClient.invalidateQueries({ queryKey: authQueryKeys.me }); };
-    window.addEventListener("unionc:auth-expired", expire);
-    return () => window.removeEventListener("unionc:auth-expired", expire);
-  }, [queryClient]);
-  const handleLogout = async () => {
-    try { await authApi.logout(); } catch { /* ignore */ }
-    await queryClient.resetQueries({ queryKey: authQueryKeys.me });
-  };
-  const handleLogin = async (username: string, password: string) => {
-    const result = await authApi.login(username, password);
-    queryClient.setQueryData(authQueryKeys.me, { username: result.username });
-  };
   if (meQuery.isPending) return <main className="app-shell login-screen"><LoadingBlock label="正在验证会话" /></main>;
   if (meQuery.isError) {
     if (meQuery.error instanceof ApiError && meQuery.error.status === 401) {
-      return <LoginScreen onLogin={handleLogin} />;
+      return <LoginScreen onLogin={onLogin} />;
     }
     return (
       <main className="app-shell login-screen">
@@ -198,7 +198,69 @@ function AuthenticatedAppRoot() {
       </main>
     );
   }
-  return <AuthedApp onLogout={handleLogout} />;
+  return <AuthedApp onLogout={onLogout} />;
+}
+
+function AuthenticatedAppRoot() {
+  const parentQueryClient = useQueryClient();
+  const [sessionQueryClient, setSessionQueryClient] = useState(() => new QueryClient({
+    defaultOptions: parentQueryClient.getDefaultOptions(),
+  }));
+  const sessionQueryClientRef = useRef(sessionQueryClient);
+  const [signedOut, setSignedOut] = useState(false);
+  const [logoutPending, setLogoutPending] = useState(false);
+  const logoutPendingRef = useRef(false);
+
+  const replaceSessionQueryClient = useCallback(() => {
+    const previousQueryClient = sessionQueryClientRef.current;
+    previousQueryClient.clear();
+    const nextQueryClient = new QueryClient({
+      defaultOptions: previousQueryClient.getDefaultOptions(),
+    });
+    sessionQueryClientRef.current = nextQueryClient;
+    setSessionQueryClient(nextQueryClient);
+  }, []);
+
+  useEffect(() => {
+    const expire = () => {
+      replaceSessionQueryClient();
+      setSignedOut(true);
+    };
+    window.addEventListener("unionc:auth-expired", expire);
+    return () => window.removeEventListener("unionc:auth-expired", expire);
+  }, [replaceSessionQueryClient]);
+
+  const handleLogout = async () => {
+    if (logoutPendingRef.current) return;
+    logoutPendingRef.current = true;
+    setLogoutPending(true);
+    // 先立即切断当前页面与全部私有缓存的联系，再尽力通知服务器注销会话。
+    replaceSessionQueryClient();
+    setSignedOut(true);
+    try { await authApi.logout(); } catch { /* ignore */ }
+    finally {
+      logoutPendingRef.current = false;
+      setLogoutPending(false);
+    }
+  };
+  const handleLogin = async (username: string, password: string) => {
+    if (logoutPendingRef.current) throw new Error("正在退出登录，请稍候");
+    const loginQueryClient = sessionQueryClientRef.current;
+    const result = await authApi.login(username, password);
+    if (loginQueryClient !== sessionQueryClientRef.current) {
+      throw new Error("会话状态已改变，请重新登录");
+    }
+    loginQueryClient.setQueryData(authQueryKeys.me, { username: result.username });
+    setSignedOut(false);
+  };
+
+  return (
+    <QueryClientProvider client={sessionQueryClient}>
+      {signedOut
+        ? <LoginScreen onLogin={handleLogin} loginBlocked={logoutPending} />
+        : <SessionBoundary onLogin={handleLogin} onLogout={handleLogout} />}
+    </QueryClientProvider>
+  );
 }
 
 export function App() {

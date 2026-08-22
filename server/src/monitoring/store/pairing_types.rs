@@ -2,6 +2,10 @@ use chrono::{DateTime, Utc};
 
 use crate::monitoring::{AgentInstanceSummary, PairingStatus};
 
+/// Hard disk-growth boundary for anonymous, unapproved pairing requests.
+/// Active rows represent administrator-approved hosts and are not counted.
+pub const MAX_PENDING_PAIRING_REQUESTS: i64 = 4_096;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RevokeInviteResult {
     Revoked,
@@ -34,6 +38,7 @@ pub enum CreatePairingResult {
     Ready(StoredPairingCreation),
     Expired,
     Conflict,
+    AtCapacity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

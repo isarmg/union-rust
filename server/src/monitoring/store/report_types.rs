@@ -5,6 +5,8 @@ pub enum StoreReportError {
     ReportIdBelongsToAnotherHost,
     #[error("monitoring host is not active")]
     HostNotActive,
+    #[error("monitoring credential is no longer active")]
+    CredentialNotActive,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

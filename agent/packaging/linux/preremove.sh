@@ -54,6 +54,7 @@ case "${1:-}" in
     if [ -f /etc/unionc-agent/config.json ]; then
       install -d -m 0700 -o root -g root "$account_state_dir"
       cp -p /etc/unionc-agent/config.json "$rpm_config_backup"
+      chown root:root "$rpm_config_backup"
       chmod 0600 "$rpm_config_backup"
     fi
     disable_for_remove

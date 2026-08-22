@@ -329,6 +329,10 @@ React 19 + TypeScript + Vite + TanStack Query，按业务功能聚合源码和�
 | `features/logs/` / `settings/` | Sunshine 日志与管理员改密 |
 | `features/agent-activation/` | 公开激活页、严格路径解析与有限摘要 API |
 
+管理台的查询缓存也是会话边界的一部分：注销或全局 401 会立即清空并替换整个
+`QueryClient`，使旧会话尚未完成的 mutation 回调只能写回已脱离 UI 的旧 client；注销请求
+完成前同时禁止新登录，避免旧 logout 与新 login 的 Cookie 写入乱序。
+
 **数据刷新策略**
 
 | 数据 | 周期 | 备注 |
@@ -441,7 +445,8 @@ authorized reporter 在采样循环前退出并由服务管理器重试，直到
 
 spool 采用"临时文件 + fsync + rename + 目录 fsync"原子落盘，文件名以毫秒时间戳零填充前缀，
 排序即投递顺序。反序列化失败的报文改名为 `.invalid` 隔离，且**计入容量预算**并
-优先淘汰。
+优先淘汰。同一状态目录的所有短时变更由进程内 mutex 与跨进程文件锁共同串行化；崩溃
+遗留且已无写入锁的原子临时文件会在打开队列和容量核算时回收。
 
 常驻 `run` 对读、写、补传三类 spool 操作分别计数。单次写失败会丢弃当前未能落盘的采样
 并继续运行，同类操作只有**连续** 100 次失败才退出交由服务管理器处理。一次性的
@@ -827,6 +832,8 @@ credential 局部索引。
 - 并发的 bcrypt 运算由一个容量 4 的信号量约束，防止密码校验打满 CPU
 - SSE 用一次性短效票据（60 秒、随机 UUID、验过即删）而非会话 Cookie——
   `EventSource` 不支持自定义请求头
+- Web 注销或收到 401 时替换整套会话 QueryClient，并在 logout 完成前阻止新登录，避免旧
+  mutation 私有快照或晚到的注销响应污染下一会话
 
 **口令规则**：至少 12 个**字符**，至多 72 **字节**。上限不是形式主义——bcrypt 只取前
 72 字节且**静默截断**，不报任何错。后果是一个隐蔽的认证等价类：前 72 字节相同的两个
@@ -1366,9 +1373,11 @@ dev-dependency 引入（运行时依赖一个字节没变），拿到一份独�
 
 | Job | 平台 | 内容 |
 |---|---|---|
-| `server` | ubuntu | fmt + clippy(-D warnings) + 基于临时 SQLite 的完整持久层测试 |
-| `agent` | ubuntu / windows / macos | fmt + clippy + 测试 + 三种 feature 组合；另含 Linux lifecycle、Windows PE/WiX/MSI、macOS 脚本/plist/账户安全门禁 |
-| `otlp` | ubuntu | Agent → 真实 `otel/opentelemetry-collector-contrib` 的接收合同；不验证下游落库查询 |
+| `format` | ubuntu | 全工作区 Rust 格式检查 |
+| `server` | ubuntu | clippy(-D warnings) + 基于临时 SQLite 的完整持久层测试 |
+| `protocol` | ubuntu | 共享协议 clippy(-D warnings) + 严格序列化/反序列化单元测试 |
+| `agent` | ubuntu / windows / macos | clippy + Agent 测试 + 三种 feature 组合；另含 Linux 隔离脚本 lifecycle、Windows PE/WiX 静态校验与 MSI 构建、macOS 脚本/plist/账户 mock 门禁；不执行真实系统包安装生命周期 |
+| `otlp` | ubuntu | 官方 proto 解码断言 + Agent → 真实 `otel/opentelemetry-collector-contrib` 的接收合同；不验证下游落库查询 |
 | `frontend` | ubuntu | npm high/critical 依赖审计 + lint + typecheck + 单元测试 + build（Node 26） |
 
 表中是 workflow 配置的成功路径，不代表某次运行必然到达全部步骤；同一 Job 的 fmt/clippy
@@ -1378,10 +1387,9 @@ agent job 的三次 feature `check` 不是冗余：默认 feature 是 `nvidia`�
 其 `#[cfg(not(...))]` 分支在常规构建中从不编译，只有显式关掉 feature 才会暴露编译错误
 或整个文件缺失。
 
-当前 workflow 的 job 选择不等同于 `cargo test --workspace`：它没有单独运行
-`unionc-protocol` 的 4 个单测，OTLP job 也只运行 `otlp_live`，没有运行使用官方 proto
-解码的 `otlp_encoding`。因此本地提交前清单仍应显式执行这两项；不能把远端全绿误解为
-它们已经被覆盖。
+当前 workflow 会单独运行 `unionc-protocol`，OTLP job 也同时执行使用官方 proto 解码的
+`otlp_encoding` 与真实 Collector 接收合同 `otlp_live`。本地提交前清单仍应显式执行
+这些快速检查，以便在推送前定位问题。
 
 ### 11.5 代码约定
 

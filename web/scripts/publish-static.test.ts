@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,7 +10,7 @@ afterEach(() => {
   for (const path of scratch.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
-describe("static publishing rollback", () => {
+describe("static publishing", () => {
   it("restores the previous tree when permission normalization fails", () => {
     const root = mkdtempSync(join(tmpdir(), "unionc-publish-"));
     scratch.push(root);
@@ -24,5 +24,22 @@ describe("static publishing rollback", () => {
     })).toThrow("simulated chmod failure");
     expect(readFileSync(join(root, "dist", "version"), "utf8")).toBe("old");
   });
-});
 
+  it("keeps the committed new tree when cleaning the previous tree partially fails", () => {
+    const root = mkdtempSync(join(tmpdir(), "unionc-publish-"));
+    scratch.push(root);
+    mkdirSync(join(root, "dist"));
+    mkdirSync(join(root, "dist.next"));
+    writeFileSync(join(root, "dist", "version"), "old");
+    writeFileSync(join(root, "dist.next", "version"), "new");
+
+    expect(() => publishStatic(root, undefined, (previous) => {
+      rmSync(join(previous, "version"));
+      throw new Error("simulated post-commit cleanup failure");
+    })).toThrow("simulated post-commit cleanup failure");
+
+    expect(readFileSync(join(root, "dist", "version"), "utf8")).toBe("new");
+    expect(existsSync(join(root, "dist.next"))).toBe(false);
+    expect(existsSync(join(root, "dist.previous"))).toBe(true);
+  });
+});

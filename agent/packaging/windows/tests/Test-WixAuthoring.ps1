@@ -249,6 +249,9 @@ Assert-Equal $product.Scope "perMachine" "The MSI must be per-machine."
 Assert-Equal $product.InstallerVersion "500" "The MSI must target MSI 5.0."
 Assert-Equal $product.UpgradeCode "{A1AB822F-91BA-4116-A7E3-CE842B93E93C}" `
     "The x64 upgrade family GUID must remain stable."
+$infoUrl = Select-One "/w:Wix/w:Package/w:Property[@Id='ARPURLINFOABOUT']"
+Assert-Equal $infoUrl.Value "https://github.com/isarmg/union-rust" `
+    "The Apps & Features project URL must identify the current repository."
 
 if (@($package.SelectNodes("/w:Wix/w:Package/w:MajorUpgrade", $namespace)).Count -ne 0) {
     throw "The current-only MSI must not author automatic major-upgrade migration."

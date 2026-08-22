@@ -8,6 +8,10 @@ user="_unioncagent"
 group="_unioncagent"
 state="/Library/Application Support/UnionC Agent"
 log="/var/log/unionc-agent.log"
+log_dir="${log%/*}"
+agent_binary="/usr/local/libexec/unionc-agent"
+agent_command="/usr/local/bin/unionc-agent"
+logrotate_helper="/usr/local/libexec/unionc-agent-logrotate"
 agent_plist="/Library/LaunchDaemons/com.unionc.agent.plist"
 logrotate_plist="/Library/LaunchDaemons/com.unionc.agent.logrotate.plist"
 ownership_dir="/var/db/unionc-agent"
@@ -19,22 +23,246 @@ ownership_marker_present=0
 created_user_uid="-"
 created_user_primary_gid="-"
 created_group_gid="-"
+group_record_pending=0
+group_record_gid="-"
+user_record_pending=0
+user_record_uid="-"
+user_record_primary_gid="-"
+previous_user_created=0
+previous_user_uid="-"
+previous_user_primary_gid="-"
+agent_bootstrapped=0
+logrotate_bootstrapped=0
+previous_agent_loaded=0
+previous_logrotate_loaded=0
+previous_agent_stopped=0
+previous_logrotate_stopped=0
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "UnionC Agent postinstall must run as root" >&2
   exit 1
 fi
 
+read_path_metadata() {
+  metadata_path="$1"
+  path_metadata="$(stat -f '%u:%g:%Mp:%Lp' "$metadata_path")" || {
+    echo "Could not inspect ownership and permissions for $metadata_path" >&2
+    exit 1
+  }
+  path_uid="${path_metadata%%:*}"
+  path_metadata_remainder="${path_metadata#*:}"
+  path_gid="${path_metadata_remainder%%:*}"
+  path_metadata_remainder="${path_metadata_remainder#*:}"
+  path_special_mode="${path_metadata_remainder%%:*}"
+  path_mode="${path_metadata_remainder#*:}"
+  case "$path_uid:$path_gid:$path_special_mode:$path_mode" in
+    *[!0-9:]*)
+      echo "Invalid ownership or permission metadata for $metadata_path" >&2
+      exit 1
+      ;;
+    :*|*::*|*:)
+      echo "Incomplete ownership or permission metadata for $metadata_path" >&2
+      exit 1
+      ;;
+  esac
+  [ "$path_special_mode" = 0 ] || {
+    echo "Unexpected set-id or sticky permission bits on $metadata_path" >&2
+    exit 1
+  }
+}
+
+require_regular_payload() {
+  payload_path="$1"
+  payload_description="$2"
+  payload_mode="$3"
+  [ -f "$payload_path" ] && [ ! -L "$payload_path" ] || {
+    echo "Unsafe or missing UnionC Agent $payload_description: $payload_path" >&2
+    exit 1
+  }
+  read_path_metadata "$payload_path"
+  [ "$path_uid:$path_gid:$path_mode" = "0:0:$payload_mode" ] || {
+    echo "UnionC Agent $payload_description must be root:wheel with permissions 0$payload_mode" >&2
+    exit 1
+  }
+}
+
+validate_launch_payload() {
+  # Installer has already replaced these paths when postinstall runs. Validate
+  # the complete start-critical payload before stopping an existing process;
+  # the rollback path can only re-register this validated, same-version payload.
+  require_regular_payload "$agent_binary" "executable" 755
+  [ -x "$agent_binary" ] || {
+    echo "UnionC Agent executable is not executable" >&2
+    exit 1
+  }
+  installed_agent_version="$("$agent_binary" --version)" || {
+    echo "Could not read the installed UnionC Agent executable version" >&2
+    exit 1
+  }
+  [ "$installed_agent_version" = "unionc-agent $package_version" ] || {
+    echo "Installed Agent version '$installed_agent_version' does not match package $package_version" >&2
+    exit 1
+  }
+
+  require_regular_payload "$logrotate_helper" "log-rotation helper" 755
+  [ -x "$logrotate_helper" ] || {
+    echo "UnionC Agent log-rotation helper is not executable" >&2
+    exit 1
+  }
+  sh -n "$logrotate_helper" || {
+    echo "UnionC Agent log-rotation helper has invalid shell syntax" >&2
+    exit 1
+  }
+
+  require_regular_payload "$agent_plist" "LaunchDaemon plist" 644
+  require_regular_payload "$logrotate_plist" "log-rotation LaunchDaemon plist" 644
+  plutil -lint "$agent_plist" >/dev/null || {
+    echo "UnionC Agent LaunchDaemon plist is invalid" >&2
+    exit 1
+  }
+  plutil -lint "$logrotate_plist" >/dev/null || {
+    echo "UnionC Agent log-rotation LaunchDaemon plist is invalid" >&2
+    exit 1
+  }
+
+  [ -L "$agent_command" ] || {
+    echo "Unsafe or missing UnionC Agent command link: $agent_command" >&2
+    exit 1
+  }
+  agent_command_target="$(readlink "$agent_command")" || {
+    echo "Could not inspect the UnionC Agent command link" >&2
+    exit 1
+  }
+  [ "$agent_command_target" = "../libexec/unionc-agent" ] || {
+    echo "UnionC Agent command link has an unexpected target" >&2
+    exit 1
+  }
+  read_path_metadata "$agent_command"
+  [ "$path_uid:$path_gid:$path_mode" = 0:0:755 ] || {
+    echo "UnionC Agent command link must be root:wheel with permissions 0755" >&2
+    exit 1
+  }
+}
+
+require_current_config() {
+  current_config_path="$1"
+  config_version_marker="$(
+    awk -v expected="$package_version" '
+      {
+        remaining = $0
+        while (match(remaining, /"application_version"[[:space:]]*:/)) {
+          seen += 1
+          remaining = substr(remaining, RSTART + RLENGTH)
+          if (match(remaining, /^[[:space:]]*"[^"]*"/)) {
+            value = substr(remaining, RSTART, RLENGTH)
+            sub(/^[[:space:]]*"/, "", value)
+            sub(/"$/, "", value)
+            if (value == expected) valid += 1
+          }
+        }
+      }
+      END { printf "%d:%d", seen, valid }
+    ' "$current_config_path"
+  )" || {
+    echo "Could not inspect $current_config_path" >&2
+    exit 1
+  }
+  [ "$config_version_marker" = 1:1 ] || {
+    echo "$current_config_path is not the current $package_version package config" >&2
+    exit 1
+  }
+}
+
+reregister_stopped_jobs() {
+  reregister_failed=0
+  if [ "$previous_agent_stopped" -eq 1 ] &&
+    ! launchctl print system/com.unionc.agent >/dev/null 2>&1; then
+    if [ -f "$agent_plist" ] && [ ! -L "$agent_plist" ]; then
+      launchctl bootstrap system "$agent_plist" >/dev/null 2>&1 || reregister_failed=1
+    else
+      reregister_failed=1
+    fi
+  fi
+  if [ "$previous_logrotate_stopped" -eq 1 ] &&
+    ! launchctl print system/com.unionc.agent.logrotate >/dev/null 2>&1; then
+    if [ -f "$logrotate_plist" ] && [ ! -L "$logrotate_plist" ]; then
+      launchctl bootstrap system "$logrotate_plist" >/dev/null 2>&1 || reregister_failed=1
+    else
+      reregister_failed=1
+    fi
+  fi
+  [ "$reregister_failed" -eq 0 ]
+}
+
+# The bookkeeping root is security-sensitive because it binds package-created
+# accounts to their exact numeric identities. Never let install(1) normalize a
+# foreign or redirected path.
+if [ -e "$ownership_dir" ] || [ -L "$ownership_dir" ]; then
+  [ -d "$ownership_dir" ] && [ ! -L "$ownership_dir" ] || {
+    echo "Unsafe UnionC Agent ownership directory" >&2
+    exit 1
+  }
+  read_path_metadata "$ownership_dir"
+  [ "$path_uid:$path_gid:$path_mode" = 0:0:700 ] || {
+    echo "UnionC Agent ownership directory must be root:wheel with permissions 0700" >&2
+    exit 1
+  }
+fi
 install -d -m 0700 -o root -g wheel "$ownership_dir"
-if [ -e "$ownership_marker" ]; then
+[ -d "$ownership_dir" ] && [ ! -L "$ownership_dir" ] || {
+  echo "UnionC Agent ownership directory was not created safely" >&2
+  exit 1
+}
+read_path_metadata "$ownership_dir"
+[ "$path_uid:$path_gid:$path_mode" = 0:0:700 ] || {
+  echo "UnionC Agent ownership directory was not secured as root:wheel 0700" >&2
+  exit 1
+}
+
+validate_launch_payload
+
+# Validate the package and retained filesystem roots before account mutation.
+[ -d "$state" ] && [ ! -L "$state" ] || {
+  echo "Unsafe UnionC Agent state directory" >&2
+  exit 1
+}
+[ -f "$state/config.example.json" ] && [ ! -L "$state/config.example.json" ] || {
+  echo "Unsafe UnionC Agent package config" >&2
+  exit 1
+}
+require_current_config "$state/config.example.json"
+if [ -e "$state/config.json" ] || [ -L "$state/config.json" ]; then
+  [ -f "$state/config.json" ] && [ ! -L "$state/config.json" ] || {
+    echo "Unsafe UnionC Agent retained config" >&2
+    exit 1
+  }
+  require_current_config "$state/config.json"
+fi
+[ -d "$log_dir" ] && [ ! -L "$log_dir" ] || {
+  echo "Unsafe UnionC Agent log directory" >&2
+  exit 1
+}
+read_path_metadata "$log_dir"
+[ "$path_uid:$path_gid:$path_mode" = 0:0:755 ] || {
+  echo "UnionC Agent log directory must be root:wheel with permissions 0755" >&2
+  exit 1
+}
+if [ -e "$log" ] || [ -L "$log" ]; then
+  [ -f "$log" ] && [ ! -L "$log" ] || {
+    echo "Unsafe UnionC Agent log file" >&2
+    exit 1
+  }
+fi
+
+if [ -e "$ownership_marker" ] || [ -L "$ownership_marker" ]; then
   ownership_marker_present=1
   [ -f "$ownership_marker" ] && [ ! -L "$ownership_marker" ] || {
     echo "Unsafe UnionC Agent account ownership marker" >&2
     exit 1
   }
-  marker_owner="$(stat -f '%Su:%Sg' "$ownership_marker")"
-  [ "$marker_owner" = "root:wheel" ] || {
-    echo "UnionC Agent account ownership marker is not owned by root:wheel" >&2
+  read_path_metadata "$ownership_marker"
+  [ "$path_uid:$path_gid:$path_mode" = 0:0:600 ] || {
+    echo "UnionC Agent account ownership marker is not root:wheel with permissions 0600" >&2
     exit 1
   }
   seen_user=0
@@ -119,6 +347,79 @@ if [ -e "$ownership_marker" ]; then
     exit 1
   fi
 fi
+ownership_marker_preexisting="$ownership_marker_present"
+
+# Only accept a freshly extracted root-owned payload or a tree already bound
+# to this exact versioned service identity. This check precedes every account
+# creation and every ownership change.
+read_path_metadata "$state"
+initial_state_metadata="$path_uid:$path_gid:$path_mode"
+case "$initial_state_metadata" in
+  0:0:755) ;;
+  "$created_user_uid:$created_group_gid:700")
+    [ "$ownership_marker_present" -eq 1 ] && [ "$user_created" -eq 1 ] &&
+      [ "$group_created" -eq 1 ] || {
+      echo "UnionC Agent state directory has stale service ownership" >&2
+      exit 1
+    }
+    ;;
+  *)
+    echo "UnionC Agent state directory has foreign ownership or permissions" >&2
+    exit 1
+    ;;
+esac
+
+read_path_metadata "$state/config.example.json"
+case "$path_uid:$path_gid:$path_mode" in
+  0:0:600) ;;
+  "$created_user_uid:$created_group_gid:600")
+    [ "$ownership_marker_present" -eq 1 ] && [ "$user_created" -eq 1 ] &&
+      [ "$group_created" -eq 1 ] || {
+      echo "UnionC Agent package config has stale service ownership" >&2
+      exit 1
+    }
+    ;;
+  *)
+    echo "UnionC Agent package config has foreign ownership or permissions" >&2
+    exit 1
+    ;;
+esac
+
+if [ -e "$state/config.json" ]; then
+  read_path_metadata "$state/config.json"
+  case "$path_uid:$path_gid:$path_mode" in
+    0:0:600) ;;
+    "$created_user_uid:$created_group_gid:600")
+      [ "$ownership_marker_present" -eq 1 ] && [ "$user_created" -eq 1 ] &&
+        [ "$group_created" -eq 1 ] || {
+        echo "UnionC Agent retained config has stale service ownership" >&2
+        exit 1
+      }
+      ;;
+    *)
+      echo "UnionC Agent retained config has foreign ownership or permissions" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+if [ -e "$log" ]; then
+  read_path_metadata "$log"
+  case "$path_uid:$path_gid:$path_mode" in
+    0:0:600) ;;
+    "$created_user_uid:$created_group_gid:600")
+      [ "$ownership_marker_present" -eq 1 ] && [ "$user_created" -eq 1 ] &&
+        [ "$group_created" -eq 1 ] || {
+        echo "UnionC Agent log has stale service ownership" >&2
+        exit 1
+      }
+      ;;
+    *)
+      echo "UnionC Agent log has foreign ownership or permissions" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 write_ownership_marker() {
   marker_temporary="$ownership_dir/.account-ownership.$$"
@@ -142,6 +443,85 @@ dscl_value() {
   dscl_record="$(dscl . -read "$record" "$field" 2>/dev/null)" || return 1
   printf '%s\n' "$dscl_record" | sed -n "s/^$field: //p"
 }
+
+rollback_created_group() {
+  record="/Groups/$group"
+  if ! dscl . -read "$record" >/dev/null 2>&1; then
+    return 0
+  fi
+  actual_gid="$(dscl_value "$record" PrimaryGroupID || true)"
+  if [ -n "$actual_gid" ] && [ "$actual_gid" != "$group_record_gid" ]; then
+    echo "Refusing to roll back $record: its numeric identity changed during installation" >&2
+    return 1
+  fi
+  if ! dscl . -delete "$record"; then
+    echo "Could not roll back the incomplete $record record" >&2
+    return 1
+  fi
+}
+
+rollback_created_user() {
+  record="/Users/$user"
+  if ! dscl . -read "$record" >/dev/null 2>&1; then
+    return 0
+  fi
+  actual_uid="$(dscl_value "$record" UniqueID || true)"
+  actual_gid="$(dscl_value "$record" PrimaryGroupID || true)"
+  if { [ -n "$actual_uid" ] && [ "$actual_uid" != "$user_record_uid" ]; } ||
+    { [ -n "$actual_gid" ] && [ "$actual_gid" != "$user_record_primary_gid" ]; }; then
+    echo "Refusing to roll back $record: its numeric identity changed during installation" >&2
+    return 1
+  fi
+  if ! dscl . -delete "$record"; then
+    echo "Could not roll back the incomplete $record record" >&2
+    return 1
+  fi
+}
+
+rollback_postinstall() {
+  rollback_status=$?
+  trap - EXIT
+  if [ "$rollback_status" -eq 0 ]; then
+    exit 0
+  fi
+
+  # Cleanup is best effort, but the original package-script failure remains the
+  # exit status. Stop helpers before the Agent, matching the normal stop order.
+  set +e
+  if [ "$logrotate_bootstrapped" -eq 1 ]; then
+    launchctl bootout system/com.unionc.agent.logrotate >/dev/null 2>&1 ||
+      echo "Could not stop the log-rotation helper after postinstall failed" >&2
+  fi
+  if [ "$agent_bootstrapped" -eq 1 ]; then
+    launchctl bootout system/com.unionc.agent >/dev/null 2>&1 ||
+      echo "Could not stop the Agent after postinstall failed" >&2
+  fi
+
+  if [ "$user_record_pending" -eq 1 ]; then
+    if rollback_created_user; then
+      user_created="$previous_user_created"
+      created_user_uid="$previous_user_uid"
+      created_user_primary_gid="$previous_user_primary_gid"
+      if [ -e "$ownership_marker" ]; then
+        write_ownership_marker ||
+          echo "Could not restore the Agent ownership marker after user rollback" >&2
+      fi
+    fi
+  fi
+  if [ "$group_record_pending" -eq 1 ] && rollback_created_group; then
+    if [ "$ownership_marker_preexisting" -eq 0 ]; then
+      rm -f "$ownership_marker"
+    fi
+  fi
+  rm -f "$ownership_dir/.account-ownership.$$"
+  reregister_stopped_jobs ||
+    echo "Could not re-register all launchd jobs stopped during postinstall" >&2
+  exit "$rollback_status"
+}
+
+# Account records and launchd registrations live outside the package payload,
+# so Installer cannot roll them back for us when a later command fails.
+trap rollback_postinstall EXIT
 
 listing_contains_id() {
   account_listing="$1"
@@ -247,13 +627,12 @@ local_group_names="$(dscl . -list /Groups)" || {
 }
 if ! listing_contains_name "$local_group_names" "$group"; then
   gid="$(next_free_id /Groups PrimaryGroupID)"
+  group_record_pending=1
+  group_record_gid="$gid"
   dscl . -create "/Groups/$group"
   dscl . -create "/Groups/$group" RealName "UnionC Agent"
   dscl . -create "/Groups/$group" PrimaryGroupID "$gid"
   dscl . -create "/Groups/$group" Password '*'
-  group_created=1
-  created_group_gid="$gid"
-  write_ownership_marker
   verified_gid="$(dscl_value "/Groups/$group" PrimaryGroupID)" || {
     echo "Could not verify the newly created $group group" >&2
     exit 1
@@ -262,6 +641,10 @@ if ! listing_contains_name "$local_group_names" "$group"; then
     echo "New $group group has an unexpected PrimaryGroupID" >&2
     exit 1
   }
+  group_created=1
+  created_group_gid="$gid"
+  write_ownership_marker
+  group_record_pending=0
 else
   gid="$(dscl_value "/Groups/$group" PrimaryGroupID)"
   group_name="$(dscl_value "/Groups/$group" RealName || true)"
@@ -277,6 +660,12 @@ local_user_names="$(dscl . -list /Users)" || {
 }
 if ! listing_contains_name "$local_user_names" "$user"; then
   uid="$(next_free_id /Users UniqueID)"
+  user_record_pending=1
+  user_record_uid="$uid"
+  user_record_primary_gid="$gid"
+  previous_user_created="$user_created"
+  previous_user_uid="$created_user_uid"
+  previous_user_primary_gid="$created_user_primary_gid"
   dscl . -create "/Users/$user"
   dscl . -create "/Users/$user" RealName "UnionC Agent"
   dscl . -create "/Users/$user" UniqueID "$uid"
@@ -285,10 +674,6 @@ if ! listing_contains_name "$local_user_names" "$user"; then
   dscl . -create "/Users/$user" NFSHomeDirectory /var/empty
   dscl . -create "/Users/$user" IsHidden 1
   dscl . -create "/Users/$user" Password '*'
-  user_created=1
-  created_user_uid="$uid"
-  created_user_primary_gid="$gid"
-  write_ownership_marker
   verified_uid="$(dscl_value "/Users/$user" UniqueID)" || {
     echo "Could not verify the newly created $user account" >&2
     exit 1
@@ -301,6 +686,11 @@ if ! listing_contains_name "$local_user_names" "$user"; then
     echo "New $user account has unexpected numeric identity attributes" >&2
     exit 1
   }
+  user_created=1
+  created_user_uid="$uid"
+  created_user_primary_gid="$gid"
+  write_ownership_marker
+  user_record_pending=0
 else
   existing_uid="$(dscl_value "/Users/$user" UniqueID)"
   existing_gid="$(dscl_value "/Users/$user" PrimaryGroupID)"
@@ -313,26 +703,85 @@ else
     echo "Existing $user account does not match the installer ownership binding" >&2
     exit 1
   fi
+  uid="$existing_uid"
 fi
 write_ownership_marker
 
-if [ ! -e "$state/config.json" ]; then
+if [ ! -e "$state/config.json" ] && [ ! -L "$state/config.json" ]; then
   cp "$state/config.example.json" "$state/config.json"
 fi
-chown -R "$user:$group" "$state"
+[ -d "$state" ] && [ ! -L "$state" ] || {
+  echo "UnionC Agent state directory was redirected during postinstall" >&2
+  exit 1
+}
+[ -f "$state/config.json" ] && [ ! -L "$state/config.json" ] &&
+  [ -f "$state/config.example.json" ] && [ ! -L "$state/config.example.json" ] || {
+  echo "UnionC Agent config paths were redirected during postinstall" >&2
+  exit 1
+}
+require_current_config "$state/config.json"
+# Existing nested state is already owned by the exact marker-bound identity;
+# avoid recursively following any service-created links while running as root.
+chown "$user:$group" "$state"
+chown "$user:$group" "$state/config.json" "$state/config.example.json"
 chmod 0700 "$state"
 chmod 0600 "$state/config.json" "$state/config.example.json"
+read_path_metadata "$state"
+[ "$path_uid:$path_gid:$path_mode" = "$uid:$gid:700" ] || {
+  echo "UnionC Agent state directory could not be secured for the service identity" >&2
+  exit 1
+}
+read_path_metadata "$state/config.json"
+[ "$path_uid:$path_gid:$path_mode" = "$uid:$gid:600" ] || {
+  echo "UnionC Agent config could not be secured for the service identity" >&2
+  exit 1
+}
+read_path_metadata "$state/config.example.json"
+[ "$path_uid:$path_gid:$path_mode" = "$uid:$gid:600" ] || {
+  echo "UnionC Agent package config could not be secured for the service identity" >&2
+  exit 1
+}
 
 touch "$log"
+[ -f "$log" ] && [ ! -L "$log" ] || {
+  echo "UnionC Agent log path was redirected during postinstall" >&2
+  exit 1
+}
 chown "$user:$group" "$log"
 chmod 0600 "$log"
+read_path_metadata "$log"
+[ "$path_uid:$path_gid:$path_mode" = "$uid:$gid:600" ] || {
+  echo "UnionC Agent log could not be secured for the service identity" >&2
+  exit 1
+}
 
 # 安装与授权刻意分离。未配对时 Agent 只低频记录 awaiting_authorization；用户随后执行
 # `unionc-agent pair --server https://...`，常驻进程会接续同一个浏览器配对请求。
+# Keep the previous jobs alive until every payload, identity, state, and log
+# validation above has succeeded. This avoids a preinstall/postinstall outage
+# gap: an Installer failure before reaching this point leaves the old process
+# running on its already-open executable vnode.
+if launchctl print system/com.unionc.agent >/dev/null 2>&1; then
+  previous_agent_loaded=1
+fi
+if launchctl print system/com.unionc.agent.logrotate >/dev/null 2>&1; then
+  previous_logrotate_loaded=1
+fi
+if [ "$previous_logrotate_loaded" -eq 1 ]; then
+  previous_logrotate_stopped=1
+  launchctl bootout system/com.unionc.agent.logrotate
+fi
+if [ "$previous_agent_loaded" -eq 1 ]; then
+  previous_agent_stopped=1
+  launchctl bootout system/com.unionc.agent
+fi
+
 launchctl enable system/com.unionc.agent
 launchctl enable system/com.unionc.agent.logrotate
 launchctl bootstrap system "$agent_plist"
+agent_bootstrapped=1
 launchctl bootstrap system "$logrotate_plist"
+logrotate_bootstrapped=1
 
 cat <<'EOF'
 

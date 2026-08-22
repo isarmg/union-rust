@@ -16,6 +16,12 @@ secret。管理页还能取消待激活邀请、为同一实例重新配对，�
 本机配置页同时填写 Server 地址和密钥；`/agent/activate/{request_id}` 仍保留给 CLI 和其他平台。
 管理台不会向目标机器发起 SSH、WinRM 或任何远程命令。
 
+管理员数据按浏览器会话隔离。注销或任一 API 报告 401 时，前端会立即清空并替换整套
+TanStack Query `QueryClient`；旧会话仍在途的 mutation 回调只能写回已经脱离页面的旧 client，
+不会把私有查询快照带入下一次登录。注销请求完成前登录入口保持禁用，避免旧注销响应晚于
+新登录并清掉新会话 Cookie。一次性 Agent 授权密钥在面板关闭、取消、撤销、终态或组件卸载时，
+也会从 mutation cache 中删除。
+
 ## 开发运行
 
 先启动 UnionC，然后运行：
@@ -36,8 +42,9 @@ npm run dev
 npm run build     # 等价于 tsc -b && vite build && 原子发布到 dist/
 ```
 
-构建产物位于 `web/dist/`。发布步骤是原子的：先构建到 `dist.next`，
-成功后才替换 `dist`，失败会回滚到上一版本（见 `scripts/publish-static.mjs`），
+构建产物位于 `web/dist/`。发布步骤是原子的：先构建到 `dist.next`，再替换 `dist` 并归一化
+权限；提交点之前失败会回滚到上一版本（见 `scripts/publish-static.mjs`）。提交后清理
+`dist.previous` 失败仍会报告错误并保留待清理备份，但不会删除或回滚已经就绪的新 `dist`，
 因此可以直接把 `dist` 作为线上目录而不会出现"构建到一半的站点"。
 
 ## 部署

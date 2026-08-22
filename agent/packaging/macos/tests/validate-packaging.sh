@@ -10,7 +10,8 @@ for script in \
   "$packaging_dir/scripts/postinstall" \
   "$packaging_dir/uninstall.sh" \
   "$packaging_dir/unionc-agent-logrotate" \
-  "$script_dir/account-safety-test.sh"
+  "$script_dir/account-safety-test.sh" \
+  "$script_dir/postinstall-failure-test.sh"
 do
   sh -n "$script"
 done
@@ -22,3 +23,4 @@ command -v plutil >/dev/null 2>&1 || {
 plutil -lint "$packaging_dir/com.unionc.agent.plist"
 plutil -lint "$packaging_dir/com.unionc.agent.logrotate.plist"
 sh "$script_dir/account-safety-test.sh"
+sh "$script_dir/postinstall-failure-test.sh"

@@ -122,8 +122,9 @@ report token。不要复制或重用另一台机器的整个状态目录。
 | `auth-state.json` | `authorized` 或 `reauth_required` 诊断状态 |
 | `spool/` | 断线续传队列（`*.json` 待发、`*.invalid` 隔离） |
 
-目录 0700、文件 0600，写入一律走"临时文件 + fsync + rename + 目录 fsync"原子替换。systemd unit 用
-`StateDirectory` + `StateDirectoryMode=0700` + `UMask=0077` 保证权限——不显式声明时
+目录 0700、文件 0600，写入一律走"临时文件 + fsync + rename + 目录 fsync"原子替换。
+spool 变更另有跨进程文件锁，打开与容量核算会回收崩溃遗留的无主原子临时文件。systemd
+unit 用 `StateDirectory` + `StateDirectoryMode=0700` + `UMask=0077` 保证权限——不显式声明时
 systemd 用 0755 并**每次启动都重设**，而 Agent 的 chmod 要等到第一次写凭据，中间存在窗口。
 
 ## 投递与失败处理

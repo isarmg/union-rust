@@ -214,7 +214,7 @@ run_user_binding_case malformed_numeric_id 1 1 450 450 450:451 450 450
 
 group_check_line="$(awk '/if ! existing_group_matches_marker / { print NR; exit }' "$postinstall")"
 user_check_line="$(awk '/if ! existing_user_matches_marker / { print NR; exit }' "$postinstall")"
-first_state_chown_line="$(awk '/^chown -R .*"\$state"/ { print NR; exit }' "$postinstall")"
+first_state_chown_line="$(awk '/^chown .*"\$state"$/ { print NR; exit }' "$postinstall")"
 case "$group_check_line:$user_check_line:$first_state_chown_line" in
   *[!0-9:]*)
     echo "Could not locate identity checks and state ownership change in postinstall" >&2

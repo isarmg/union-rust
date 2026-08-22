@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 022
 
 die() {
   echo "build-pkg: $*" >&2
@@ -107,7 +108,7 @@ grep -F '"state_dir": "/Library/Application Support/UnionC Agent"' \
 chmod 0600 "$root/Library/Application Support/UnionC Agent/config.example.json"
 
 component="$packages/unionc-agent-component.pkg"
-pkgbuild --root "$root" --scripts "$package_scripts" \
+pkgbuild --root "$root" --scripts "$package_scripts" --ownership recommended \
   --identifier com.unionc.agent --version "$VERSION" --install-location / \
   "$component"
 

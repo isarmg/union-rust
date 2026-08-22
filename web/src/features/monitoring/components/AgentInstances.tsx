@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Copy, KeyRound, Plus, ShieldCheck, X } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -15,6 +15,15 @@ import { monitoringApi as api } from "../api";
 import { agentAuthorizationKeyGuidance, pendingAgentInstances } from "../model";
 import { monitoringQueryKeys as queryKeys } from "../queryKeys";
 import type { AgentInstanceSummary, CreatedAgentInstance, MonitoringHostSummary } from "../types";
+
+const createAgentMutationKey = ["monitoring-create-agent-instance"] as const;
+
+function removeMutationFromCache(queryClient: ReturnType<typeof useQueryClient>, mutationKey: readonly unknown[]) {
+  const mutationCache = queryClient.getMutationCache();
+  for (const mutation of mutationCache.findAll({ mutationKey, exact: true })) {
+    mutationCache.remove(mutation);
+  }
+}
 
 function ActivationCodePanel({ created, onClose }: {
   created: CreatedAgentInstance;
@@ -51,23 +60,47 @@ function ActivationCodePanel({ created, onClose }: {
 export function HostRegistration({ host }: { host: MonitoringHostSummary }) {
   const queryClient = useQueryClient();
   const [created, setCreated] = useState<CreatedAgentInstance | null>(null);
+  const instancesQuery = useQuery({
+    queryKey: queryKeys.monitoring.agentInstances,
+    queryFn: api.monitoringAgentInstances,
+    refetchInterval: 10_000,
+  });
   const rePairMutation = useMutation({
+    mutationKey: ["monitoring-re-pair-agent-instance", host.id],
     mutationFn: () => api.monitoringCreateAgentInstance(host.name, 15, host.id),
     onSuccess: async (result) => {
       setCreated(result);
       await queryClient.invalidateQueries({ queryKey: queryKeys.monitoring.agentInstances });
     },
   });
+  const resetRePairMutation = rePairMutation.reset;
+  const clearCreated = useCallback(() => {
+    setCreated(null);
+    resetRePairMutation();
+    removeMutationFromCache(queryClient, ["monitoring-re-pair-agent-instance", host.id]);
+  }, [host.id, queryClient, resetRePairMutation]);
+  useEffect(() => () => {
+    removeMutationFromCache(queryClient, ["monitoring-re-pair-agent-instance", host.id]);
+  }, [host.id, queryClient]);
   const revokeMutation = useMutation({
     mutationFn: () => api.monitoringRevokeHost(host.id),
     onSuccess: async () => {
-      setCreated(null);
+      clearCreated();
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.monitoring.hosts }),
         queryClient.invalidateQueries({ queryKey: queryKeys.monitoring.host(host.id) }),
       ]);
     },
   });
+  const refreshedCreated = created
+    ? instancesQuery.data?.find((instance) => instance.request_id === created.request_id)
+    : undefined;
+  const createdStatus = refreshedCreated?.status ?? created?.status;
+
+  useEffect(() => {
+    if (!created || !createdStatus || createdStatus === "pending") return;
+    clearCreated();
+  }, [clearCreated, created, createdStatus]);
 
   return (
     <section className="section-band">
@@ -100,7 +133,9 @@ export function HostRegistration({ host }: { host: MonitoringHostSummary }) {
       </CardActions>
       <MutationError mutation={rePairMutation} />
       <MutationError mutation={revokeMutation} />
-      {created ? <ActivationCodePanel created={created} onClose={() => setCreated(null)} /> : null}
+      {created && createdStatus === "pending"
+        ? <ActivationCodePanel created={created} onClose={clearCreated} />
+        : null}
     </section>
   );
 }
@@ -120,6 +155,7 @@ export function AgentInstances({ activeHostIds }: { activeHostIds: ReadonlySet<s
     refetchInterval: 10_000,
   });
   const createMutation = useMutation({
+    mutationKey: createAgentMutationKey,
     mutationFn: () => api.monitoringCreateAgentInstance(displayName.trim(), expiresInMinutes),
     onSuccess: async (result) => {
       setCreationOutcome(null);
@@ -127,10 +163,19 @@ export function AgentInstances({ activeHostIds }: { activeHostIds: ReadonlySet<s
       await queryClient.invalidateQueries({ queryKey: queryKeys.monitoring.agentInstances });
     },
   });
+  const resetCreateMutation = createMutation.reset;
+  const clearCreated = useCallback(() => {
+    setCreated(null);
+    resetCreateMutation();
+    removeMutationFromCache(queryClient, createAgentMutationKey);
+  }, [queryClient, resetCreateMutation]);
+  useEffect(() => () => {
+    removeMutationFromCache(queryClient, createAgentMutationKey);
+  }, [queryClient]);
   const cancelMutation = useMutation({
     mutationFn: api.monitoringCancelAgentInstance,
     onSuccess: async (_result, requestId) => {
-      if (created?.request_id === requestId) setCreated(null);
+      if (created?.request_id === requestId) clearCreated();
       await queryClient.invalidateQueries({ queryKey: queryKeys.monitoring.agentInstances });
     },
   });
@@ -145,8 +190,8 @@ export function AgentInstances({ activeHostIds }: { activeHostIds: ReadonlySet<s
   useEffect(() => {
     if (!created || !createdStatus || createdStatus === "pending") return;
     setCreationOutcome({ displayName: created.display_name, status: createdStatus });
-    setCreated(null);
-  }, [created, createdStatus]);
+    clearCreated();
+  }, [clearCreated, created, createdStatus]);
 
   return (
     <section className="section-band agent-instances">
@@ -185,7 +230,7 @@ export function AgentInstances({ activeHostIds }: { activeHostIds: ReadonlySet<s
       <MutationError mutation={createMutation} />
       <MutationError mutation={cancelMutation} />
       {created && createdStatus === "pending"
-        ? <ActivationCodePanel created={created} onClose={() => setCreated(null)} />
+        ? <ActivationCodePanel created={created} onClose={clearCreated} />
         : null}
       {creationOutcome?.status === "active" ? (
         <div className="agent-instance-activated" role="status">

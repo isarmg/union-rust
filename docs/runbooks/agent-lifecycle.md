@@ -168,7 +168,7 @@ Web 管理台的入口。机器级变更才触发 UAC。其配置页只
 也不允许远程访问。`%ProgramFiles%` 仅给 BUILTIN\Users 读取/执行权限，受保护的
 `%ProgramData%` 状态 ACL 不增加普通用户权限。
 
-交互安装或同版本重装成功、且没有映像等待重启替换时，会以安装者的非提权会话启动托盘；`/qn`、
+交互式全新安装成功、且没有映像等待重启替换时，会以安装者的非提权会话启动托盘；`/qn`、
 GPO、Intune/MDM 等静默/SYSTEM 部署不会启动 session 0 托盘，下一次用户登录时由 HKLM Run
 启动。用户也可从开始菜单立即打开。右键托盘选择“配对/重新配对”，在本机配置页一次输入
 服务器 HTTPS 地址、管理台生成的一次性授权密钥和可选名称，接受 UAC 后由 Agent 完成配对，
@@ -187,8 +187,8 @@ MSI 只允许全新安装、当前产品的 repair/reinstall 和卸载。稳定 
 发现任何其他版本会 fail closed，要求先卸载，不会自动移除或迁移。重装与卸载会在事务开始后、文件移除前，通过
 用户态和提权两次 Windows 消息请求可达的托盘优雅退出，但不强制终止；受会话隔离影响的其他
 用户托盘或其他文件占用仍存在时，由 Windows Installer 安排重启。Run 值和开始菜单入口
-参与同一安装/重装/卸载事务。fresh install 或交互式当前版本重装仅在事务已经提交且
-没有 `ReplacedInUseFiles` 时，通过 WiX 的 unelevated ShellExecute helper 启动新托盘；repair、
+参与同一安装/重装/卸载事务。只有交互式 fresh install 会在事务已经提交且
+没有 `ReplacedInUseFiles` 时，通过 WiX 的 unelevated ShellExecute helper 启动新托盘；repair/reinstall、
 卸载、静默/SYSTEM 部署或仍有映像等待替换时不启动，等待重启/下次登录或从开始菜单打开。
 
 托盘“退出”会请求 UAC，确认 `UnionCAgent` 服务已停止后才结束当前登录用户的托盘伴侣。
@@ -273,7 +273,13 @@ sudo launchctl print system/com.unionc.agent
 sudo tail -n 100 /var/log/unionc-agent.log
 ```
 
-重新安装 pkg 时，preinstall 会先停止日志轮转和当前 Agent；postinstall 保存配置与状态并重新启动。
+重新安装 pkg 时，preinstall 只校验 receipt 与版本，不停止现有 job。旧进程在 payload 替换和
+postinstall 校验期间继续依靠已打开的 vnode 运行。任何 `bootout` 之前，postinstall 都会严格检查
+新 Agent 二进制、日志轮转 helper、两份 plist 和命令链接的类型、root:wheel 所有权与精确权限，
+并检查二进制版本、helper shell 语法、plist 语法、链接目标以及配置、身份、状态和日志。全部通过后，
+它才短暂按日志轮转 helper → Agent 的顺序停止旧 job，并事务式注册已验证的同版本新 payload。
+停止或注册中途失败时，失败 trap 会清理半注册的 job，并只为安装前 loaded 的 label 重新注册这套
+已验证的新 payload；Installer 已替换的旧 payload 文件无法由 postinstall 恢复。
 日志达到 10 MiB 后由 root LaunchDaemon 调用 `newsyslog`，保留七份压缩归档。
 
 默认卸载：
@@ -373,7 +379,7 @@ xcrun stapler validate unionc-agent_VERSION.pkg
 - Linux：脚本隔离测试、真实 DEB install → remove → reinstall → purge，以及 Fedora 容器内
   的真实 RPM install → remove → reinstall → purge；
 - Windows：原生 Service/托盘/维护程序编译与 PE subsystem 校验、WiX 静态与 ICE 构建验证，
-  以及真实 MSI 的不可信预置状态拒绝、同名 foreign task/service 拒绝、托盘文件
+  以及真实 MSI 的不可信预置状态拒绝、同名 foreign service 拒绝、托盘文件
   与 Run/开始菜单注册、运行中托盘优雅关闭、fresh install → preserve uninstall → same-version reinstall →
   `PURGE=1`，并验证 service SID、配置、owner 和 DACL；
 - macOS：shell/plist 与账户/嵌套组 fail-closed mock 校验，以及 pkg install → reinstall →

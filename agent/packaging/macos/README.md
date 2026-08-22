@@ -73,8 +73,15 @@ sudo tail -n 100 /var/log/unionc-agent.log
 `doctor` is read-only by default. Use `doctor --delivery` only when an explicit end-to-end
 delivery attempt (including processing queued reports) is intended.
 
-Reinstalling the current 0.3.2 package stops the Agent in `preinstall`, replaces the payload,
-preserves configuration/identity/spool, and starts the daemon in `postinstall`. A different
+Reinstalling the current 0.3.2 package leaves the old jobs running while Installer replaces the
+payload. Before any `bootout`, `postinstall` verifies the new executable and helper types,
+root-owned modes and syntax, the executable version, both plists, and the exact command symlink,
+then validates configuration, identity and state. It briefly stops both jobs and transactionally
+registers the validated same-version replacement. A failure before that point leaves the old
+processes running on their already-open executable vnodes. If stopping or registering fails after
+the cutover begins, the trap removes half-registered jobs and re-registers only that already
+validated new payload for whichever jobs were loaded before installation; it cannot restore files
+that Installer has replaced. The reinstall preserves configuration/identity/spool. A different
 package version is not migrated: purge 0.3.2 state before installing another version.
 
 The package also installs an hourly size check. At 10 MiB it briefly stops the Agent, rotates

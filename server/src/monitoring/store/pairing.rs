@@ -187,6 +187,11 @@ pub async fn create_agent_pairing_request(
     request: &AgentPairingRequest,
     expires_at: DateTime<Utc>,
 ) -> anyhow::Result<CreatePairingResult> {
+    // Bound each cleanup transaction as well as the retained live set. This is
+    // important when upgrading a database that already contains a large
+    // legacy backlog: the first new pairing request must not monopolize
+    // SQLite's single writer while deleting every expired row at once.
+    const CLEANUP_BATCH_SIZE: i64 = 512;
     const EXISTING_BY_POLLING_SECRET: &str = r#"
         SELECT request_id,requested_host_id,
                name,os,os_version,kernel_version,arch,agent_version,token_hash,status,expires_at
@@ -197,7 +202,6 @@ pub async fn create_agent_pairing_request(
     let requested_host_id = canonical_uuid(&request.host.id)?;
     let now = Utc::now();
     let now_micros = database::to_epoch_micros(now);
-    let stale_before = database::to_epoch_micros(now - chrono::Duration::days(30));
     let mut tx = database::begin_write(pool).await?;
     let existing = query(EXISTING_BY_POLLING_SECRET)
         .bind(&request.polling_secret_hash)
@@ -225,14 +229,36 @@ pub async fn create_agent_pairing_request(
     query(
         r#"
         DELETE FROM agent_pairing_requests
-        WHERE created_at < ?1
-          AND (status='denied' OR (status='pending' AND expires_at <= ?2))
+        WHERE request_id IN (
+            SELECT request_id
+            FROM agent_pairing_requests
+            WHERE status='pending' AND expires_at <= ?1
+            ORDER BY expires_at
+            LIMIT ?2
+        )
         "#,
     )
-    .bind(stale_before)
     .bind(now_micros)
+    .bind(CLEANUP_BATCH_SIZE)
     .execute(tx.connection())
     .await?;
+    let pending: i64 = query(
+        "SELECT COUNT(*) AS count FROM ( \
+             SELECT 1 FROM agent_pairing_requests \
+             WHERE status='pending' AND expires_at > ?1 LIMIT ?2 \
+         )",
+    )
+    .bind(now_micros)
+    .bind(MAX_PENDING_PAIRING_REQUESTS)
+    .fetch_one(tx.connection())
+    .await?
+    .try_get("count")?;
+    if pending >= MAX_PENDING_PAIRING_REQUESTS {
+        // Preserve any bounded cleanup performed above even though this
+        // request cannot allocate another live slot.
+        tx.commit().await?;
+        return Ok(CreatePairingResult::AtCapacity);
+    }
     let inserted = query(
         r#"
         INSERT INTO agent_pairing_requests(
@@ -590,4 +616,3 @@ fn agent_instance_from_row(row: SqliteRow) -> anyhow::Result<AgentInstanceSummar
         created_at: timestamp(&row, "created_at")?,
     })
 }
-

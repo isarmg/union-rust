@@ -50,6 +50,214 @@ async fn app_with_database(url: String) -> (axum::Router, database::DbPool) {
     (http::router(state), pool)
 }
 
+#[tokio::test]
+async fn report_write_rechecks_the_exact_credential_after_authentication() {
+    let url = common::test_database_url(
+        "report_write_rechecks_the_exact_credential_after_authentication",
+    );
+    let mut settings = Settings::default();
+    settings.database.url = url.to_string();
+    let pool = database::connect(&settings).await.expect("connect");
+    database::initialize_schema(&pool)
+        .await
+        .expect("initialize schema");
+
+    let host_id = Uuid::new_v4();
+    let host_id_text = host_id.to_string();
+    let host: unionc::monitoring::HostIdentity =
+        serde_json::from_value(report_body(&host_id_text, "credential-race-host")["host"].clone())
+            .expect("valid host fixture");
+    let old_token = secret();
+    let old_hash = hash(&old_token);
+    common::insert_active_monitoring_host(&pool, &host, &old_hash)
+        .await
+        .expect("insert host");
+
+    // Model the first half of the HTTP handler: this request authenticated
+    // before a concurrent administrator-approved re-pair rotated the token.
+    assert_eq!(
+        unionc::monitoring::store::monitoring_host_for_token(&pool, &old_hash)
+            .await
+            .expect("authenticate old credential"),
+        unionc::monitoring::store::MonitoringTokenAuthentication::Active(host_id_text.clone())
+    );
+
+    let new_hash = hash(&secret());
+    let now = database::now_epoch_micros();
+    let mut transaction = database::begin_write(&pool).await.expect("begin rotation");
+    query("UPDATE agent_credentials SET revoked_at=?2 WHERE host_id=?1 AND revoked_at IS NULL")
+        .bind(&host_id_text)
+        .bind(now)
+        .execute(transaction.connection())
+        .await
+        .expect("revoke old credential");
+    query(
+        "INSERT INTO agent_credentials(credential_id,host_id,token_hash,issued_at) \
+         VALUES(?1,?2,?3,?4)",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(&host_id_text)
+    .bind(&new_hash)
+    .bind(now)
+    .execute(transaction.connection())
+    .await
+    .expect("insert replacement credential");
+    transaction.commit().await.expect("commit rotation");
+
+    let stale_in_flight: unionc::monitoring::AgentReport =
+        serde_json::from_value(report_body(&host_id_text, "credential-race-host"))
+            .expect("valid report");
+    let error = unionc::monitoring::store::store_authenticated_monitoring_report(
+        &pool,
+        &stale_in_flight,
+        &old_hash,
+    )
+    .await
+    .expect_err("the revoked in-flight credential must not write");
+    assert!(matches!(
+        error.downcast_ref::<unionc::monitoring::store::StoreReportError>(),
+        Some(unionc::monitoring::store::StoreReportError::CredentialNotActive)
+    ));
+    let report_count: i64 = query("SELECT COUNT(*) AS count FROM agent_metric_reports")
+        .fetch_one(&pool)
+        .await
+        .expect("count reports")
+        .try_get("count")
+        .unwrap();
+    assert_eq!(report_count, 0);
+
+    unionc::monitoring::store::store_authenticated_monitoring_report(
+        &pool,
+        &stale_in_flight,
+        &new_hash,
+    )
+    .await
+    .expect("the replacement credential remains valid");
+}
+
+#[tokio::test]
+async fn anonymous_pairing_storage_is_bounded_and_reclaims_expired_rows() {
+    const CLEANUP_BATCH_SIZE: i64 = 512;
+    let url =
+        common::test_database_url("anonymous_pairing_storage_is_bounded_and_reclaims_expired_rows");
+    let mut settings = Settings::default();
+    settings.database.url = url.to_string();
+    let pool = database::connect(&settings).await.expect("connect");
+    database::initialize_schema(&pool)
+        .await
+        .expect("initialize schema");
+
+    let now = Utc::now();
+    let now_micros = database::to_epoch_micros(now);
+    let mut transaction = database::begin_write(&pool).await.expect("begin fixtures");
+    let fixture_count =
+        unionc::monitoring::store::MAX_PENDING_PAIRING_REQUESTS + CLEANUP_BATCH_SIZE + 1;
+    for index in 0..fixture_count {
+        let expired = index <= CLEANUP_BATCH_SIZE;
+        let created_at = if expired {
+            database::to_epoch_micros(now - Duration::minutes(20))
+        } else {
+            now_micros
+        };
+        let expires_at = if expired {
+            database::to_epoch_micros(now - Duration::minutes(5))
+        } else {
+            database::to_epoch_micros(now + Duration::minutes(15))
+        };
+        query(
+            r#"
+            INSERT INTO agent_pairing_requests(
+                request_id,requested_host_id,name,os,arch,agent_version,
+                token_hash,polling_secret_hash,expires_at,created_at
+            ) VALUES(?1,?2,'bounded-host','linux','x86_64','test',?3,?4,?5,?6)
+            "#,
+        )
+        .bind(
+            Uuid::from_u128(0x1000_0000_0000_0000_0000_0000_0000_0000 + index as u128).to_string(),
+        )
+        .bind(
+            Uuid::from_u128(0x2000_0000_0000_0000_0000_0000_0000_0000 + index as u128).to_string(),
+        )
+        .bind(format!("{:064x}", index + 1))
+        .bind(format!("{:064x}", fixture_count + index + 1))
+        .bind(expires_at)
+        .bind(created_at)
+        .execute(transaction.connection())
+        .await
+        .expect("insert pending fixture");
+    }
+    transaction.commit().await.expect("commit fixtures");
+
+    let candidate_token = secret();
+    let candidate_poll = secret();
+    let candidate: unionc::monitoring::AgentPairingRequest = serde_json::from_value(pairing_body(
+        &candidate_token,
+        &candidate_poll,
+        "over-capacity",
+    ))
+    .expect("valid pairing request");
+    let first_result = unionc::monitoring::store::create_agent_pairing_request(
+        &pool,
+        &Uuid::new_v4().to_string(),
+        &candidate,
+        now + Duration::minutes(15),
+    )
+    .await
+    .expect("first capacity result");
+    assert!(matches!(
+        first_result,
+        unionc::monitoring::store::CreatePairingResult::AtCapacity
+    ));
+    let expired_remaining: i64 = query(
+        "SELECT COUNT(*) AS count FROM agent_pairing_requests \
+         WHERE status='pending' AND expires_at <= ?1",
+    )
+    .bind(now_micros)
+    .fetch_one(&pool)
+    .await
+    .expect("count expired rows")
+    .try_get("count")
+    .unwrap();
+    assert_eq!(
+        expired_remaining, 1,
+        "one transaction must reclaim at most {CLEANUP_BATCH_SIZE} expired rows"
+    );
+    let total_after_first: i64 = query("SELECT COUNT(*) AS count FROM agent_pairing_requests")
+        .fetch_one(&pool)
+        .await
+        .expect("count rows after first cleanup")
+        .try_get("count")
+        .unwrap();
+    assert_eq!(
+        total_after_first,
+        unionc::monitoring::store::MAX_PENDING_PAIRING_REQUESTS + 1,
+        "AtCapacity must commit its bounded cleanup without inserting the candidate"
+    );
+
+    let second_result = unionc::monitoring::store::create_agent_pairing_request(
+        &pool,
+        &Uuid::new_v4().to_string(),
+        &candidate,
+        now + Duration::minutes(15),
+    )
+    .await
+    .expect("capacity result");
+    assert!(matches!(
+        second_result,
+        unionc::monitoring::store::CreatePairingResult::AtCapacity
+    ));
+    let total: i64 = query("SELECT COUNT(*) AS count FROM agent_pairing_requests")
+        .fetch_one(&pool)
+        .await
+        .expect("count bounded rows")
+        .try_get("count")
+        .unwrap();
+    assert_eq!(
+        total,
+        unionc::monitoring::store::MAX_PENDING_PAIRING_REQUESTS
+    );
+}
+
 fn console(method: &str, path: &str) -> axum::http::request::Builder {
     Request::builder()
         .method(method)

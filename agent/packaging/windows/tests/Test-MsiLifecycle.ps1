@@ -136,30 +136,45 @@ function Assert-StateAcl {
     }
     foreach ($protectedPath in $protectedPaths) {
         $acl = Get-Acl -LiteralPath $protectedPath
-        $allowSids = @($acl.Access |
-            Where-Object AccessControlType -eq `
-                ([System.Security.AccessControl.AccessControlType]::Allow) |
-            ForEach-Object {
-                $_.IdentityReference.Translate(
-                    [System.Security.Principal.SecurityIdentifier]
-                ).Value
-            })
-        if ($allowSids -notcontains $serviceSid -or
-            $allowSids -contains "S-1-5-19" -or
-            $allowSids -notcontains "S-1-3-4") {
-            throw "$protectedPath is not isolated to the dedicated service SID."
+        $ownerSid = $acl.GetOwner(
+            [System.Security.Principal.SecurityIdentifier]
+        ).Value
+        if ($ownerSid -ne "S-1-5-18" -or -not $acl.AreAccessRulesProtected) {
+            throw "$protectedPath does not have SYSTEM ownership and a protected DACL."
         }
-        if ($protectedPath -in @(
-            $stateRoot,
-            (Join-Path $stateRoot $stateMarker),
-            (Join-Path $stateRoot "config.json")
-        )) {
-            $ownerSid = $acl.GetOwner(
+
+        $rules = @($acl.Access)
+        $expectedRights = @{
+            "S-1-5-18" = 0x1f01ff
+            "S-1-5-32-544" = 0x1f01ff
+            "S-1-3-4" = 0x00020000
+        }
+        $expectedRights[$serviceSid] = 0x001301bf
+        $expectedInheritance = `
+            [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor `
+            [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+        if ($rules.Count -ne $expectedRights.Count) {
+            throw "$protectedPath has an unexpected managed-state ACE count."
+        }
+        foreach ($rule in $rules) {
+            $sid = $rule.IdentityReference.Translate(
                 [System.Security.Principal.SecurityIdentifier]
             ).Value
-            if ($ownerSid -ne "S-1-5-18" -or -not $acl.AreAccessRulesProtected) {
-                throw "$protectedPath lacks the exact managed SYSTEM/protected anchor."
+            if (-not $expectedRights.ContainsKey($sid) -or
+                $sid -eq "S-1-5-19" -or
+                $rule.AccessControlType -ne `
+                    [System.Security.AccessControl.AccessControlType]::Allow -or
+                [int]$rule.FileSystemRights -ne $expectedRights[$sid] -or
+                $rule.InheritanceFlags -ne $expectedInheritance -or
+                $rule.PropagationFlags -ne `
+                    [System.Security.AccessControl.PropagationFlags]::None -or
+                $rule.IsInherited) {
+                throw "$protectedPath has an unexpected managed-state ACE for $sid."
             }
+            $expectedRights.Remove($sid) | Out-Null
+        }
+        if ($expectedRights.Count -ne 0) {
+            throw "$protectedPath is missing a required managed-state ACE."
         }
     }
 }
@@ -404,6 +419,9 @@ if ((Test-Path -LiteralPath $installJournal) -or
     (Test-Path -LiteralPath $uninstallJournal) -or
     (Test-Path -LiteralPath $purgeQuarantine)) {
     throw "Ordinary uninstall left a transaction journal or purge quarantine."
+}
+if (@(Get-UnionCAgentArpEntries).Count -ne 0) {
+    throw "Apps & Features still contains UnionC Agent after ordinary uninstall."
 }
 Assert-PreservedStateAcl $installedServiceSid
 

@@ -18,16 +18,10 @@ if installed_receipt="$(pkgutil --pkg-info com.unionc.agent 2>/dev/null)"; then
   }
 fi
 
-stop_job() {
-  service_target="$1"
-  if launchctl print "$service_target" >/dev/null 2>&1; then
-    launchctl bootout "$service_target"
-  fi
-}
-
-# Stop the rotation helper first so it cannot restart the current Agent while a same-version
-# reinstall replaces the payload. bootout is synchronous before postinstall runs.
-stop_job system/com.unionc.agent.logrotate
-stop_job system/com.unionc.agent
+# Do not stop launchd jobs here. The payload can replace an executable that is
+# already running because the old process keeps its open vnode. postinstall
+# validates the complete replacement first, then performs the short
+# bootout/bootstrap transaction under its own failure trap. Consequently an
+# Installer failure before postinstall leaves the previous jobs running.
 
 exit 0

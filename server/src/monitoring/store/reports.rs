@@ -57,6 +57,26 @@ pub async fn store_monitoring_report(
     pool: &DbPool,
     report: &AgentReport,
 ) -> anyhow::Result<(bool, DateTime<Utc>)> {
+    store_monitoring_report_inner(pool, report, None).await
+}
+
+/// Store an HTTP-authenticated report only if the exact credential remains
+/// active at the write transaction's serialization point. The preliminary
+/// lookup in the handler deliberately happens before JSON parsing, but a
+/// concurrent re-pair may revoke that credential before this write begins.
+pub async fn store_authenticated_monitoring_report(
+    pool: &DbPool,
+    report: &AgentReport,
+    authenticated_token_hash: &str,
+) -> anyhow::Result<(bool, DateTime<Utc>)> {
+    store_monitoring_report_inner(pool, report, Some(authenticated_token_hash)).await
+}
+
+async fn store_monitoring_report_inner(
+    pool: &DbPool,
+    report: &AgentReport,
+    authenticated_token_hash: Option<&str>,
+) -> anyhow::Result<(bool, DateTime<Utc>)> {
     let host_id = canonical_uuid(&report.host.id)?;
     let report_id = canonical_uuid(&report.report_id)?;
     let capabilities = serde_json::to_string(&report.capabilities)?;
@@ -82,7 +102,14 @@ pub async fn store_monitoring_report(
              OR kernel_version IS NOT ?5
              OR arch           IS NOT ?6
              OR agent_version  IS NOT ?7
-             OR capabilities   IS NOT ?8) AS identity_changed
+             OR capabilities   IS NOT ?8) AS identity_changed,
+               EXISTS(
+                   SELECT 1
+                   FROM agent_credentials c
+                   WHERE c.host_id=monitored_hosts.host_id
+                     AND c.token_hash=?9
+                     AND c.revoked_at IS NULL
+               ) AS credential_active
         FROM monitored_hosts
         WHERE host_id=?1 AND lifecycle_status='active'
         "#,
@@ -95,12 +122,17 @@ pub async fn store_monitoring_report(
     .bind(report.host.arch.trim())
     .bind(report.host.agent_version.trim())
     .bind(&capabilities)
+    .bind(authenticated_token_hash)
     .fetch_optional(tx.connection())
     .await?
     .ok_or_else(|| anyhow::Error::new(StoreReportError::HostNotActive))?;
     let previous_latest: Option<String> = current.try_get("latest_report_id")?;
     let previous_collected: Option<i64> = current.try_get("latest_collected_at")?;
     let identity_changed: bool = current.try_get("identity_changed")?;
+    let credential_active: bool = current.try_get("credential_active")?;
+    if authenticated_token_hash.is_some() && !credential_active {
+        return Err(anyhow::Error::new(StoreReportError::CredentialNotActive));
+    }
 
     // 这份报文是否代表主机的"当前状态"。
     //

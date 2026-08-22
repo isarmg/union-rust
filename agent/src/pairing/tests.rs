@@ -958,6 +958,7 @@ mod tests {
         for state in states {
             persist_state(&config, &state).unwrap();
             assert!(existing_reporter_for_run(&config).unwrap().is_some());
+            assert!(has_current_authorized_identity(&config).unwrap());
         }
 
         persist_state(
@@ -972,7 +973,29 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(existing_reporter_for_run(&config).unwrap().is_none());
+        assert!(
+            existing_reporter_for_run(&config).unwrap().is_some(),
+            "a denied re-pair must not discard the still-authorized old credential"
+        );
+        assert!(has_current_authorized_identity(&config).unwrap());
+
+        persist_state(
+            &config,
+            &StoredPairingState::Expired {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                request_id,
+                activation_url: "https://unionc.example/agent/activate/test".into(),
+                report_endpoint: config.endpoint.clone(),
+                completed_at: Utc::now(),
+            },
+        )
+        .unwrap();
+        assert!(
+            existing_reporter_for_run(&config).unwrap().is_some(),
+            "an expired re-pair must not discard the still-authorized old credential"
+        );
+        assert!(has_current_authorized_identity(&config).unwrap());
 
         fs::remove_file(directory.join(PAIRING_STATE_FILE)).unwrap();
         assert!(

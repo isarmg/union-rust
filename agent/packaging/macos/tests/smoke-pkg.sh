@@ -12,8 +12,17 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repository_root=$(cd -- "$script_dir/../../../.." && pwd)
 package=${1:-}
 if [[ -z $package ]]; then
-  package=$(find "$repository_root/dist" -maxdepth 1 \
-    -name 'unionc-agent-*.pkg' -print -quit)
+  packages=()
+  while IFS= read -r -d '' candidate; do
+    packages+=("$candidate")
+  done < <(find "$repository_root/dist" -maxdepth 1 -type f \
+    -name 'unionc-agent-*.pkg' -print0)
+  if (( ${#packages[@]} != 1 )); then
+    echo "expected exactly one UnionC Agent pkg in $repository_root/dist; found ${#packages[@]}" >&2
+    printf '  %s\n' "${packages[@]}" >&2
+    exit 1
+  fi
+  package=${packages[0]}
 fi
 [[ -n $package && -f $package ]]
 

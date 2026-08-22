@@ -25,6 +25,8 @@ pub fn has_current_authorized_identity(config: &AgentConfig) -> anyhow::Result<b
                 | StoredPairingState::Pending { .. }
                 | StoredPairingState::Activating { .. }
                 | StoredPairingState::Active { .. }
+                | StoredPairingState::Denied { .. }
+                | StoredPairingState::Expired { .. }
         )
     ))
 }
@@ -44,9 +46,12 @@ pub fn existing_reporter_for_run(config: &AgentConfig) -> anyhow::Result<Option<
             finish_activating_unlocked(config, activating)?;
             Ok(None)
         }
-        Some(StoredPairingState::Creating { .. } | StoredPairingState::Pending { .. }) => {
-            Reporter::for_existing_credential(config)
-        }
+        Some(
+            StoredPairingState::Creating { .. }
+            | StoredPairingState::Pending { .. }
+            | StoredPairingState::Denied { .. }
+            | StoredPairingState::Expired { .. },
+        ) => Reporter::for_existing_credential(config),
         _ => Ok(None),
     }
 }

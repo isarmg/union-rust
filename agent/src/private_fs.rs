@@ -8,6 +8,9 @@ use uuid::Uuid;
 
 use crate::atomic_file;
 
+const ATOMIC_TEMPORARY_PREFIX: &str = ".private-";
+const ATOMIC_TEMPORARY_SUFFIX: &str = ".tmp";
+
 /// Ownership to apply to a same-directory temporary file before publication.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum OwnerPolicy<'a> {
@@ -39,7 +42,10 @@ pub(crate) fn write_atomic(target: &Path, bytes: &[u8], owner: OwnerPolicy<'_>) 
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "target has no parent"))?;
     fs::create_dir_all(parent)?;
-    let temporary = parent.join(format!(".private-{}.tmp", Uuid::new_v4()));
+    let temporary = parent.join(format!(
+        "{ATOMIC_TEMPORARY_PREFIX}{}{ATOMIC_TEMPORARY_SUFFIX}",
+        Uuid::new_v4()
+    ));
     let result = (|| {
         let mut options = fs::OpenOptions::new();
         options.write(true).create_new(true);
@@ -49,6 +55,10 @@ pub(crate) fn write_atomic(target: &Path, bytes: &[u8], owner: OwnerPolicy<'_>) 
             options.mode(0o600);
         }
         let mut file = options.open(&temporary)?;
+        // A cleanup pass may run in another Agent process. Holding an advisory
+        // lock lets it distinguish this live write from a file abandoned by a
+        // process that died before the atomic rename.
+        file.lock()?;
         match owner {
             OwnerPolicy::Parent(directory) => adopt_parent_owner(&file, directory)?,
             OwnerPolicy::PreserveTarget => preserve_target_metadata(&file, target)?,
@@ -62,6 +72,47 @@ pub(crate) fn write_atomic(target: &Path, bytes: &[u8], owner: OwnerPolicy<'_>) 
         let _ = fs::remove_file(&temporary);
     }
     result
+}
+
+/// Remove temporary atomic-write files whose writer no longer owns the file
+/// lock. A crash cannot execute `write_atomic`'s normal error cleanup, so a
+/// bounded directory such as the report spool must reclaim those files later.
+pub(crate) fn cleanup_atomic_temporaries(directory: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() || !is_atomic_temporary(&entry.file_name()) {
+            continue;
+        }
+        let path = entry.path();
+        let file = match fs::OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        match file.try_lock() {
+            Ok(()) => match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            },
+            Err(fs::TryLockError::WouldBlock) => {}
+            Err(fs::TryLockError::Error(error)) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn is_atomic_temporary(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    let Some(uuid) = name
+        .strip_prefix(ATOMIC_TEMPORARY_PREFIX)
+        .and_then(|name| name.strip_suffix(ATOMIC_TEMPORARY_SUFFIX))
+    else {
+        return false;
+    };
+    Uuid::parse_str(uuid).is_ok_and(|parsed| parsed.to_string() == uuid)
 }
 
 #[cfg(unix)]
@@ -142,6 +193,40 @@ mod tests {
                 .to_string_lossy()
                 .ends_with(".tmp")
         }));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn cleanup_only_removes_abandoned_atomic_writes() {
+        let directory = temp_dir();
+        ensure_private_directory(&directory).unwrap();
+        let temporary = directory.join(format!(
+            "{ATOMIC_TEMPORARY_PREFIX}{}{ATOMIC_TEMPORARY_SUFFIX}",
+            Uuid::new_v4()
+        ));
+        let mut writer = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .unwrap();
+        writer.lock().unwrap();
+        writer.write_all(b"in progress").unwrap();
+        fs::write(directory.join(".private-not-a-uuid.tmp"), b"unrelated").unwrap();
+
+        cleanup_atomic_temporaries(&directory).unwrap();
+        assert!(
+            temporary.exists(),
+            "a live atomic write must not be removed"
+        );
+
+        drop(writer);
+        cleanup_atomic_temporaries(&directory).unwrap();
+        assert!(
+            !temporary.exists(),
+            "an abandoned atomic write must be removed"
+        );
+        assert!(directory.join(".private-not-a-uuid.tmp").exists());
         fs::remove_dir_all(directory).unwrap();
     }
 

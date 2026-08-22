@@ -17,7 +17,11 @@ function makeStaticTreeReadable(path) {
   if (stat.isFile()) chmodSync(path, 0o644);
 }
 
-export function publishStatic(appRoot = defaultAppRoot, makeReadable = makeStaticTreeReadable) {
+export function publishStatic(
+  appRoot = defaultAppRoot,
+  makeReadable = makeStaticTreeReadable,
+  removeCommittedPrevious = (path) => rmSync(path, { recursive: true, force: true }),
+) {
   const next = resolve(appRoot, "dist.next");
   const current = resolve(appRoot, "dist");
   const previous = resolve(appRoot, "dist.previous");
@@ -28,7 +32,6 @@ export function publishStatic(appRoot = defaultAppRoot, makeReadable = makeStati
   try {
     renameSync(next, current);
     makeReadable(current);
-    rmSync(previous, { recursive: true, force: true });
   } catch (error) {
     // rename 已成功而 chmod 失败时，current 是一棵不完整的新版本。先删除它才能
     // 把 previous 原子恢复回来；仅在 current 不存在时回滚会把坏版本留在线上。
@@ -38,6 +41,10 @@ export function publishStatic(appRoot = defaultAppRoot, makeReadable = makeStati
     }
     throw error;
   }
+
+  // 新目录已经换入且权限已归一化，至此发布已经提交。旧备份的清理即使失败，
+  // 也只能报告错误并留给后续清理，绝不能删除已提交的新版本再恢复残缺备份。
+  if (existsSync(previous)) removeCommittedPrevious(previous);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -14,9 +14,11 @@ pub struct Spool {
     directory: PathBuf,
     max_bytes: u64,
     /// Sampling enqueues/evicts while the delivery worker acknowledges files.
-    /// Serialize those short filesystem mutations so quota accounting cannot
-    /// subtract a concurrently removed file as zero and evict an extra report.
+    /// The mutex serializes clones in one process; the file lock extends the
+    /// same short critical section to another Agent process that opened this
+    /// state directory independently.
     mutations: Arc<Mutex<()>>,
+    mutation_lock_file: Arc<fs::File>,
 }
 
 #[derive(Debug)]
@@ -38,11 +40,21 @@ impl Spool {
             let directory_handle = fs::File::open(&directory)?;
             private_fs::adopt_parent_owner(&directory_handle, state_dir)?;
         }
-        Ok(Self {
+        let mutation_lock_file = open_mutation_lock(&directory)?;
+        let spool = Self {
             directory,
             max_bytes,
             mutations: Arc::new(Mutex::new(())),
-        })
+            mutation_lock_file: Arc::new(mutation_lock_file),
+        };
+        // A process killed between fsync and rename can leave a private atomic
+        // temporary behind. Reclaim it and enforce the budget before accepting
+        // new reports, including after a restart with no immediate sampling.
+        {
+            let _guard = spool.mutation_guard()?;
+            spool.enforce_limit()?;
+        }
+        Ok(spool)
     }
 
     pub fn pending_count(&self) -> io::Result<u64> {
@@ -152,24 +164,40 @@ impl Spool {
     /// 因此两类文件共用同一份预算，且优先淘汰隔离文件：它们对补传没有价值，只在排查
     /// 时有用，保留最近的少量样本即可。
     fn enforce_limit(&self) -> io::Result<()> {
-        let quarantined = self.paths(INVALID)?;
-        let pending = self.paths(JSON)?;
+        private_fs::cleanup_atomic_temporaries(&self.directory)?;
+        let quarantined = self
+            .paths(INVALID)?
+            .into_iter()
+            .map(|path| {
+                let size = file_size(&path);
+                (path, size)
+            })
+            .collect::<Vec<_>>();
+        let pending = self
+            .paths(JSON)?
+            .into_iter()
+            .map(|path| {
+                let size = file_size(&path);
+                (path, size)
+            })
+            .collect::<Vec<_>>();
         let mut total = [quarantined.as_slice(), pending.as_slice()]
             .concat()
             .iter()
-            .fold(0_u64, |total, path| total.saturating_add(file_size(path)));
+            .fold(0_u64, |total, (_, size)| total.saturating_add(*size));
 
         // 淘汰顺序：先隔离文件（最老的先删），再是最老的待发报文。
-        for path in quarantined.iter().chain(pending.iter()) {
+        for (path, size) in quarantined.iter().chain(pending.iter()) {
             if total <= self.max_bytes {
                 break;
             }
-            let size = file_size(path);
             match fs::remove_file(path) {
-                Ok(()) => total = total.saturating_sub(size),
-                // 并发清理下文件可能已经不在了，不算失败。
+                Ok(()) => total = total.saturating_sub(*size),
+                // An external cleanup may have removed a file after the
+                // snapshot. Subtract its snapshotted size, not a fresh zero,
+                // so that race cannot evict one additional valid report.
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    total = total.saturating_sub(size)
+                    total = total.saturating_sub(*size)
                 }
                 Err(error) => return Err(error),
             }
@@ -177,11 +205,42 @@ impl Spool {
         Ok(())
     }
 
-    fn mutation_guard(&self) -> io::Result<MutexGuard<'_, ()>> {
-        self.mutations
+    fn mutation_guard(&self) -> io::Result<SpoolMutationGuard<'_>> {
+        let local = self
+            .mutations
             .lock()
-            .map_err(|_| io::Error::other("spool filesystem mutation lock was poisoned"))
+            .map_err(|_| io::Error::other("spool filesystem mutation lock was poisoned"))?;
+        self.mutation_lock_file.lock()?;
+        Ok(SpoolMutationGuard {
+            _local: local,
+            file: &self.mutation_lock_file,
+        })
     }
+}
+
+struct SpoolMutationGuard<'a> {
+    _local: MutexGuard<'a, ()>,
+    file: &'a fs::File,
+}
+
+impl Drop for SpoolMutationGuard<'_> {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+fn open_mutation_lock(directory: &Path) -> io::Result<fs::File> {
+    let path = directory.join(".spool.lock");
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    private_fs::adopt_parent_owner(&file, directory)?;
+    Ok(file)
 }
 
 /// 待发报文；按文件名（时间戳前缀）排序即为投递顺序。
@@ -259,7 +318,42 @@ mod tests {
         let pending = spool.oldest().unwrap().unwrap();
         spool.acknowledge(pending).unwrap();
         assert_eq!(spool.pending_count().unwrap(), 0);
+        drop(spool);
         fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn opening_spool_reclaims_abandoned_atomic_writes() {
+        let directory = temp_dir();
+        let spool_directory = directory.join("spool");
+        fs::create_dir_all(&spool_directory).unwrap();
+        let abandoned = spool_directory.join(format!(".private-{}.tmp", Uuid::new_v4()));
+        fs::write(&abandoned, vec![b'x'; 4096]).unwrap();
+
+        let spool = Spool::open(&directory, 1024 * 1024).unwrap();
+        assert!(!abandoned.exists());
+        drop(spool);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn independently_opened_spools_share_a_filesystem_mutation_lock() {
+        let directory = temp_dir();
+        let first = Spool::open(&directory, 1024 * 1024).unwrap();
+        let second = Spool::open(&directory, 1024 * 1024).unwrap();
+
+        let first_guard = first.mutation_guard().unwrap();
+        assert!(matches!(
+            second.mutation_lock_file.try_lock(),
+            Err(fs::TryLockError::WouldBlock)
+        ));
+        drop(first_guard);
+
+        second.mutation_lock_file.try_lock().unwrap();
+        second.mutation_lock_file.unlock().unwrap();
+        drop(second);
+        drop(first);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     /// 损坏的报文会被隔离成 `.invalid`。回归：隔离文件必须计入容量预算，
@@ -301,6 +395,7 @@ mod tests {
         // 待发报文本身必须活下来——隔离文件先被淘汰。
         assert_eq!(spool.pending_count().unwrap(), 1);
 
+        drop(spool);
         fs::remove_dir_all(directory).unwrap();
     }
 }
