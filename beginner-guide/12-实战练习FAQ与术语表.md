@@ -203,16 +203,18 @@ schema_version 只代表顶层报告 schema；同一 schema 编号内的校验�
 ### Q9：收到 401 后 Agent 为什么不自动注册新身份？
 
 自动换身份会绕过管理员撤销或造成重复主机。必须为同一实例创建新邀请并完成明确重新配对。
-常驻 `run` 得到 401 后会标记 `reauth_required`；`once` / `doctor --delivery` 则只把可重试
+常驻 `run` 得到 UnionC 的 401 + `unauthorized` 稳定机器码后会标记 `reauth_required`；未知或
+非 JSON 的 401 可能来自代理/WAF，仍会保留队首并退避重试。`once` / `doctor --delivery` 则只把可重试
 报告入队并失败，不修改授权状态。
 
 ### Q10：403 与 421 有何区别？
 
-403 表示主机生命周期已撤销，或一份有效 credential 与报告 `host_id` 绑定不匹配；未知/失效
-credential，以及主机仍 active 但已被重配替换的 credential，则是 401。当前常驻 `run`
-收到两者之一后写 `reauth_required`、停止投递并继续采样到有界 spool；重启后会在采样前因
+403 + `agent_revoked` 表示主机生命周期已撤销；未知/失效 credential，以及主机仍 active
+但已被重配替换的 credential，则由 401 + `unauthorized` 机器码表示。当前常驻 `run`
+收到这两种稳定机器码后写 `reauth_required`、停止投递并继续采样到有界 spool；重启后会在采样前因
 没有 authorized reporter 而退出并等待重新配对。一次性投递命令只入队并失败。421 是请求
-没有走预期反代，修复部署后可原样重试。
+没有走预期反代，修复部署后可原样重试。有效 credential 与报告 `host_id` 不匹配时返回
+403 + `forbidden`，Agent 只丢弃这一份无法匹配的旧报告；未知 403 则保持可重试。
 
 ### Q11：为什么登录后写请求还需要 CSRF？
 

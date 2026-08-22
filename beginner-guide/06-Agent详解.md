@@ -181,14 +181,16 @@ spool 使用短时本地 mutex 加目录内文件锁序列化 enqueue/淘汰/ack
 
 | 类别 | 典型状态 | 需要改变 | 行为 |
 |---|---|---|---|
-| Permanent | 400/409/413/422 | 报告内容 | 记录并丢弃队首 |
-| Unauthorized | 401 | credential 未知/失效，或主机仍 active 但该 credential 已被重配替换/撤销 | 当前常驻 `run` 持久写 `reauth_required`、停止投递并继续采样到有界 spool |
-| Revoked | 403 | 主机生命周期已撤销，或有效 credential 与报告 `host_id` 绑定不匹配 | 当前常驻 `run` 持久写 `reauth_required`、停止投递并继续采样到有界 spool |
-| Transient | 网络、421、429、5xx 及未归为永久的其他响应 | 时间或部署状态 | 保留并退避重试 |
+| Permanent | 400/409/413/422，或 403 + `forbidden` | 报告内容，或报告 `host_id` 与有效 credential 不匹配 | 记录并丢弃这一个队首，继续 FIFO |
+| Unauthorized | 401 + `unauthorized` 机器码 | credential 未知/失效，或主机仍 active 但该 credential 已被重配替换/撤销 | 当前常驻 `run` 持久写 `reauth_required`、停止投递并继续采样到有界 spool；未知或非 JSON 的 401 视为可重试代理故障 |
+| Revoked | 403 + `agent_revoked` 机器码 | 主机生命周期已撤销 | 当前常驻 `run` 持久写 `reauth_required`、停止投递并继续采样到有界 spool |
+| Transient | 网络、未知 401/403、421、429、5xx 及未归为永久的其他响应 | 时间或部署状态 | 保留并退避重试 |
 
 将永久失败留在 FIFO 队首会永远挡住所有后续有效报告，因此必须出队。将暂时失败误删则会造成数据丢失，因此分类与 Server 状态码语义必须同步测试。
 
-这张表的 401/403 状态落盘行为专指当前正在运行的 delivery worker。Web 撤销不会主动推送
+这张表中 Unauthorized/Revoked 的稳定机器码落盘行为专指当前正在运行的 delivery worker。HTTP 状态码本身
+不足以触发不可逆的凭据状态变化；例如代理或 WAF 返回 HTML 401 时，Agent 保留队首并退避重试。
+Web 撤销不会主动推送
 到本机；Agent 在下一次报告被拒时才得知。`once` / `doctor --delivery` 只把当前可重试
 报告入队并返回错误，不写 `reauth_required`。常驻进程写入该状态后仍能继续采样；但一旦
 重启，`run` 会因没有 authorized reporter 而在采样循环前退出，由服务管理器重试，直到

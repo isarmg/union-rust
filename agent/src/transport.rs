@@ -127,11 +127,7 @@ impl Reporter {
             .await
             .map_err(anyhow::Error::msg)?;
         // OTLP 是可选的次要输出，调用方只做告警，不区分永久/暂时失败。
-        Ok(ensure_success(
-            status,
-            String::from_utf8_lossy(&body).into_owned(),
-            "OTLP",
-        )?)
+        Ok(ensure_success(status, &body, "OTLP")?)
     }
 
     #[cfg(not(feature = "otlp"))]
@@ -263,7 +259,7 @@ pub(crate) fn persist_private_value(path: &Path, token: &str, kind: &str) -> any
 /// | 变体 | 需要改变的东西 | 处置 |
 /// |---|---|---|
 /// | `Permanent`  | 报文内容本身（改不了） | 丢弃 |
-/// | `Unauthorized` | 凭据 | 需要浏览器重新授权 |
+/// | `Unauthorized` | 服务端稳定 `unauthorized` 机器码确认凭据失效 | 需要浏览器重新授权 |
 /// | `Transient`  | 只需等待 | 退避重试 |
 #[derive(Debug, thiserror::Error)]
 pub enum SendError {
@@ -271,8 +267,9 @@ pub enum SendError {
     /// 继续入队只会让 spool 被必失败的数据占满并挤掉后续有效报文。
     #[error("{0}")]
     Permanent(String),
-    /// 凭据不被接受（401）。主机进入 `reauth_required`，只能通过
-    /// 当前 v2 浏览器配对流程恢复；Agent 不会自动生成或替换凭据。
+    /// UnionC 以 401 和稳定 `unauthorized` 机器码确认凭据不被接受。主机进入
+    /// `reauth_required`，只能通过当前 v2 浏览器配对流程恢复；Agent 不会自动生成
+    /// 或替换凭据。代理/WAF 生成的未知 401 不得使用此变体。
     #[error("{0}")]
     Unauthorized(String),
     /// The server returned its stable `agent_revoked` error code. Replacing the
@@ -312,7 +309,7 @@ fn validate_unionc_ack(
                 "UnionC returned unexpected HTTP {status}; report acknowledgements require HTTP 202 Accepted"
             )));
         }
-        return ensure_success(status, String::from_utf8_lossy(body).into_owned(), "UnionC");
+        return ensure_success(status, body, "UnionC");
     }
     if !content_type.is_some_and(is_application_json) {
         return Err(SendError::Transient(format!(
@@ -341,14 +338,15 @@ fn is_application_json(value: &str) -> bool {
         .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"))
 }
 
-fn ensure_success(status: StatusCode, body: String, target: &str) -> Result<(), SendError> {
+fn ensure_success(status: StatusCode, body: &[u8], target: &str) -> Result<(), SendError> {
     if status.is_success() {
         return Ok(());
     }
-    let error_code = serde_json::from_str::<ServerErrorCode>(&body)
+    let error_code = std::str::from_utf8(body)
         .ok()
+        .and_then(|body| serde_json::from_str::<ServerErrorCode>(body).ok())
         .map(|error| error.code);
-    let detail: String = body.chars().take(512).collect();
+    let detail: String = String::from_utf8_lossy(body).chars().take(512).collect();
     let message = format!("{target} rejected telemetry with HTTP {status}: {detail}");
     // 404/408/421/429 与 5xx 留作可重试：服务端重启、反代修复、限流退避之后，
     // 同一份报文仍可能被接受。
@@ -363,7 +361,13 @@ fn ensure_success(status: StatusCode, body: String, target: &str) -> Result<(), 
             "{message}（这是部署配置问题，不是凭据失效：请检查反向代理是否透传 \
              X-Forwarded-Proto 与 X-Forwarded-For）"
         ))),
-        StatusCode::UNAUTHORIZED => Err(SendError::Unauthorized(message)),
+        StatusCode::UNAUTHORIZED => match error_code.as_deref() {
+            Some("unauthorized") => Err(SendError::Unauthorized(message)),
+            // A reverse proxy, WAF, or temporary upstream auth layer may generate its own 401.
+            // Only UnionC's stable machine code proves that the host credential is invalid;
+            // otherwise keep the report queued and retry after the deployment recovers.
+            _ => Err(SendError::Transient(message)),
+        },
         StatusCode::FORBIDDEN => match error_code.as_deref() {
             Some("agent_revoked") => Err(SendError::Revoked(format!(
                 "{message}; this credential will not be replaced automatically—run \
@@ -498,7 +502,7 @@ mod tests {
     fn report_id_conflicts_are_permanent() {
         let error = ensure_success(
             StatusCode::CONFLICT,
-            "report_id already belongs to another host".to_string(),
+            b"report_id already belongs to another host",
             "UnionC",
         )
         .expect_err("409 cannot become successful by retrying the same report");
@@ -617,7 +621,7 @@ mod tests {
     fn explicit_revocation_requires_browser_reauthorization() {
         let error = ensure_success(
             StatusCode::FORBIDDEN,
-            r#"{"code":"agent_revoked","message":"revoked"}"#.into(),
+            br#"{"code":"agent_revoked","message":"revoked"}"#,
             "UnionC",
         )
         .expect_err("the stable revocation code must require browser reauthorization");
@@ -626,10 +630,38 @@ mod tests {
     }
 
     #[test]
+    fn stable_unauthorized_code_requires_browser_reauthorization() {
+        let error = ensure_success(
+            StatusCode::UNAUTHORIZED,
+            br#"{"code":"unauthorized","message":"unauthorized"}"#,
+            "UnionC",
+        )
+        .expect_err("UnionC's stable unauthorized code must require browser reauthorization");
+        assert!(error.is_unauthorized());
+    }
+
+    #[test]
+    fn unrecognized_unauthorized_response_keeps_the_credential_retryable() {
+        let responses: &[&[u8]] = &[
+            b"<html><body>temporary proxy authentication</body></html>",
+            br#"{"code":"upstream_auth_required","message":"try again"}"#,
+            br#"{"message":"missing machine code"}"#,
+            br#"{"code":"Unauthorized","message":"machine codes are case-sensitive"}"#,
+            b"{\"code\":\"unauthorized\",\"message\":\"invalid UTF-8: \xff\"}",
+        ];
+        for body in responses {
+            let error = ensure_success(StatusCode::UNAUTHORIZED, body, "UnionC")
+                .expect_err("an unknown 401 must not be accepted");
+            assert!(matches!(error, SendError::Transient(_)));
+            assert!(!error.is_unauthorized());
+        }
+    }
+
+    #[test]
     fn forbidden_host_identity_mismatch_is_permanent_for_that_report() {
         let error = ensure_success(
             StatusCode::FORBIDDEN,
-            r#"{"code":"forbidden","message":"token does not belong to host"}"#.into(),
+            br#"{"code":"forbidden","message":"token does not belong to host"}"#,
             "UnionC",
         )
         .expect_err("a queued report for another host can never match the current credential");
@@ -641,7 +673,7 @@ mod tests {
     fn unrecognized_forbidden_response_does_not_revoke_the_credential() {
         let error = ensure_success(
             StatusCode::FORBIDDEN,
-            "temporary policy rejection".into(),
+            b"temporary policy rejection",
             "UnionC",
         )
         .expect_err("an unknown 403 must not be accepted");
