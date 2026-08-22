@@ -10,7 +10,7 @@ use anyhow::{Context, bail};
 use chrono::{TimeDelta, Utc};
 use reqwest::{StatusCode, header};
 use unionc_protocol::{
-    ActivateAgentRequest as ActivatePairingRequest,
+    ActivateAgentRequestRef as ActivatePairingRequest,
     ActivateAgentResponse as ActivatePairingResponse, ActivatePairingStatus,
     AgentPairingRequest as CreatePairingRequest, AgentPairingResponse as CreatePairingResponse,
     AgentPairingStatusResponse as PairingStatusResponse, PairingStatus,

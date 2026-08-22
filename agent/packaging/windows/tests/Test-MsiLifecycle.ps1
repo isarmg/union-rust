@@ -234,10 +234,14 @@ function Start-TrayForRemovalSmoke {
     return $process
 }
 
-function Assert-ArpVersion([string]$ExpectedVersion) {
+function Get-UnionCAgentArpEntries {
     $uninstallRoot = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
-    $entries = @(Get-ChildItem -LiteralPath $uninstallRoot | Get-ItemProperty |
+    return @(Get-ChildItem -LiteralPath $uninstallRoot | Get-ItemProperty |
         Where-Object DisplayName -eq "UnionC Agent")
+}
+
+function Assert-ArpVersion([string]$ExpectedVersion) {
+    $entries = @(Get-UnionCAgentArpEntries)
     if ($entries.Count -ne 1 -or $entries[0].DisplayVersion -ne $ExpectedVersion) {
         throw "Apps & Features does not contain exactly UnionC Agent $ExpectedVersion."
     }
@@ -252,12 +256,11 @@ function Assert-AgentCompletelyAbsent {
         (Test-Path -LiteralPath $trayShortcut) -or
         (Get-ItemProperty -LiteralPath $trayRunKey -Name $trayRunName `
             -ErrorAction SilentlyContinue) -or
-        (Get-Service -Name "UnionCAgent" -ErrorAction SilentlyContinue)) {
+        (Get-Service -Name "UnionCAgent" -ErrorAction SilentlyContinue) -or
+        (Get-Process -Name "unionc-agent-tray" -ErrorAction SilentlyContinue)) {
         throw "Agent installation or a protected transaction artifact survived purge."
     }
-    $uninstallRoot = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
-    $entries = @(Get-ChildItem -LiteralPath $uninstallRoot | Get-ItemProperty |
-        Where-Object DisplayName -eq "UnionC Agent")
+    $entries = @(Get-UnionCAgentArpEntries)
     if ($entries.Count -ne 0) {
         throw "Apps & Features still contains UnionC Agent."
     }
@@ -315,12 +318,21 @@ function Assert-PreservedStateAcl([string]$RetiredServiceSid) {
     }
 }
 
-if ((Test-Path -LiteralPath $installedRoot) -or (Test-Path -LiteralPath $stateRoot) -or
+$existingArpEntries = @(Get-UnionCAgentArpEntries)
+$runningTrayProcesses = @(Get-Process -Name "unionc-agent-tray" `
+    -ErrorAction SilentlyContinue)
+if ((Test-Path -LiteralPath $installedRoot) -or
+    (Test-Path -LiteralPath $stateRoot) -or
+    (Test-Path -LiteralPath $installJournal) -or
+    (Test-Path -LiteralPath $uninstallJournal) -or
+    (Test-Path -LiteralPath $purgeQuarantine) -or
     (Test-Path -LiteralPath $trayShortcut) -or
     (Get-ItemProperty -LiteralPath $trayRunKey -Name $trayRunName `
         -ErrorAction SilentlyContinue) -or
-    (Get-Service -Name "UnionCAgent" -ErrorAction SilentlyContinue)) {
-    throw "The disposable runner is not clean enough for the Windows MSI lifecycle test."
+    (Get-Service -Name "UnionCAgent" -ErrorAction SilentlyContinue) -or
+    $existingArpEntries.Count -ne 0 -or $runningTrayProcesses.Count -ne 0) {
+    throw ("The disposable runner contains an existing UnionC Agent installation, " +
+        "MSI/Apps & Features registration, running tray process, or transaction artifact.")
 }
 
 $currentPackages = @(Get-ChildItem -LiteralPath $ArtifactDirectory -Filter "*.msi")

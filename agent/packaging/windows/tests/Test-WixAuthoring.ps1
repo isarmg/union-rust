@@ -531,8 +531,15 @@ $productVersionBindings = [regex]::Matches(
     $releaseText,
     '(?m)^\s+PRODUCT_VERSION:\s+\$\{\{\s+steps\.version\.outputs\.version\s+\}\}\s*$'
 )
-if ($productVersionBindings.Count -ne 3) {
-    throw "Expected the resolved MSI version to feed all three Windows build and lifecycle steps; found $($productVersionBindings.Count)."
+if ($productVersionBindings.Count -ne 2) {
+    throw "Expected the resolved MSI version to feed both Windows MSI build steps; found $($productVersionBindings.Count)."
+}
+$lifecycleVersionBindings = [regex]::Matches(
+    $releaseText,
+    '(?m)^\s+-ProductVersion "\$\{\{\s+steps\.version\.outputs\.version\s+\}\}"\s*$'
+)
+if ($lifecycleVersionBindings.Count -ne 1) {
+    throw "Expected the resolved MSI version to feed the Windows lifecycle test once; found $($lifecycleVersionBindings.Count)."
 }
 Assert-Contains $projectText "'^\d+\.\d+\.\d+$'" `
     "The build must enforce a strict three-field MSI version."

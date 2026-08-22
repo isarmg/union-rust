@@ -63,13 +63,14 @@ pub async fn activate_pending_with_code(
     let endpoint = activation_endpoint(&pairing_endpoint)?;
     let endpoint_display = endpoint.as_str().to_string();
     let client = build_activation_client(config)?;
+    let request_id_text = request_id.to_string();
     let response = client
         .post(endpoint)
         .header(header::ACCEPT, "application/json")
         .header(header::CACHE_CONTROL, "no-store")
         .json(&ActivatePairingRequest {
-            request_id: request_id.to_string(),
-            activation_code: activation_code.to_string(),
+            request_id: &request_id_text,
+            activation_code,
         })
         .send()
         .await

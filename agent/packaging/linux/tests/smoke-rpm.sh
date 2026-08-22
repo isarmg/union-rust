@@ -10,8 +10,19 @@ artifact_dir=$(cd -- "$artifact_dir" && pwd)
 docker run --rm \
   --volume "$artifact_dir:/artifacts:ro" \
   fedora:44 /bin/bash -euxo pipefail -c '
-    package="$(find /artifacts -maxdepth 1 -name "unionc-agent-*.x86_64.rpm" -print -quit)"
-    test -n "$package"
+    packages=()
+    while IFS= read -r -d "" candidate; do
+      packages+=("$candidate")
+    done < <(find /artifacts -maxdepth 1 -type f \
+      -name "unionc-agent-*.x86_64.rpm" -print0)
+    if (( ${#packages[@]} != 1 )); then
+      echo "error: expected exactly one unionc-agent x86_64 RPM in /artifacts, found ${#packages[@]}" >&2
+      if (( ${#packages[@]} > 0 )); then
+        printf "  %s\n" "${packages[@]}" >&2
+      fi
+      exit 1
+    fi
+    package=${packages[0]}
     dnf install -y "$package"
     test -x /usr/bin/unionc-agent
     touch /var/lib/unionc-agent/release-lifecycle-marker

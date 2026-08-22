@@ -4,7 +4,7 @@
 
 **请不要通过公开 issue 报告安全漏洞。**
 
-请通过 GitHub 的 [Private vulnerability reporting](https://github.com/sarmg/unionc/security/advisories/new)
+请通过 GitHub 的 [Private vulnerability reporting](https://github.com/isarmg/union-rust/security/advisories/new)
 提交。若该渠道不可用，请在 issue 中仅说明"存在安全问题，请提供联系方式"，不要包含任何细节。
 
 报告请尽量包含：受影响的组件（server / agent / web）、版本或 commit、复现步骤、

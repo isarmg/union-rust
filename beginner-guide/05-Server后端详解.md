@@ -150,7 +150,7 @@ Axum 的 `.layer()` 阅读顺序容易让初学者困惑：后添加的外层会
 
 ## 7. 跟踪报告 handler
 
-`monitoring/http.rs::report_metrics` 是理解后端的最佳样本。其逻辑顺序大致为：
+`server/src/monitoring/http/mod.rs::report_metrics` 是理解后端的最佳样本。其逻辑顺序大致为：
 
 1. 验证生产代理链路；
 2. 取得来源 IP，消耗认证前限流额度；
@@ -178,9 +178,9 @@ Axum 的 `.layer()` 阅读顺序容易让初学者困惑：后添加的外层会
 
 ### 8.2 `monitoring`
 
-- `model.rs`：DTO、校验、指标摘要；
-- `http.rs`：管理员邀请、公开配对、报告、查询、撤销；
-- `store.rs`：配对事务、credential、报告幂等、历史和保留期。
+- `model/`：DTO、校验、指标摘要，入口是 `model/mod.rs`；
+- `http/`：管理员邀请、公开配对、报告、查询、撤销，入口是 `http/mod.rs`；
+- `store/`：配对事务、credential、报告幂等、历史和保留期，入口是 `store/mod.rs`。
 
 ### 8.3 `system`
 

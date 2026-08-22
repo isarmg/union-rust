@@ -81,6 +81,14 @@ pub struct ActivateAgentRequest {
     pub activation_code: String,
 }
 
+/// Borrowed serialization view used by Agents so the one-time activation code
+/// is not copied into an additional heap allocation before transmission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ActivateAgentRequestRef<'a> {
+    pub request_id: &'a str,
+    pub activation_code: &'a str,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActivateAgentResponse {
@@ -174,5 +182,24 @@ mod tests {
             "legacy_status": "ok"
         });
         assert!(serde_json::from_value::<AgentReportAck>(value).is_err());
+    }
+
+    #[test]
+    fn borrowed_activation_request_matches_owned_wire_shape() {
+        let request_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        let activation_code = "uci_example";
+        let owned = ActivateAgentRequest {
+            request_id: request_id.into(),
+            activation_code: activation_code.into(),
+        };
+        let borrowed = ActivateAgentRequestRef {
+            request_id,
+            activation_code,
+        };
+
+        assert_eq!(
+            serde_json::to_value(owned).unwrap(),
+            serde_json::to_value(borrowed).unwrap()
+        );
     }
 }

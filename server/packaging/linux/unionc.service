@@ -1,6 +1,6 @@
 [Unit]
 Description=UnionC console backend
-Documentation=https://github.com/sarmg/unionc
+Documentation=https://github.com/isarmg/union-rust
 After=network-online.target
 Wants=network-online.target
 

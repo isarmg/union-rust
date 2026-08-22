@@ -528,6 +528,26 @@ impl AgentConfig {
         {
             bail!("configure only one TLS client identity format");
         }
+        if validates_delivery
+            && self.tls_identity_password.is_some()
+            && self.tls_identity_pkcs12.is_none()
+        {
+            bail!("tls_identity_password requires tls_identity_pkcs12");
+        }
+        #[cfg(all(not(windows), not(target_os = "macos")))]
+        if validates_delivery && self.tls_identity_pkcs12.is_some() {
+            bail!(
+                "tls_identity_pkcs12 is supported only on Windows and macOS; use \
+                 tls_identity_pem on this platform"
+            );
+        }
+        #[cfg(any(windows, target_os = "macos"))]
+        if validates_delivery && self.tls_identity_pem.is_some() {
+            bail!(
+                "the native TLS backend requires tls_identity_pkcs12 instead of \
+                 tls_identity_pem"
+            );
+        }
         if let Some(name) = &self.host_name
             && (name.len() > 255 || name.trim().is_empty() || name.chars().any(char::is_control))
         {
@@ -865,6 +885,44 @@ mod tests {
             ..AgentConfig::default()
         };
         assert!(config.validate(AgentCommand::Doctor).is_err());
+    }
+
+    #[test]
+    fn tls_identity_password_requires_a_pkcs12_identity() {
+        let config = AgentConfig {
+            tls_identity_password: Some("secret".into()),
+            ..AgentConfig::default()
+        };
+        let error = config
+            .validate(AgentCommand::Run)
+            .expect_err("an otherwise unused TLS identity password must not be ignored");
+        assert!(error.to_string().contains("tls_identity_pkcs12"));
+    }
+
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    #[test]
+    fn non_native_tls_backend_rejects_pkcs12_identity() {
+        let config = AgentConfig {
+            tls_identity_pkcs12: Some("client-identity.p12".into()),
+            ..AgentConfig::default()
+        };
+        let error = config
+            .validate(AgentCommand::Run)
+            .expect_err("an unsupported PKCS#12 identity must not be silently ignored");
+        assert!(error.to_string().contains("tls_identity_pem"));
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn native_tls_backend_rejects_pem_identity() {
+        let config = AgentConfig {
+            tls_identity_pem: Some("client-identity.pem".into()),
+            ..AgentConfig::default()
+        };
+        let error = config
+            .validate(AgentCommand::Run)
+            .expect_err("an unsupported PEM identity must not reach request construction");
+        assert!(error.to_string().contains("tls_identity_pkcs12"));
     }
 
     #[test]

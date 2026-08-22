@@ -161,9 +161,9 @@ server/src/
 ├─ error.rs         统一错误类型与 HTTP 映射
 │
 ├─ monitoring/      只读主机监控
-│  ├─ model.rs        报文类型、校验、指标摘要计算
-│  ├─ http.rs         Agent 配对/上报 + 控制台查询/撤销
-│  └─ store.rs        遥测持久化
+│  ├─ model/          报文类型、校验、指标摘要计算
+│  ├─ http/           Agent 配对/上报 + 控制台查询/撤销
+│  └─ store/          配对、遥测、主机和保留期持久化
 │
 ├─ sunshine/        Sunshine 主机管理
 │  ├─ model.rs        请求响应类型
@@ -195,8 +195,9 @@ server/src/
 └─ config/          运行配置模型与环境覆盖
 ```
 
-每个功能目录内部用同一组文件名，定位靠直觉而非记忆：`model.rs` 是类型与校验，
-`http.rs` 是 handler，`store.rs` 是持久化。
+体量较小的功能目录仍常用同一组文件名：`model.rs` 是类型与校验，
+`http.rs` 是 handler，`store.rs` 是持久化。`monitoring` 体量较大，已将这三类职责拆成
+`model/`、`http/` 和 `store/` 目录，各自由 `mod.rs` 作为模块入口。
 
 **后台任务**（均由 `startup.rs` 拉起）
 
@@ -225,7 +226,8 @@ Rust，跨三平台；Windows 另含独立 GUI 托盘和原生维护程序。
 
 | 模块 | 职责 |
 |---|---|
-| `main.rs` | 采集循环、投递决策、退避、浏览器重新授权、OTLP 队列 |
+| `main.rs` | 极薄的进程入口，转交给 `agent_app/` |
+| `agent_app/` | 命令与运行时编排：采集循环、投递、退避、配对衔接与 Windows Service host |
 | `config.rs` | 配置文件 + 环境变量 + 命令行；启动期契约校验 |
 | `collectors/` | 采样实现；平台差异由 `#[cfg]` 完全隔离 |
 | `collectors/linux_hwmon.rs` | Linux 温度（直读 hwmon，不依赖 sysinfo 的聚合） |
@@ -233,12 +235,14 @@ Rust，跨三平台；Windows 另含独立 GUI 托盘和原生维护程序。
 | `collectors/windows_gpu.rs` | Windows GPU（WDDM 性能计数器） |
 | `collectors/nvidia.rs` | NVIDIA GPU（NVML），可通过 feature 关闭 |
 | `spool.rs` | 断线续传队列，原子落盘 + 容量配额 |
-| `pairing.rs` | 可恢复的浏览器配对状态机、本地 secret 与轮询 |
+| `pairing/` | 可恢复的浏览器配对状态机、本地 secret 与轮询 |
 | `tray_support.rs` | Windows 托盘共用的参数、URL、HTTP 与转义校验；跨平台单测覆盖 |
 | `transport.rs` | ACK 校验、当前 `/api/agent/v1/report` 上报、OTLP 导出、TLS 客户端构建 |
 | `otlp.rs` | OTLP Metrics protobuf 子集（手写，字段编号对齐官方 proto） |
-| `bin/unionc-agent-tray.rs` | Windows 通知区、本机随机回环配置页、UAC 配对与 SCM 服务控制 |
-| `bin/unionc-agent-maintenance.rs` | WiX MSI 的固定命令维护助手，执行当前安装校验、ACL、保留卸载与 purge |
+| `bin/unionc-agent-tray.rs` | Windows 托盘的极薄入口，实现位于 `windows/tray/` |
+| `windows/tray/` | Windows 通知区、本机随机回环配置页、UAC 配对与 SCM 服务控制 |
+| `bin/unionc-agent-maintenance.rs` | WiX MSI 维护助手的极薄入口，实现位于 `windows/maintenance/` |
+| `windows/maintenance/` | 执行当前安装校验、ACL、保留卸载与 purge |
 
 #### 3.2.1 共享线上协议 `protocol`
 

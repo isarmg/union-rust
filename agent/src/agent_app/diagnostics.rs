@@ -42,7 +42,7 @@ fn inspect_host_identity(config: &AgentConfig) -> HostInspection {
         Ok(value) => {
             let value = value.trim();
             match Uuid::parse_str(value) {
-                Ok(id) => HostInspection {
+                Ok(id) if id.to_string() == value => HostInspection {
                     id: Some(id.to_string()),
                     check: DiagnosticCheck::new(
                         "identity",
@@ -53,13 +53,16 @@ fn inspect_host_identity(config: &AgentConfig) -> HostInspection {
                         started,
                     ),
                 },
-                Err(_) => HostInspection {
+                _ => HostInspection {
                     id: None,
                     check: DiagnosticCheck::new(
                         "identity",
                         "error",
                         Some("identity_invalid"),
-                        format!("{} does not contain a valid UUID", path.display()),
+                        format!(
+                            "{} does not contain a canonical lowercase, hyphenated UUID",
+                            path.display()
+                        ),
                         Some("repair the state directory or pair this host again"),
                         started,
                     ),
@@ -88,6 +91,36 @@ fn inspect_host_identity(config: &AgentConfig) -> HostInspection {
                 started,
             ),
         },
+    }
+}
+
+fn inspect_configuration(config: &AgentConfig, configured: bool) -> DiagnosticCheck {
+    let started = Instant::now();
+    match config.validate_for_diagnostics() {
+        Err(error) => DiagnosticCheck::new(
+            "configuration",
+            "error",
+            Some("config_invalid"),
+            error.to_string(),
+            Some("repair the configuration file, then run status again"),
+            started,
+        ),
+        Ok(()) if configured => DiagnosticCheck::new(
+            "configuration",
+            "ok",
+            None,
+            "configuration file is present and its effective settings are valid",
+            None::<String>,
+            started,
+        ),
+        Ok(()) => DiagnosticCheck::new(
+            "configuration",
+            "missing",
+            Some("config_missing"),
+            "configuration file is not present",
+            Some("pair this host to create its private configuration"),
+            started,
+        ),
     }
 }
 
@@ -241,39 +274,11 @@ fn inspect_spool(state_dir: &Path) -> SpoolInspection {
 }
 
 pub(super) fn print_local_status(config: &AgentConfig) -> anyhow::Result<()> {
-    let config_started = Instant::now();
     let configured = config
         .config_path
         .as_ref()
         .is_some_and(|path| path.is_file());
-    let config_check = if let Some(issue) = config.diagnostic_config_issue() {
-        DiagnosticCheck::new(
-            "configuration",
-            "error",
-            Some("config_invalid"),
-            issue,
-            Some("repair the configuration file, then run status again"),
-            config_started,
-        )
-    } else if configured {
-        DiagnosticCheck::new(
-            "configuration",
-            "ok",
-            None,
-            "configuration file is present",
-            None::<String>,
-            config_started,
-        )
-    } else {
-        DiagnosticCheck::new(
-            "configuration",
-            "missing",
-            Some("config_missing"),
-            "configuration file is not present",
-            Some("pair this host to create its private configuration"),
-            config_started,
-        )
-    };
+    let config_check = inspect_configuration(config, configured);
     let host = inspect_host_identity(config);
     let credential = inspect_credential(config);
     let mut spool = inspect_spool(&config.state_dir);
@@ -317,6 +322,7 @@ pub(super) fn print_local_status(config: &AgentConfig) -> anyhow::Result<()> {
     } else {
         "unconfigured"
     };
+    let config_status = config_check.status;
     let next_action = match overall_state {
         "degraded" => "repair the failed local check, then run `unionc-agent doctor`",
         "reauth_required" => "create a new pairing invitation in UnionC and pair this host again",
@@ -363,10 +369,7 @@ pub(super) fn print_local_status(config: &AgentConfig) -> anyhow::Result<()> {
         OutputMode::Json => println!("{}", serde_json::to_string_pretty(&snapshot)?),
         OutputMode::Human => {
             println!("UnionC Agent: {overall_state}");
-            println!(
-                "  Configuration: {}",
-                if configured { "present" } else { "missing" }
-            );
+            println!("  Configuration: {config_status}");
             println!(
                 "  Identity: {}",
                 snapshot["host_id"].as_str().unwrap_or("not available")
@@ -540,4 +543,42 @@ pub(super) async fn run_read_only_doctor(config: &AgentConfig) -> anyhow::Result
         anyhow::bail!("one or more read-only diagnostic checks failed");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_inspection_rejects_noncanonical_uuid_text() {
+        let directory =
+            std::env::temp_dir().join(format!("unionc-diagnostic-host-{}", Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("host-id"),
+            "BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB",
+        )
+        .unwrap();
+        let mut config = AgentConfig::default();
+        config.state_dir = directory.clone();
+
+        let inspection = inspect_host_identity(&config);
+        fs::remove_dir_all(directory).unwrap();
+
+        assert!(inspection.id.is_none());
+        assert_eq!(inspection.check.status, "error");
+        assert_eq!(inspection.check.code, Some("identity_invalid"));
+    }
+
+    #[test]
+    fn status_configuration_check_validates_effective_settings() {
+        let mut config = AgentConfig::default();
+        config.interval_seconds = 0;
+
+        let check = inspect_configuration(&config, true);
+
+        assert_eq!(check.status, "error");
+        assert_eq!(check.code, Some("config_invalid"));
+        assert!(check.message.contains("interval_seconds"));
+    }
 }

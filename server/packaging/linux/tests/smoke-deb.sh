@@ -12,7 +12,19 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repository_root=$(cd -- "$script_dir/../../../.." && pwd)
 package=${1:-}
 if [[ -z $package ]]; then
-  package=$(find "$repository_root/dist" -maxdepth 1 -name 'unionc_*_amd64.deb' -print -quit)
+  packages=()
+  while IFS= read -r -d '' candidate; do
+    packages+=("$candidate")
+  done < <(find "$repository_root/dist" -maxdepth 1 -type f \
+    -name 'unionc_*_amd64.deb' -print0)
+  if (( ${#packages[@]} != 1 )); then
+    echo "error: expected exactly one unionc amd64 DEB in $repository_root/dist, found ${#packages[@]}" >&2
+    if (( ${#packages[@]} > 0 )); then
+      printf '  %s\n' "${packages[@]}" >&2
+    fi
+    exit 1
+  fi
+  package=${packages[0]}
 fi
 [[ -n $package && -f $package ]]
 server_version=$(dpkg-deb --field "$package" Version)
@@ -44,6 +56,7 @@ sudo tee /etc/unionc/unionc.env >/dev/null <<EOF
 UNIONC_PACKAGE_VERSION=$server_version
 UNIONC_ENV=production
 UNIONC_SECRET_KEY=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+UNIONC_PROXY_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 UNIONC_ALLOW_BOOTSTRAP=1
 UNIONC_BOOTSTRAP_PASSWORD=release-smoke-password-2026
 EOF
@@ -123,4 +136,3 @@ sudo sed -i "s/^format=.*/format=$server_version/" \
   /var/lib/unionc-package/managed-user
 sudo dpkg --configure unionc
 sudo dpkg --remove unionc
-

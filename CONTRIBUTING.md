@@ -81,7 +81,8 @@ npm run build
 ```
 
 修复缺陷时，请在注释里写清这里防的是什么故障、换成更直观的写法会表现为什么现象。
-代码库里大量此类注释（如 `spool.rs` 的隔离文件预算、`store.rs` 的报文体保留策略）
+代码库里大量此类注释（如 `agent/src/spool.rs` 的隔离文件预算、
+`server/src/monitoring/store/reports.rs` 的报文体保留策略）
 是刻意维护的资产。
 
 ### 上报间隔的三层边界必须联合评估

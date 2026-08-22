@@ -195,11 +195,22 @@ fn build_client_with_redirects(
     if !follow_redirects {
         builder = builder.redirect(reqwest::redirect::Policy::none());
     }
+    if config.tls_identity_password.is_some() && config.tls_identity_pkcs12.is_none() {
+        bail!("tls_identity_password requires tls_identity_pkcs12");
+    }
     #[cfg(all(not(windows), not(target_os = "macos")))]
-    if let Some(path) = &config.tls_identity_pem {
-        let bytes = fs::read(path)
-            .with_context(|| format!("failed to read TLS identity {}", path.display()))?;
-        builder = builder.identity(Identity::from_pem(&bytes)?);
+    {
+        if config.tls_identity_pkcs12.is_some() {
+            bail!(
+                "tls_identity_pkcs12 is supported only on Windows and macOS; use \
+                 tls_identity_pem on this platform"
+            );
+        }
+        if let Some(path) = &config.tls_identity_pem {
+            let bytes = fs::read(path)
+                .with_context(|| format!("failed to read TLS identity {}", path.display()))?;
+            builder = builder.identity(Identity::from_pem(&bytes)?);
+        }
     }
     #[cfg(any(windows, target_os = "macos"))]
     {
@@ -429,6 +440,41 @@ mod tests {
             );
         }
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn client_builder_rejects_unbound_identity_password() {
+        let config = AgentConfig {
+            tls_identity_password: Some("secret".into()),
+            ..AgentConfig::default()
+        };
+        let error = build_client(&config)
+            .expect_err("an otherwise unused TLS identity password must not be ignored");
+        assert!(error.to_string().contains("tls_identity_pkcs12"));
+    }
+
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    #[test]
+    fn client_builder_rejects_pkcs12_on_non_native_tls_backend() {
+        let config = AgentConfig {
+            tls_identity_pkcs12: Some("missing-client-identity.p12".into()),
+            ..AgentConfig::default()
+        };
+        let error = build_client(&config)
+            .expect_err("an unsupported PKCS#12 identity must not be silently ignored");
+        assert!(error.to_string().contains("tls_identity_pem"));
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn client_builder_rejects_pem_on_native_tls_backend() {
+        let config = AgentConfig {
+            tls_identity_pem: Some("missing-client-identity.pem".into()),
+            ..AgentConfig::default()
+        };
+        let error = build_client(&config)
+            .expect_err("an unsupported PEM identity must not reach request construction");
+        assert!(error.to_string().contains("tls_identity_pkcs12"));
     }
 
     #[test]

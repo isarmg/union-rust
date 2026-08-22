@@ -10,8 +10,19 @@ artifact_dir=$(cd -- "$artifact_dir" && pwd)
 docker run --rm \
   --volume "$artifact_dir:/artifacts:ro" \
   fedora:44 /bin/bash -euxo pipefail -c '
-    package="$(find /artifacts -maxdepth 1 -name "unionc-*.x86_64.rpm" -print -quit)"
-    test -n "$package"
+    packages=()
+    while IFS= read -r -d "" candidate; do
+      packages+=("$candidate")
+    done < <(find /artifacts -maxdepth 1 -type f \
+      -name "unionc-*.x86_64.rpm" ! -name "unionc-agent-*" -print0)
+    if (( ${#packages[@]} != 1 )); then
+      echo "error: expected exactly one unionc x86_64 RPM in /artifacts, found ${#packages[@]}" >&2
+      if (( ${#packages[@]} > 0 )); then
+        printf "  %s\n" "${packages[@]}" >&2
+      fi
+      exit 1
+    fi
+    package=${packages[0]}
 
     rpm -qp --scripts "$package" >/tmp/unionc-current-rpm-scripts
     grep -F "systemctl restart unionc.service" /tmp/unionc-current-rpm-scripts
@@ -38,6 +49,7 @@ docker run --rm \
     setpriv --reuid=unionc --regid=unionc --init-groups \
       env UNIONC_ENV=production UNIONC_DATA_DIR=/var/lib/unionc \
       UNIONC_SECRET_KEY=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY= \
+      UNIONC_PROXY_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
       UNIONC_ALLOW_BOOTSTRAP=1 \
       UNIONC_BOOTSTRAP_PASSWORD=release-smoke-password-2026 \
       /usr/bin/unionc >/tmp/unionc-server.log 2>&1 &
@@ -76,4 +88,3 @@ docker run --rm \
     test ! -e /usr/bin/unionc
     test -e /var/lib/unionc/unionc.db
   '
-

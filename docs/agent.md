@@ -93,8 +93,9 @@ macOS 使用相同命令，但服务账户是 `_unioncagent`、配置位于
 服务端报文契约 0.1~3600 秒内；此外，`slow_interval_seconds` 小于 `interval_seconds`、
 jitter 超过 50、
 spool 上限小于 1 MiB、非回环的明文 HTTP、endpoint 内嵌凭据、同时配置两种客户端证书
-格式，任意一条都会拒绝启动——而不是等到运行时每次上报都收到 400、报文在 spool 里
-被按永久内容错误确认丢弃。
+格式、为当前平台配置不受支持的证书格式，或只有 `tls_identity_password` 而没有
+`tls_identity_pkcs12`，任意一条都会拒绝启动——而不是静默忽略证书，或等到运行时每次
+上报都收到 400、报文在 spool 里被按永久内容错误确认丢弃。
 
 如数据入口采用 mTLS，Linux 可把客户端证书和私钥合并成一个 PEM，并设置
 `tls_identity_pem`；Windows/macOS 原生证书栈使用 `tls_identity_pkcs12` 和对应密码。

@@ -158,10 +158,11 @@ ProgramData 中的身份、通信凭据、配对状态和 spool。
 
 ## 构建与签名
 
-WiX 工程位于 `wix/`，固定使用 WiX Toolset 4.0.6。先生成三个 x64 MSVC PE，再构建 MSI：
+WiX 工程位于 `agent/packaging/windows/wix/`，固定使用 WiX Toolset 4.0.6。以下
+构建和验证命令均从**仓库根目录**运行。先生成三个 x64 MSVC PE，再构建 MSI：
 
 ```cmd
-cargo build --release --target x86_64-pc-windows-msvc --bin unionc-agent --bin unionc-agent-maintenance --bin unionc-agent-tray
+cargo build --release -p unionc-agent --target x86_64-pc-windows-msvc --bin unionc-agent --bin unionc-agent-maintenance --bin unionc-agent-tray
 agent\packaging\windows\wix\build-msi.cmd 0.3.2 ^
   target\x86_64-pc-windows-msvc\release\unionc-agent.exe ^
   target\x86_64-pc-windows-msvc\release\unionc-agent-maintenance.exe ^
@@ -179,8 +180,8 @@ MSI；四者必须具有同一有效签名者。`unionc-agent.exe` 必须是 Con
 静态/构建验证：
 
 ```powershell
-.\tests\Test-PeSubsystems.ps1
-.\tests\Test-WixAuthoring.ps1
+.\agent\packaging\windows\tests\Test-PeSubsystems.ps1
+.\agent\packaging\windows\tests\Test-WixAuthoring.ps1
 ```
 
 PE 校验默认读取仓库的 `target\x86_64-pc-windows-msvc\release`，也可用
@@ -188,7 +189,8 @@ PE 校验默认读取仓库的 `target\x86_64-pc-windows-msvc\release`，也可�
 安装或状态的一次性 Windows VM** 中运行与 Release 相同的生命周期测试：
 
 ```powershell
-.\tests\Test-MsiLifecycle.ps1 -ProductVersion 0.3.2 -ArtifactDirectory ..\..\..\dist
+.\agent\packaging\windows\tests\Test-MsiLifecycle.ps1 `
+  -ProductVersion 0.3.2 -ArtifactDirectory .\dist
 ```
 
 脚本会真实安装、卸载并 purge 软件；它会先拒绝不干净的机器，不能在生产或需要保留
