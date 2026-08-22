@@ -127,7 +127,9 @@ gshadow/shadow，安装会保留 pending 并 fail closed，待账户数据库修
 
 `.github/workflows/release.yml` 的独立 `server-linux` job 构建静态 musl x86_64 Linux Server
 原始二进制、DEB 与 RPM，并拒绝仍含动态解释器的制品，避免把包暗中绑定到构建机的 glibc
-版本。tag 必须与 Cargo workspace 的严格 `MAJOR.MINOR.PATCH` 版本完全一致；
+版本。发布工作流会先确认严格版本 tag 的提交属于 `main` 历史，并对该提交复用完整 CI；
+来源校验和 CI 均成功后才允许任何平台开始打包。tag 必须与 Cargo workspace 的严格
+`MAJOR.MINOR.PATCH` 版本完全一致；
 Server 制品与 Agent 三平台制品最终一起进入 SHA256SUMS、GPG 分离签名、provenance
 attestation 和 GitHub Release，Agent 原有 job 与生命周期门禁保持独立。
 

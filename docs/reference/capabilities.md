@@ -778,8 +778,9 @@ Windows release 制品包含 NVIDIA 支持而不含 OTLP；当前 macOS release 
   托管。仓库也不提供容器镜像、APT/YUM/winget 仓库或 MDM/GPO 分发服务。
 - 全新 Server DEB/RPM 安装不会自动 enable/start；管理员必须先配置主密钥、生产代理证明、
   首次 bootstrap 和外部静态站点/反代。普通卸载保留数据库，但没有 Agent 式自动 purge。
-- Release workflow 没有显式依赖 CI workflow 成功；正式发布是否必须先过完整测试，仍依赖
-  分支保护和发布权限策略。当前也没有覆盖率门槛、SBOM、依赖漏洞定时扫描或定时 CI。
+- Release workflow 会拒绝不属于 `main` 历史的正式 tag，并在同一次运行中复用完整 CI；
+  四个平台的打包任务显式依赖来源校验和 CI。GitHub 端仍需用 tag ruleset 限制 `v*` 标签
+  的创建、更新和删除。当前没有覆盖率门槛、SBOM、依赖漏洞定时扫描或定时 CI。
 - 当前 workspace 未声明 `rust-version`；依赖的实际最低 Rust 版本可能高于旧系统工具链，
   应以 CI 使用的 stable 工具链或后续明确的 MSRV 为准。
 

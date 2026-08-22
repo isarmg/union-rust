@@ -1,0 +1,41 @@
+#!/bin/sh
+set -eu
+
+ci_workflow=.github/workflows/ci.yml
+release_workflow=.github/workflows/release.yml
+
+fail() {
+  echo "release policy check failed: $*" >&2
+  exit 1
+}
+
+job_has_line() {
+  job_name=$1
+  expected=$2
+  awk -v header="  $job_name:" -v expected="$expected" '
+    $0 == header { inside = 1; next }
+    inside && /^  [A-Za-z0-9_-]+:$/ { exit }
+    inside && $0 == expected { found = 1 }
+    END { exit(found ? 0 : 1) }
+  ' "$release_workflow"
+}
+
+grep -Eq '^  workflow_call:[[:space:]]*$' "$ci_workflow" ||
+  fail 'CI is not callable from the release workflow'
+job_has_line full-ci '    uses: ./.github/workflows/ci.yml' ||
+  fail 'release does not invoke the repository CI workflow'
+job_has_line full-ci '    needs: verify-release-ref' ||
+  fail 'full CI can start before release-source verification'
+grep -Fq 'if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then' \
+  "$release_workflow" || fail 'release tags are not restricted to strict semantic versions'
+grep -Fq 'git fetch --no-tags origin' "$release_workflow" ||
+  fail 'release-source verification does not refresh origin/main'
+grep -Fq 'release_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"' "$release_workflow" ||
+  fail 'release-source verification does not peel annotated tags to a commit'
+grep -Fq 'git merge-base --is-ancestor "$release_commit" "$main_commit"' "$release_workflow" ||
+  fail 'release-source verification does not require main ancestry'
+
+for artifact_job in server-linux linux windows macos; do
+  job_has_line "$artifact_job" '    needs: [verify-release-ref, full-ci]' ||
+    fail "$artifact_job does not require release-source verification and full CI"
+done

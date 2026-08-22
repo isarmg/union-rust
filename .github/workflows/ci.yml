@@ -1,9 +1,13 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches: [main]
   pull_request:
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -19,6 +23,8 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
+      - name: validate release workflow gates
+        run: sh .github/scripts/test-release-policy.sh
 
   # ── 服务端：Linux only（lib.rs 有 compile_error! 固定该约束）──────────────
   server:

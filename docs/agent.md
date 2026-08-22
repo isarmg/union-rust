@@ -206,9 +206,10 @@ Windows/macOS 的私有传感器接口以及需要管理员权限的查询不会
   账户、LaunchDaemon、日志轮转和卸载器的 pkg。开发构建可以不签名；tag 发布强制完成
   Developer ID Application/Installer 签名、Hardened Runtime、notarytool 和 staple。
 
-推送 `v*` 标签时，`.github/workflows/release.yml` 生成 Linux amd64 deb/rpm/tar、Windows
-x64 MSI 和 macOS universal pkg。Windows 发布先签名 Agent、托盘伴侣和原生维护三个 EXE，
-再构建并签名 MSI；
+推送严格 `vMAJOR.MINOR.PATCH` 标签时，`.github/workflows/release.yml` 先确认标签提交属于
+`main` 历史，并在同一次运行中复用完整 CI；全部检查通过后才生成 Linux amd64
+deb/rpm/tar、Windows x64 MSI 和 macOS universal pkg。Windows 发布先签名 Agent、托盘伴侣
+和原生维护三个 EXE，再构建并签名 MSI；
 正式 tag 缺签名 secret 会失败。成功发布包含平台签名、
 `SHA256SUMS`、GPG 分离签名和 provenance attestation。管理台仍不托管或选择这些制品，
 APT/YUM/winget/MDM 等渠道元数据继续由分发系统负责。

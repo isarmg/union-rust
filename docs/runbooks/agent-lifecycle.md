@@ -334,6 +334,11 @@ sudo /usr/local/share/unionc-agent/uninstall.sh --purge --yes
   明确作为开发产物；
 - `v*` tag：强制生产签名。缺少任何必要 secret 会失败，不发布降级的未签名制品。
 
+两类运行都会复用 `.github/workflows/ci.yml` 的完整检查。正式 tag 还必须是严格的
+`vMAJOR.MINOR.PATCH`，且其提交必须已经位于 `main` 历史中；四个平台的制品任务只有在来源
+校验和完整 CI 都成功后才会启动。仓库内门禁用于防止误发；GitHub 端还应以 tag ruleset
+限制 `v*` 标签的创建、更新和删除权限，避免有标签写权限的主体从未受信提交改写工作流。
+
 由于 MSI ProductVersion 的约束，包含 Windows 制品的 tag 必须是严格的
 `vMAJOR.MINOR.PATCH`，且字段范围为 `255.255.65535` 以内；预发布标识应写在 Release 说明
 而不是 MSI 版本字段中。tag 版本还必须与 `unionc-agent` 的 Cargo package version 精确

@@ -12,8 +12,42 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  verify-release-ref:
+    name: verify release source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Require version tags to belong to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != refs/tags/* ]]; then
+            echo "Development artifact run; no release tag ancestry check is required."
+            exit 0
+          fi
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must be strict vMAJOR.MINOR.PATCH: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin \
+            '+refs/heads/main:refs/remotes/origin/main'
+          release_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          main_commit="$(git rev-parse refs/remotes/origin/main)"
+          if ! git merge-base --is-ancestor "$release_commit" "$main_commit"; then
+            echo "Release commit $release_commit is not part of main history." >&2
+            exit 1
+          fi
+
+  full-ci:
+    name: required full CI
+    needs: verify-release-ref
+    uses: ./.github/workflows/ci.yml
+
   server-linux:
     name: server (linux x86_64)
+    needs: [verify-release-ref, full-ci]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -115,6 +149,7 @@ jobs:
             dist/unionc-*.rpm
 
   linux:
+    needs: [verify-release-ref, full-ci]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -186,6 +221,7 @@ jobs:
             dist/*.tar.gz
 
   windows:
+    needs: [verify-release-ref, full-ci]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -342,6 +378,7 @@ jobs:
           path: dist/*.msi
 
   macos:
+    needs: [verify-release-ref, full-ci]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
