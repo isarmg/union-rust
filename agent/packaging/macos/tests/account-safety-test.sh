@@ -87,7 +87,11 @@ dscl() {
     *) return 75 ;;
   esac
 }
-group_is_in_use _unioncagent 450"
+group_name='UnionC Agent'
+group_status=0
+group_is_in_use _unioncagent 450 || group_status=\"\$?\"
+[ \"\$group_name\" = 'UnionC Agent' ] || exit 76
+exit \"\$group_status\""
   set +e
   sh -c "$case_program" sh "$mode" >/dev/null 2>&1
   actual="$?"

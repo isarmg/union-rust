@@ -348,49 +348,49 @@ EOF
 }
 
 group_is_in_use() {
-  group_name="$1"
-  group_id="$2"
-  if ! primary_group_listing="$(dscl . -list /Users PrimaryGroupID)"; then
+  usage_group_name="$1"
+  usage_group_id="$2"
+  if ! usage_primary_group_listing="$(dscl . -list /Users PrimaryGroupID)"; then
     return 2
   fi
-  if listing_contains_id "$primary_group_listing" "$group_id"; then
+  if listing_contains_id "$usage_primary_group_listing" "$usage_group_id"; then
     return 0
   fi
 
-  if ! group_record="$(dscl . -read "/Groups/$group_name")"; then
+  if ! usage_group_record="$(dscl . -read "/Groups/$usage_group_name")"; then
     return 2
   fi
-  for membership_attribute in GroupMembership GroupMembers NestedGroups; do
-    if record_attribute_has_values "$group_record" "$membership_attribute"; then
+  for usage_membership_attribute in GroupMembership GroupMembers NestedGroups; do
+    if record_attribute_has_values "$usage_group_record" "$usage_membership_attribute"; then
       return 0
     fi
   done
 
-  group_guid="$(dscl_value "/Groups/$group_name" GeneratedUID || true)"
-  case "$group_guid" in
+  usage_group_guid="$(dscl_value "/Groups/$usage_group_name" GeneratedUID || true)"
+  case "$usage_group_guid" in
     ''|*[!0-9A-Fa-f-]*) return 2 ;;
   esac
-  [ "${#group_guid}" -eq 36 ] || return 2
+  [ "${#usage_group_guid}" -eq 36 ] || return 2
 
   # Do not infer anything from `dscl -search` exit codes: macOS versions do not provide a
   # sufficiently useful contract for distinguishing "no match" from a query failure. Enumerate
   # every local group and read each record instead; any failed enumeration/read is unknown.
-  if ! all_group_names="$(dscl . -list /Groups)"; then
+  if ! usage_all_group_names="$(dscl . -list /Groups)"; then
     return 2
   fi
-  while IFS= read -r referencing_group; do
-    [ -n "$referencing_group" ] || continue
-    [ "$referencing_group" = "$group_name" ] && continue
-    if ! referencing_record="$(dscl . -read "/Groups/$referencing_group")"; then
+  while IFS= read -r usage_referencing_group; do
+    [ -n "$usage_referencing_group" ] || continue
+    [ "$usage_referencing_group" = "$usage_group_name" ] && continue
+    if ! usage_referencing_record="$(dscl . -read "/Groups/$usage_referencing_group")"; then
       return 2
     fi
-    if record_attribute_contains_token "$referencing_record" NestedGroups "$group_guid" ||
-      record_attribute_contains_token "$referencing_record" GroupMembers "$group_guid" ||
-      record_attribute_contains_token "$referencing_record" GroupMembership "$group_name"; then
+    if record_attribute_contains_token "$usage_referencing_record" NestedGroups "$usage_group_guid" ||
+      record_attribute_contains_token "$usage_referencing_record" GroupMembers "$usage_group_guid" ||
+      record_attribute_contains_token "$usage_referencing_record" GroupMembership "$usage_group_name"; then
       return 0
     fi
   done <<EOF
-$all_group_names
+$usage_all_group_names
 EOF
   return 1
 }
