@@ -41,9 +41,11 @@ test "$(stat -c '%a:%U:%G:%h' /etc/unionc/unionc.env)" = \
   "640:root:unionc:1"
 for marker in managed-user managed-group; do
   marker_path="/var/lib/unionc-package/$marker"
-  test "$(stat -c '%a:%U:%G' "$marker_path")" = "600:root:root"
+  test "$(stat -c '%a:%U:%G:%h' "$marker_path")" = "600:root:root:1"
   test "$(sed -n 's/^format=//p' "$marker_path")" = "$server_version"
 done
+test ! -e /var/lib/unionc-package/pending-group
+test ! -e /var/lib/unionc-package/pending-user
 test "$(sed -n 's/^uid=//p' /var/lib/unionc-package/managed-user)" = \
   "$(id -u unionc)"
 test "$(sed -n 's/^primary_gid=//p' /var/lib/unionc-package/managed-user)" = \

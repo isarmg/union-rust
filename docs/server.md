@@ -106,14 +106,22 @@ unit 已包含一组 systemd 硬化选项，并显式设置 `UNIONC_DATA_DIR` �
 包内环境文件的 `UNIONC_PACKAGE_VERSION=0.3.2` 是安装归属标记，不是可调运行参数，不能
 删除或修改。安装脚本还会把 `/var/lib/unionc-package` 中的版本化 marker 与实际 UID/GID、
 账户 home/shell、数据目录所有权和 0700 权限逐一比对；既有文件、账户或目录缺少当前标记
-时会 fail closed，不执行旧安装接管。marker 目录必须保持 `root:root/0700`，两个 marker
-文件必须保持 `root:root/0600`；安装钩子不会先修复不可信元数据再读取其中内容。root 生命周期
-脚本会覆盖调用者传入的 `PATH`，版本校验也固定调用包内 `/usr/bin/unionc`，不能由同名外部
+时会 fail closed，不执行旧安装接管。marker 目录必须保持 `root:root/0700`，其中状态文件
+必须是至多 512 字节、`root:root/0600` 且没有其他硬链接的真实文件；安装钩子不会先修复不可信
+元数据再读取其中内容。root 生命周期脚本会覆盖调用者传入的 `PATH`，版本校验也固定调用包内
+`/usr/bin/unionc`，不能由同名外部
 程序替换。`/etc/unionc` 必须是不可由非 root 写入的真实目录；`unionc.env` 必须是 root 拥有、
 0640 且没有其他硬链接的真实文件，其组只能是 root 或当前 marker 记录的 `unionc` GID。普通
-卸载保留数据与 marker，仅支持同一 0.3.2 重装。新建专用账户时，marker 的原子发布是归属
-提交点；发布失败会仅回滚本次创建且数值身份仍完全一致的未提交账户，已提交的 group marker
-会保留，因而同版本安装可以安全重试。
+卸载保留数据与 marker，仅支持同一 0.3.2 重装。新建专用账户前，安装脚本先原子发布并同步
+`pending-group` 或 `pending-user` 意图（包含预选 UID/GID），再要求账户工具创建同一个数值身份；
+确认 NSS 中名称、UID/GID、home、shell 以及唯一、锁定的 shadow/gshadow 记录均严格匹配后，
+才同步发布 `managed-group` 或 `managed-user` 提交 marker；即使 `/etc` 与 `/var` 分属不同文件
+系统，账户数据库也必须先通过独立持久化屏障，之后才允许 marker 提交，最后删除 pending。
+账户工具即使已产生完整副作用却返回失败、首次 NSS 查询失败，或进程在 marker rename 后中断，
+同版本重装也会从磁盘状态前向完成，且不会重复创建身份；若只提交了 group/passwd 而缺少对应
+gshadow/shadow，安装会保留 pending 并 fail closed，待账户数据库修复后再完成。成功安装后不应
+留下 pending 文件。该证明边界信任 root 与 NSS 管理员，不试图防御同权限主体伪造完全相同的
+数值身份和账户记录。
 
 ### 正式发布制品与门禁
 

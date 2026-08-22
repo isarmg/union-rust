@@ -46,6 +46,12 @@ docker run --rm \
       "$package_version"
     test "$(sed -n "s/^format=//p" /var/lib/unionc-package/managed-group)" = \
       "$package_version"
+    test "$(stat -c "%a:%U:%G:%h" /var/lib/unionc-package/managed-user)" = \
+      "600:root:root:1"
+    test "$(stat -c "%a:%U:%G:%h" /var/lib/unionc-package/managed-group)" = \
+      "600:root:root:1"
+    test ! -e /var/lib/unionc-package/pending-group
+    test ! -e /var/lib/unionc-package/pending-user
 
     # Start the binary directly because the Fedora container does
     # not boot systemd; this validates SQLite creation and runtime.
