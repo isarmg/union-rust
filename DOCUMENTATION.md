@@ -979,7 +979,7 @@ sudo dpkg -i unionc_0.3.2_amd64.deb
 | systemd unit | `/usr/lib/systemd/system/unionc.service` |
 | 环境配置 | `/etc/unionc/unionc.env`（0640 root:unionc，`config|noreplace`） |
 | 数据目录 | `/var/lib/unionc`（0700 unionc:unionc） |
-| 内嵌数据库 | `/var/lib/unionc/unionc.db`（首次启动自动创建，0600 unionc:unionc） |
+| 内嵌数据库 | `/var/lib/unionc/unionc.db`（显式首次 bootstrap 创建，0600 unionc:unionc） |
 
 环境文件中的 `UNIONC_PACKAGE_VERSION=0.3.2` 是不可修改的包归属标记；裸二进制部署不要求
 设置它。包安装还以 `/var/lib/unionc-package` 中绑定当前版本与实际 UID/GID 的 root-only
@@ -1006,7 +1006,7 @@ openssl rand -hex 32
 sudo systemctl enable --now unionc
 sudo journalctl -u unionc -f       # 确认日志第一行的数据目录路径正确
 
-# 4. 管理员创建后，删除上述两个 bootstrap 变量并重启
+# 4. 管理员配置与数据库创建后，删除上述两个 bootstrap 变量并重启
 sudo systemctl restart unionc
 ```
 
@@ -1028,7 +1028,7 @@ GitHub Release；两者的构建与生命周期 job 相互独立。
 | `UNIONC_DATA_DIR` | 强烈建议 | 数据目录绝对路径；unit 已设为 `/var/lib/unionc` |
 | `UNIONC_SECRET_KEY` | 生产必填 | 32 字节主密钥的 Base64 |
 | `UNIONC_PROXY_SECRET` | 生产必填 | 64 位小写十六进制独立随机值；可信反代覆盖写入同值请求头，不能复用主密钥 |
-| `UNIONC_ALLOW_BOOTSTRAP` | 首次部署 | 设为 `1` 才允许创建管理员 |
+| `UNIONC_ALLOW_BOOTSTRAP` | 首次部署 | 设为 `1` 才允许创建管理员配置与当前 schema 的新数据库 |
 | `UNIONC_BOOTSTRAP_PASSWORD` | 首次部署 | 初始管理员口令，至少 12 字符 |
 | `UNIONC_SERVER_BIND` / `UNIONC_SERVER_PORT` | | 默认 `127.0.0.1:8081`；生产强制回环 |
 | `UNIONC_SECRET_KEY_ID` / `UNIONC_SECRET_KEY_PREVIOUS` | 轮换时 | 见 [5.4](#54-密钥环与轮换) |
@@ -1280,16 +1280,18 @@ schema 生成的快照；它会精确校验基线指纹和 schema，不接受版
 
 #### 当前 schema 与旧部署边界
 
-项目只支持当前版本新建数据库和当前 schema 的同版本恢复。旧 Server 数据库、旧配置与旧
-Agent 身份不能就地升级或导入。需要留存旧数据时，应先在旧环境导出为独立、长期可读的
-中立格式，随后部署空库、安装当前 Agent 并重新配对；UnionC 不提供把该导出重新导入当前库
-的桥接命令。
+项目只支持开发环境或显式生产 bootstrap 新建当前版本数据库，以及当前 schema 的同版本
+恢复。普通生产启动与 `backup`、`integrity-check`、`rekey` 只接受已存在的精确当前库；
+`restore` 可把完整验证的备份发布到缺失目标。旧 Server 数据库、旧配置与旧 Agent 身份不能
+就地升级或导入。需要留存旧数据时，应先在旧环境导出为独立、长期可读的中立格式，随后
+部署空库、安装当前 Agent 并重新配对；UnionC 不提供把该导出重新导入当前库的桥接命令。
 
 ### 10.8 故障速查
 
 | 症状 | 原因 | 处置 |
 |---|---|---|
 | 启动报 `未找到管理员配置` | `UNIONC_DATA_DIR` 指错了 | 核对路径；确认是首次部署再设 `UNIONC_ALLOW_BOOTSTRAP=1` |
+| 启动报数据库不存在或 schema metadata 缺失 | 数据库丢失、空文件或数据目录指错 | 不要继续空库；核对数据目录并从一致性备份恢复。仅真正首次部署才临时开启 bootstrap |
 | 启动报 `key id ... not in the keyring` | 轮换时漏了历史密钥 | 把旧密钥加入 `UNIONC_SECRET_KEY_PREVIOUS` |
 | 启动报 schema/baseline 指纹不匹配 | 数据库不是当前版本创建的精确 schema | 不会自动迁移；导出需要保留的数据后从空数据目录重新部署 |
 | 登录 429 | 触发限流 | 等 1 分钟；确认反代正确追加 XFF |
@@ -1434,9 +1436,10 @@ agent job 的三次 feature `check` 不是冗余：默认 feature 是 `nvidia`�
 失败。随机令牌即便能跨源发头也猜不出值。
 
 **为什么数据目录必须是绝对路径**
-相对路径意味着"文件在哪"取决于进程 CWD。从别的目录启动会读不到配置，而"配置不存在"
-与"首次部署"在代码里无法区分，于是会静默新建一个管理员账号，原账号看上去凭空消失。
-生产环境因此额外要求显式的 `UNIONC_ALLOW_BOOTSTRAP=1`。
+相对路径意味着"文件在哪"取决于进程 CWD。从别的目录启动会读不到管理员配置和数据库，
+而"状态不存在"与"首次部署"在代码里无法区分；如果自动创建，就会让原账号和全部历史
+看上去凭空消失。生产环境因此额外要求显式的 `UNIONC_ALLOW_BOOTSTRAP=1`；未开启时，
+缺失或空数据库都会 fail closed。
 
 **为什么采集不到的指标不填 0**
 0 和"读不到"在监控产品里是完全不同的两件事。用 `capabilities` 数组承载可用性与失败

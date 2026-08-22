@@ -149,7 +149,10 @@ fn absolutize_database_path(path: &Path) -> anyhow::Result<PathBuf> {
     }
 }
 
-fn connect_options(settings: &Settings) -> anyhow::Result<(SqliteConnectOptions, PathBuf)> {
+fn connect_options(
+    settings: &Settings,
+    create_if_missing: bool,
+) -> anyhow::Result<(SqliteConnectOptions, PathBuf)> {
     let raw = settings.database.url.trim();
     let mut options = if raw.starts_with("sqlite:") {
         SqliteConnectOptions::from_str(raw)?
@@ -159,7 +162,7 @@ fn connect_options(settings: &Settings) -> anyhow::Result<(SqliteConnectOptions,
 
     let path = absolutize_database_path(options.get_filename())?;
     if path != Path::new(":memory:") {
-        if let Some(parent) = path.parent() {
+        if create_if_missing && let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         // Normalize relative sqlite: URLs before handing them to worker
@@ -168,7 +171,10 @@ fn connect_options(settings: &Settings) -> anyhow::Result<(SqliteConnectOptions,
     }
 
     options = options
-        .create_if_missing(true)
+        // Apply this after parsing the URL so an internal `?mode=rwc` test
+        // override cannot accidentally weaken an existing-only production
+        // open into a database-creating open.
+        .create_if_missing(create_if_missing)
         .foreign_keys(true)
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Full)
@@ -176,9 +182,11 @@ fn connect_options(settings: &Settings) -> anyhow::Result<(SqliteConnectOptions,
     Ok((options, path))
 }
 
-/// Open the embedded runtime database.
-pub async fn connect(settings: &Settings) -> anyhow::Result<DbPool> {
-    let (options, path) = connect_options(settings)?;
+async fn connect_with_policy(
+    settings: &Settings,
+    create_if_missing: bool,
+) -> anyhow::Result<DbPool> {
+    let (options, path) = connect_options(settings, create_if_missing)?;
     let max_connections = if path == Path::new(":memory:") { 1 } else { 8 };
     let pool = SqlitePoolOptions::new()
         .max_connections(max_connections)
@@ -187,7 +195,17 @@ pub async fn connect(settings: &Settings) -> anyhow::Result<DbPool> {
         .idle_timeout(Duration::from_secs(300))
         .max_lifetime(Duration::from_secs(1800))
         .connect_with(options)
-        .await?;
+        .await
+        .map_err(|error| {
+            if create_if_missing {
+                anyhow::anyhow!("failed to open SQLite database {}: {error}", path.display())
+            } else {
+                anyhow::anyhow!(
+                    "failed to open existing SQLite database {} (automatic creation is disabled): {error}",
+                    path.display()
+                )
+            }
+        })?;
 
     #[cfg(unix)]
     if path != Path::new(":memory:") {
@@ -196,6 +214,19 @@ pub async fn connect(settings: &Settings) -> anyhow::Result<DbPool> {
     }
 
     Ok(pool)
+}
+
+/// Open the embedded runtime database, creating its file when absent.
+///
+/// Callers must make the bootstrap decision before using this function.
+pub async fn connect(settings: &Settings) -> anyhow::Result<DbPool> {
+    connect_with_policy(settings, true).await
+}
+
+/// Open an already existing embedded runtime database without creating its
+/// parent directory or file.
+pub async fn connect_existing(settings: &Settings) -> anyhow::Result<DbPool> {
+    connect_with_policy(settings, false).await
 }
 
 /// Create a lazy in-memory SQLite pool for unit tests that do not exercise
@@ -221,6 +252,24 @@ pub async fn initialize_schema(pool: &DbPool) -> anyhow::Result<()> {
             let rollback = tx.rollback().await;
             if let Err(rollback_error) = rollback {
                 tracing::error!(%rollback_error, "failed to roll back SQLite schema initialization");
+            }
+            Err(error)
+        }
+    }
+}
+
+/// Verify an existing database without treating an empty file as a fresh
+/// installation. Normal production startup and offline maintenance commands
+/// use this path so missing data cannot be replaced by a plausible empty
+/// service.
+pub async fn verify_schema(pool: &DbPool) -> anyhow::Result<()> {
+    let mut tx = begin_write(pool).await?;
+    match verify_current_schema(tx.connection()).await {
+        Ok(()) => tx.commit().await,
+        Err(error) => {
+            let rollback = tx.rollback().await;
+            if let Err(rollback_error) = rollback {
+                tracing::error!(%rollback_error, "failed to roll back SQLite schema verification");
             }
             Err(error)
         }

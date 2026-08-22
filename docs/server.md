@@ -34,8 +34,11 @@ Proxmox VE、静态博客、文件服务及其路由、模型、进程管理和�
 | 仓库内开发约定 | `<仓库根>/.runtime/server`（通过环境变量显式设置） |
 | 未设置时的程序默认值 | `<当前工作目录>/unionc/data` |
 
-数据库固定为 `<数据目录>/unionc.db`：空目录会按当前唯一 schema 创建；已有文件必须与当前
-schema 精确一致，否则启动失败。它只能放在 Server 本机磁盘，
+数据库固定为 `<数据目录>/unionc.db`：开发环境或显式设置了
+`UNIONC_ALLOW_BOOTSTRAP=1` 的首次生产部署会按当前唯一 schema 创建；其余启动要求文件已
+存在且与当前 schema 精确一致，否则启动失败。未开启 bootstrap 的普通生产启动遇到管理员
+配置仍在但数据库丢失、或数据库只是空文件时，也不会用空库伪装成健康服务。它只能放在
+Server 本机磁盘，
 不支持把活动数据库放在 NFS、SMB 或其他网络文件系统，也不提供多 Server 共享写入。
 
 `tools/dev-server.sh` 会解析仓库根目录、创建 `.runtime/server`，导出绝对
@@ -47,8 +50,9 @@ schema 精确一致，否则启动失败。它只能放在 Server 本机磁盘�
 解析结果会在启动日志第一行打印出来。**部署务必显式设置 `UNIONC_DATA_DIR`**——
 随包提供的 systemd unit 已设为 `/var/lib/unionc`。依赖工作目录的相对路径意味着从别的
 目录启动就读不到配置，而"配置文件不存在"与"首次部署"在代码里无法区分，会被静默地
-当成后者、新建一个管理员账号。因此生产环境下"配置文件不存在"默认是**启动失败**，
-只有显式设置 `UNIONC_ALLOW_BOOTSTRAP=1` 才允许创建。
+当成后者、新建一套看似正常的空状态。因此普通生产启动在管理员配置或数据库缺失时默认
+**启动失败**；只有确认首次部署并显式设置 `UNIONC_ALLOW_BOOTSTRAP=1`，才允许同时创建
+管理员配置和当前 schema 的新数据库。
 
 ### 管理员密码重置
 
@@ -73,7 +77,7 @@ sudo systemctl start unionc
 - `UNIONC_SECRET_KEY`（32 字节密钥的 Base64；生产不允许落盘自动生成）
 - `UNIONC_PROXY_SECRET`（独立的 64 位小写十六进制随机值；可信反代覆盖写入同值请求头）
 - 首次部署：`UNIONC_ALLOW_BOOTSTRAP=1` + `UNIONC_BOOTSTRAP_PASSWORD`（至少 12 个字符），
-  管理员创建完成后应移除这两项
+  管理员配置和数据库创建完成后应移除这两项
 - 可选 `UNIONC_SERVER_BIND`、`UNIONC_SERVER_PORT`（适合容器和测试覆盖）
 - 可选 `UNIONC_SECRET_KEY_ID`、`UNIONC_SECRET_KEY_PREVIOUS`、`UNIONC_RETENTION_DAYS`、
   `UNIONC_TELEMETRY_RETENTION_DAYS`（审计/遥测分别默认 90/30 天）
@@ -207,7 +211,10 @@ staging 升级，也不会回填缺失字段。版本、schema 或指纹任一�
 
 ### 当前存储边界
 
-项目只支持空目录全新建库和当前版本备份的同 schema 恢复。旧 Server 数据库不能就地打开、
+项目只支持开发环境或显式生产 bootstrap 的空目录全新建库，以及当前版本备份的同 schema
+恢复。生产环境未设置 `UNIONC_ALLOW_BOOTSTRAP=1` 时，正常启动及 `backup`、
+`integrity-check`、`rekey` 不会创建缺失数据库；`restore` 是唯一例外，可把已完整验证的
+备份发布到缺失目标。旧 Server 数据库不能就地打开、
 升级或导入。需要留存旧数据时，应先在旧系统中导出为独立的中立格式，再部署当前版本并
 重新配对 Agent；该导出不属于 UnionC 当前版本的可导入数据源。
 
@@ -219,7 +226,9 @@ staging 升级，也不会回填缺失字段。版本、schema 或指纹任一�
 
 轮换时只有批量重加密这一步需要短暂停服。Server 进程会持有单实例数据库锁，离线
 `rekey` 若检测到服务仍在运行会直接拒绝，而不会与在线写入竞争；它还会持有维护锁，
-因此不能与在线备份、完整性检查或恢复并发，备份 manifest 的 key_id 不会跨越轮换事务：
+因此不能与在线备份、完整性检查或恢复并发，备份 manifest 的 key_id 不会跨越轮换事务。
+`rekey` 只接受已存在且与当前 schema 精确一致的数据库；缺失或空数据库会失败，不会创建
+空库后错误地报告“重加密 0 台”：
 
 ```bash
 # 1. 在 /etc/unionc/unionc.env 中把旧密钥移入历史并启用新密钥，然后重启验证。

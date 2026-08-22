@@ -18,8 +18,8 @@ pub async fn backup_database(settings: &Settings, output: &Path) -> anyhow::Resu
     // Backup never initializes schema: a wrong data directory must fail
     // instead of silently creating and backing up an empty database, and an
     // operator-requested snapshot must not mutate schema as a side effect.
-    validate_database_file(&source).await?;
-    let pool = super::connect(settings).await?;
+    let pool = super::connect_existing(settings).await?;
+    super::verify_schema(&pool).await?;
 
     let staging_text = staging
         .to_str()

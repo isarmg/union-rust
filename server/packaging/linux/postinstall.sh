@@ -991,9 +991,10 @@ UnionC 已安装。首次启动前请完成：
      并把同一个 UNIONC_PROXY_SECRET 安全地配置到可信反向代理环境。
   2. 首次部署临时打开 UNIONC_ALLOW_BOOTSTRAP=1 与 UNIONC_BOOTSTRAP_PASSWORD
   3. systemctl enable --now unionc
-  4. 管理员创建完成后，从 unionc.env 删除上述两个 bootstrap 变量并 restart
+  4. 管理员配置与数据库创建完成后，从 unionc.env 删除上述两个 bootstrap 变量并 restart
 
-内嵌 SQLite 数据库会自动创建为 /var/lib/unionc/unionc.db；无需安装或配置数据库服务。
+显式首次 bootstrap 会创建 /var/lib/unionc/unionc.db；无需安装或配置数据库服务。
+普通生产启动不会重建缺失或空数据库，而会失败并要求核对数据目录或执行 restore。
 数据目录固定为 /var/lib/unionc（由 unit 中的 UNIONC_DATA_DIR 指定）。
 UnionC 强制绑定回环，请在其前部署 HTTPS 反向代理；完整请求头契约见
 docs/examples/caddy/Caddyfile.console.example。

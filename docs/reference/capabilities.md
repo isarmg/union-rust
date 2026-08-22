@@ -521,7 +521,8 @@ Sunshine 管理是 Server 直接访问管理员显式配置的 Sunshine API，�
 6. Agent 只有验证结构化 ACK 后才确认报告投递成功；
 7. 缺失指标用 capability/`null` 表达，不用 `0` 冒充；
 8. 可选集成失败不能阻塞核心上报；
-9. Server 只打开与当前唯一 schema 精确一致的数据库；
+9. 正常生产启动及 `backup`、`integrity-check`、`rekey` 只打开已存在且与当前唯一 schema
+   精确一致的数据库；开发环境或显式生产 bootstrap 可新建，`restore` 只发布已验证备份；
 10. 软件安装与更新不经管理台或 Agent 数据面完成。
 
 ## 15. 功能入口与交付状态

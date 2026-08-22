@@ -29,14 +29,18 @@ pub async fn initialize() -> anyhow::Result<InitializedApp> {
              64-character lowercase hexadecimal value in the trusted reverse proxy"
         );
     }
+    let allow_bootstrap = bootstrap_allowed(
+        bootstrap_settings.production,
+        std::env::var("UNIONC_ALLOW_BOOTSTRAP").ok().as_deref(),
+    );
     ensure_layout()?;
     let database_path = database::database_path(&bootstrap_settings)?;
     database::hold_server_database_lock(&database_path)?;
     secrets::init(runtime.mode)?;
-    let local_config = load_or_create_local_config(&bootstrap_settings).await?;
-    // SQLite 是 Server 数据目录内的固定持久层。启动时直接打开（首次运行会创建）并校验，
-    // 不再存在“先启动空壳、再从控制台配置外部数据库、随后重启”的半初始化状态。
-    let (settings, db) = prepare_database(bootstrap_settings).await?;
+    let local_config = load_or_create_local_config(&bootstrap_settings, allow_bootstrap).await?;
+    // SQLite 是 Server 数据目录内的固定持久层。只有开发环境或显式 bootstrap 才能创建；
+    // 正常生产启动只打开并精确校验既有数据库，不能用空库掩盖数据文件丢失。
+    let (settings, db) = prepare_database(bootstrap_settings, allow_bootstrap).await?;
     let addr = listen_address(&settings)?;
     let dummy_password_hash = hash_password(uuid::Uuid::new_v4().to_string()).await?;
     // 建立差值采样基线并启动唯一的采样循环，使首个请求即返回有效读数。
@@ -61,8 +65,8 @@ pub async fn rekey() -> anyhow::Result<()> {
     let database_path = database::database_path(&settings)?;
     let _locks = database::acquire_offline_maintenance_locks(&database_path)?;
     secrets::init(runtime.mode)?;
-    let pool = database::connect(&settings).await?;
-    database::initialize_schema(&pool).await?;
+    let pool = database::connect_existing(&settings).await?;
+    database::verify_schema(&pool).await?;
 
     let key_id = secrets::current_key_id()?;
     let hosts = database::rekey_secrets(&pool).await?;
@@ -102,7 +106,10 @@ fn generate_admin_password() -> String {
     uuid::Uuid::new_v4().to_string().replace('-', "")
 }
 
-async fn load_or_create_local_config(settings: &Settings) -> anyhow::Result<LocalConfig> {
+async fn load_or_create_local_config(
+    settings: &Settings,
+    allow_bootstrap: bool,
+) -> anyhow::Result<LocalConfig> {
     match load_local_config() {
         Ok(config) => Ok(config),
         Err(error)
@@ -110,7 +117,7 @@ async fn load_or_create_local_config(settings: &Settings) -> anyhow::Result<Loca
                 .downcast_ref::<std::io::Error>()
                 .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
         {
-            create_local_config(settings).await
+            create_local_config(settings, allow_bootstrap).await
         }
         Err(error) => Err(error),
     }
@@ -124,11 +131,12 @@ async fn load_or_create_local_config(settings: &Settings) -> anyhow::Result<Loca
 /// 无法区分，而后者的后果是悄悄新建一个管理员账号，让运维以为数据丢了。因此生产环境
 /// 要求显式设置 `UNIONC_ALLOW_BOOTSTRAP=1` 才允许创建——正常重启永远走不到这里，
 /// 一旦走到就说明数据目录需要人工确认。
-async fn create_local_config(settings: &Settings) -> anyhow::Result<LocalConfig> {
+async fn create_local_config(
+    settings: &Settings,
+    allow_bootstrap: bool,
+) -> anyhow::Result<LocalConfig> {
     let config_path = crate::infra::paths::local_config_path();
-    if settings.production
-        && !std::env::var("UNIONC_ALLOW_BOOTSTRAP").is_ok_and(|value| value.trim() == "1")
-    {
+    if !allow_bootstrap {
         anyhow::bail!(
             "生产环境下未找到管理员配置 {}。若这是首次部署，请设置 UNIONC_ALLOW_BOOTSTRAP=1 \
              与 UNIONC_BOOTSTRAP_PASSWORD 后重启；否则请检查 UNIONC_DATA_DIR 是否指向了正确的\
@@ -165,6 +173,10 @@ async fn create_local_config(settings: &Settings) -> anyhow::Result<LocalConfig>
     Ok(config)
 }
 
+fn bootstrap_allowed(production: bool, environment_value: Option<&str>) -> bool {
+    !production || environment_value.is_some_and(|value| value.trim() == "1")
+}
+
 async fn hash_password(password: String) -> anyhow::Result<String> {
     crate::auth::http::validate_bcrypt_input(&password, "密码")
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
@@ -174,9 +186,19 @@ async fn hash_password(password: String) -> anyhow::Result<String> {
         .map_err(|error| anyhow::anyhow!("bcrypt hash error: {error}"))
 }
 
-async fn prepare_database(bootstrap: Settings) -> anyhow::Result<(Settings, database::DbPool)> {
-    let db = database::connect(&bootstrap).await?;
-    database::initialize_schema(&db).await?;
+async fn prepare_database(
+    bootstrap: Settings,
+    allow_bootstrap: bool,
+) -> anyhow::Result<(Settings, database::DbPool)> {
+    let db = if allow_bootstrap {
+        let db = database::connect(&bootstrap).await?;
+        database::initialize_schema(&db).await?;
+        db
+    } else {
+        let db = database::connect_existing(&bootstrap).await?;
+        database::verify_schema(&db).await?;
+        db
+    };
     let settings = database::load_app_settings(&db, &bootstrap).await?;
     Ok((settings, db))
 }
@@ -430,8 +452,52 @@ pub async fn integrity_check() -> anyhow::Result<()> {
 #[cfg(test)]
 mod password_reset_tests {
     use super::{
-        HealthProbeCadence, LocalConfig, config_with_reset_password, generate_admin_password,
+        HealthProbeCadence, LocalConfig, bootstrap_allowed, config_with_reset_password,
+        generate_admin_password, prepare_database,
     };
+    use crate::{config::Settings, infra::database};
+
+    #[test]
+    fn production_bootstrap_requires_the_exact_explicit_switch() {
+        assert!(bootstrap_allowed(false, None));
+        assert!(bootstrap_allowed(false, Some("0")));
+        assert!(!bootstrap_allowed(true, None));
+        assert!(!bootstrap_allowed(true, Some("true")));
+        assert!(!bootstrap_allowed(true, Some("01")));
+        assert!(bootstrap_allowed(true, Some(" 1 ")));
+    }
+
+    #[tokio::test]
+    async fn startup_database_creation_follows_the_bootstrap_policy() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("missing/unionc.db");
+        let mut settings = Settings::default();
+        settings.database.url = format!("sqlite://{}?mode=rwc", path.display());
+
+        let error = prepare_database(settings.clone(), false)
+            .await
+            .err()
+            .expect("normal production startup must reject a missing database");
+        assert!(
+            error.to_string().contains("automatic creation is disabled"),
+            "{error:#}"
+        );
+        assert!(!path.exists());
+        assert!(!path.parent().unwrap().exists());
+
+        let (_, bootstrap_pool) = prepare_database(settings.clone(), true)
+            .await
+            .expect("explicit bootstrap creates the current database");
+        database::verify_schema(&bootstrap_pool).await.unwrap();
+        bootstrap_pool.close().await;
+        assert!(path.is_file());
+
+        let (_, normal_pool) = prepare_database(settings, false)
+            .await
+            .expect("normal production startup reopens the current database");
+        database::verify_schema(&normal_pool).await.unwrap();
+        normal_pool.close().await;
+    }
 
     #[test]
     fn generated_admin_password_is_strong_and_shell_friendly() {

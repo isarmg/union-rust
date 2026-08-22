@@ -14,6 +14,56 @@ async fn uninitialized_database(test_name: &str) -> (common::TestDatabaseUrl, da
 }
 
 #[tokio::test]
+async fn existing_only_open_overrides_rwc_and_never_creates_a_missing_database() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("missing/unionc.db");
+    let mut settings = Settings::default();
+    settings.database.url = format!("sqlite://{}?mode=rwc", path.display());
+
+    let error = database::connect_existing(&settings).await.unwrap_err();
+
+    assert!(
+        error.to_string().contains("automatic creation is disabled"),
+        "{error:#}"
+    );
+    assert!(
+        !path.exists(),
+        "existing-only open must not create the file"
+    );
+    assert!(
+        !path.parent().unwrap().exists(),
+        "existing-only open must not create the parent directory"
+    );
+}
+
+#[tokio::test]
+async fn existing_empty_database_is_rejected_without_installing_the_schema() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("unionc.db");
+    std::fs::File::create(&path).unwrap();
+    let mut settings = Settings::default();
+    settings.database.url = format!("sqlite://{}?mode=rwc", path.display());
+    let pool = database::connect_existing(&settings).await.unwrap();
+
+    let error = database::verify_schema(&pool).await.unwrap_err();
+
+    assert!(
+        error.to_string().contains("not the current UnionC schema"),
+        "{error:#}"
+    );
+    let metadata_count: i64 =
+        query("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name='schema_metadata'")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get(0);
+    assert_eq!(
+        metadata_count, 0,
+        "verification must not install the schema"
+    );
+}
+
+#[tokio::test]
 async fn database_with_objects_but_no_current_metadata_is_rejected() {
     let (_url, pool) = uninitialized_database("reject_database_without_current_metadata").await;
     query("CREATE TABLE settings(key TEXT PRIMARY KEY) STRICT")
