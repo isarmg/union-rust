@@ -169,17 +169,6 @@ pub(crate) async fn change_password(
         persist_local_config_blocking,
     )
     .await?;
-    if let Err(error) = database::insert_audit(
-        state.db().as_ref(),
-        "auth.password.change",
-        &username,
-        Some("administrator password changed"),
-    )
-    .await
-    {
-        tracing::warn!("管理员密码已修改，但审计日志写入失败：{error}");
-    }
-
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -2,10 +2,14 @@
 mod tests {
     use super::*;
 
-    fn password_state(password_hash: String) -> AppState {
+    async fn password_state(password_hash: String) -> AppState {
+        let pool = crate::infra::database::in_memory_pool().expect("in-memory database");
+        crate::infra::database::initialize_schema(&pool)
+            .await
+            .expect("initialize password test database");
         AppState::new(
             crate::config::Settings::default(),
-            crate::infra::database::in_memory_pool().expect("in-memory database"),
+            pool,
             password_hash.clone(),
             crate::config::LocalConfig {
                 application_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -16,14 +20,38 @@ mod tests {
         )
     }
 
+    async fn replace_test_password<P, Fut>(
+        state: &AppState,
+        current_password: String,
+        new_password: String,
+        request_id: &str,
+        persist: P,
+    ) -> AppResult<()>
+    where
+        P: FnOnce(crate::config::LocalConfig) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = anyhow::Result<crate::config::LocalConfig>>
+            + Send
+            + 'static,
+    {
+        database::with_audit_context(
+            database::AuditContext {
+                actor: "test-admin".to_string(),
+                request_id: Some(request_id.to_string()),
+            },
+            replace_password_with(state, current_password, new_password, persist),
+        )
+        .await
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn persistence_failure_does_not_publish_the_new_password() {
         let old_hash = bcrypt::hash("old-password-value", 4).unwrap();
-        let state = password_state(old_hash.clone());
-        let result = replace_password_with(
+        let state = password_state(old_hash.clone()).await;
+        let result = replace_test_password(
             &state,
             "old-password-value".to_string(),
             "replacement-password-value".to_string(),
+            "failed-persistence-request",
             |_config| async { Err(anyhow::anyhow!("simulated fsync failure")) },
         )
         .await;
@@ -34,22 +62,33 @@ mod tests {
             old_hash,
             "memory must remain on the last successfully persisted snapshot"
         );
+        let audit = database::list_audit_logs(state.db().as_ref(), None, 10)
+            .await
+            .expect("load audit rows after failed password change");
+        assert!(
+            audit
+                .entries
+                .iter()
+                .all(|entry| entry.action != "auth.password.change"),
+            "a failed password change must not record a success audit event"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn concurrent_changes_using_the_same_old_password_cannot_both_commit() {
         let old_hash = bcrypt::hash("old-password-value", 4).unwrap();
-        let state = password_state(old_hash);
+        let state = password_state(old_hash).await;
         let commits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
         let spawn_change = |new_password: &'static str| {
             let state = state.clone();
             let commits = commits.clone();
             tokio::spawn(async move {
-                replace_password_with(
+                replace_test_password(
                     &state,
                     "old-password-value".to_string(),
                     new_password.to_string(),
+                    new_password,
                     move |config| async move {
                         commits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         tokio::task::yield_now().await;
@@ -83,7 +122,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn login_verified_with_old_password_cannot_outlive_password_change() {
-        let state = password_state(bcrypt::hash("old-password-value", 4).unwrap());
+        let state = password_state(bcrypt::hash("old-password-value", 4).unwrap()).await;
         let authenticated = authenticate(
             &state,
             "admin",
@@ -93,10 +132,11 @@ mod tests {
         .await
         .expect("the old password should verify before the change");
 
-        replace_password_with(
+        replace_test_password(
             &state,
             "old-password-value".to_string(),
             "replacement-password-value".to_string(),
+            "login-race-request",
             |config| async move { Ok(config) },
         )
         .await
@@ -115,16 +155,28 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn cancelling_the_request_cannot_split_persisted_and_live_password_state() {
         let old_hash = bcrypt::hash("old-password-value", 4).unwrap();
-        let state = password_state(old_hash.clone());
+        let state = password_state(old_hash.clone()).await;
+        let expires_at = chrono::Utc::now() + chrono::Duration::minutes(5);
+        for token in ["current-session", "other-session"] {
+            state.auth.sessions.write().await.insert(
+                token.to_string(),
+                LocalSession {
+                    username: "admin".to_string(),
+                    expires_at,
+                    csrf_token: "csrf".to_string(),
+                },
+            );
+        }
         let read_guard = state.auth.local_config.read().await;
         let (persisted_tx, persisted_rx) = tokio::sync::oneshot::channel();
 
         let request_state = state.clone();
         let request = tokio::spawn(async move {
-            replace_password_with(
+            replace_test_password(
                 &request_state,
                 "old-password-value".to_string(),
                 "replacement-password-value".to_string(),
+                "cancelled-password-request",
                 move |config| async move {
                     let persisted_snapshot = config.clone();
                     let _ = persisted_tx.send(persisted_snapshot);
@@ -167,11 +219,46 @@ mod tests {
         })
         .await
         .expect("the detached transaction must publish after the request is cancelled");
+        assert!(
+            state.auth.sessions.read().await.is_empty(),
+            "the detached transaction must revoke every user session"
+        );
+
+        let audit = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let page = database::list_audit_logs(state.db().as_ref(), None, 10)
+                    .await
+                    .expect("load password change audit rows");
+                if page
+                    .entries
+                    .iter()
+                    .any(|entry| entry.action == "auth.password.change")
+                {
+                    break page;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the detached transaction must finish its audit attempt");
+        let password_audits = audit
+            .entries
+            .iter()
+            .filter(|entry| entry.action == "auth.password.change")
+            .collect::<Vec<_>>();
+        assert_eq!(password_audits.len(), 1);
+        let entry = password_audits[0];
+        assert_eq!(entry.target, "admin");
+        assert_eq!(entry.actor, "test-admin");
+        assert_eq!(
+            entry.request_id.as_deref(),
+            Some("cancelled-password-request")
+        );
     }
 
     #[tokio::test]
     async fn revoking_a_session_notifies_its_established_sse_stream() {
-        let state = password_state(bcrypt::hash("old-password-value", 4).unwrap());
+        let state = password_state(bcrypt::hash("old-password-value", 4).unwrap()).await;
         state.auth.sessions.write().await.insert(
             "revoked-session".to_string(),
             LocalSession {
@@ -193,7 +280,7 @@ mod tests {
 
     #[tokio::test]
     async fn password_change_revokes_every_session_stream_including_the_caller() {
-        let state = password_state(bcrypt::hash("old-password-value", 4).unwrap());
+        let state = password_state(bcrypt::hash("old-password-value", 4).unwrap()).await;
         let expires_at = chrono::Utc::now() + chrono::Duration::minutes(5);
         for token in ["current-session", "other-session"] {
             state.auth.sessions.write().await.insert(

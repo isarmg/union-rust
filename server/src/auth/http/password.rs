@@ -109,19 +109,36 @@ where
     P: FnOnce(crate::config::LocalConfig) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = anyhow::Result<crate::config::LocalConfig>> + Send + 'static,
 {
+    let audit_context = database::current_audit_context().ok_or_else(|| {
+        AppError::Anyhow(anyhow::anyhow!(
+            "password change is missing its authenticated audit context"
+        ))
+    })?;
     // Dropping an HTTP handler aborts its future, but dropping a JoinHandle detaches the spawned
     // task. Once accepted, the password transaction must therefore finish publishing the same
-    // snapshot that its blocking persistence step may already have committed to disk.
+    // snapshot that its blocking persistence step may already have committed to disk, then make
+    // the corresponding best-effort audit attempt with the original request identity.
     let state = state.clone();
-    tokio::spawn(async move {
-        replace_password_transaction_with(
+    tokio::spawn(database::with_audit_context(audit_context, async move {
+        let username = replace_password_transaction_with(
             &state,
             current_password,
             new_password,
             persist,
         )
+        .await?;
+        if let Err(error) = database::insert_audit(
+            state.db().as_ref(),
+            "auth.password.change",
+            &username,
+            Some("administrator password changed"),
+        )
         .await
-    })
+        {
+            tracing::warn!("管理员密码已修改，但审计日志写入失败：{error}");
+        }
+        Ok(())
+    }))
     .await
     .map_err(|error| AppError::Anyhow(anyhow::anyhow!("password transaction task failed: {error}")))?
 }
@@ -131,7 +148,7 @@ async fn replace_password_transaction_with<P, Fut>(
     current_password: String,
     new_password: String,
     persist: P,
-) -> AppResult<()>
+) -> AppResult<String>
 where
     P: FnOnce(crate::config::LocalConfig) -> Fut + Send,
     Fut: std::future::Future<Output = anyhow::Result<crate::config::LocalConfig>> + Send,
@@ -169,7 +186,7 @@ where
     let _transition = state.auth.password_session_transition.lock().await;
     *state.auth.local_config.write().await = persisted_config;
     revoke_user_sessions(state, &username).await;
-    Ok(())
+    Ok(username)
 }
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
