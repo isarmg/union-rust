@@ -39,6 +39,20 @@ pub(crate) async fn create_host(
         password: req.password.unwrap_or_default(), // 密码可选，未提供时为空字符串
         verify_tls: req.verify_tls,
     };
+    let info = finish_sunshine_mutation(create_host_and_publish(
+        state,
+        new_host,
+        std::future::ready(()),
+    ))
+    .await?;
+    Ok((StatusCode::CREATED, Json(info)))
+}
+
+async fn create_host_and_publish(
+    state: AppState,
+    new_host: SunshineHostConfig,
+    after_database_commit: impl std::future::Future<Output = ()> + Send,
+) -> AppResult<SunshineHostInfo> {
     let _settings_guard = state.hosts.settings_lock.lock().await;
     let mut hosts = state.hosts.sunshine.read().await.clone();
     hosts.push(new_host.clone());
@@ -46,13 +60,13 @@ pub(crate) async fn create_host(
         "name={} host={} port={} verify_tls={}",
         new_host.name, new_host.host, new_host.web_port, new_host.verify_tls
     );
-    // Acquire the two publication locks before committing SQLite. If the
-    // request future is cancelled during database I/O, the transaction rolls
-    // back and memory remains unchanged; once commit returns there is no await
-    // between it and publishing the matching in-memory snapshot.
+    // The whole mutation runs in a detached task. The database helper commits
+    // internally, so request cancellation must not be allowed to stop this
+    // task between that commit and publishing the matching memory snapshot.
     let mut stored_hosts = state.hosts.sunshine.write().await;
     let mut health = state.hosts.sunshine_health.write().await;
     database::insert_sunshine_host(state.db().as_ref(), &new_host, &audit_detail).await?;
+    after_database_commit.await;
     *stored_hosts = hosts;
     health.insert(
         new_host.id.clone(),
@@ -62,7 +76,7 @@ pub(crate) async fn create_host(
     drop(stored_hosts);
     drop(_settings_guard);
     state.hosts.sunshine_health_refresh.notify_one();
-    Ok((StatusCode::CREATED, Json(host_info(&new_host, None))))
+    Ok(host_info(&new_host, None))
 }
 
 /// 更新主机配置（按 ID）。
@@ -74,19 +88,27 @@ pub(crate) async fn update_host(
     Path(id): Path<String>,
     Json(req): Json<SunshineHostPatchRequest>,
 ) -> AppResult<Json<SunshineHostInfo>> {
-    update_host_with_patch(&state, &id, req).await
-}
-
-async fn update_host_with_patch(
-    state: &AppState,
-    id: &str,
-    req: SunshineHostPatchRequest,
-) -> AppResult<Json<SunshineHostInfo>> {
     if req.is_empty() {
         return Err(AppError::BadRequest(
             "至少需要提供一个要更新的字段".to_string(),
         ));
     }
+    let info = finish_sunshine_mutation(update_host_and_publish(
+        state,
+        id,
+        req,
+        std::future::ready(()),
+    ))
+    .await?;
+    Ok(Json(info))
+}
+
+async fn update_host_and_publish(
+    state: AppState,
+    id: String,
+    req: SunshineHostPatchRequest,
+    after_database_commit: impl std::future::Future<Output = ()> + Send,
+) -> AppResult<SunshineHostInfo> {
     let update_password = req.password.is_some();
     let _settings_guard = state.hosts.settings_lock.lock().await;
     let mut hosts = state.hosts.sunshine.read().await.clone();
@@ -140,6 +162,7 @@ async fn update_host_with_patch(
     if !found {
         return Err(AppError::NotFound(format!("Sunshine 主机 '{id}' 不存在")));
     }
+    after_database_commit.await;
     *stored_hosts = hosts;
     health.insert(
         host_clone.id.clone(),
@@ -149,7 +172,7 @@ async fn update_host_with_patch(
     drop(stored_hosts);
     drop(_settings_guard);
     state.hosts.sunshine_health_refresh.notify_one();
-    Ok(Json(host_info(&host_clone, None)))
+    Ok(host_info(&host_clone, None))
 }
 
 /// 删除主机配置（按 ID）。
@@ -160,6 +183,14 @@ pub(crate) async fn delete_host(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> AppResult<axum::http::StatusCode> {
+    finish_sunshine_mutation(delete_host_and_publish(state, id, std::future::ready(()))).await
+}
+
+async fn delete_host_and_publish(
+    state: AppState,
+    id: String,
+    after_database_commit: impl std::future::Future<Output = ()> + Send,
+) -> AppResult<StatusCode> {
     let _settings_guard = state.hosts.settings_lock.lock().await;
     let mut hosts = state.hosts.sunshine.read().await.clone();
     if !hosts.iter().any(|host| host.id == id) {
@@ -171,6 +202,7 @@ pub(crate) async fn delete_host(
     if !found {
         return Err(AppError::NotFound(format!("Sunshine 主机 '{id}' 不存在")));
     }
+    after_database_commit.await;
     hosts.retain(|host| host.id != id);
     *stored_hosts = hosts;
     health.remove(&id);
@@ -179,6 +211,23 @@ pub(crate) async fn delete_host(
     drop(_settings_guard);
     state.hosts.sunshine_health_refresh.notify_one();
     Ok(axum::http::StatusCode::NO_CONTENT) // 删除成功返回 204 No Content
+}
+
+/// Run a database mutation independently from the HTTP request future.
+///
+/// Dropping a Tokio `JoinHandle` detaches its task. Therefore, once this
+/// function has spawned the mutation, client disconnects can stop waiting for
+/// the response but cannot interrupt the database-commit -> memory-publication
+/// sequence and leave the two copies out of sync.
+async fn finish_sunshine_mutation<T>(
+    mutation: impl std::future::Future<Output = AppResult<T>> + Send + 'static,
+) -> AppResult<T>
+where
+    T: Send + 'static,
+{
+    tokio::spawn(mutation).await.map_err(|error| {
+        AppError::Anyhow(anyhow::anyhow!("Sunshine mutation task failed: {error}"))
+    })?
 }
 
 // ─── 单主机状态 ───────────────────────────────────────────────────────────────
@@ -216,6 +265,7 @@ mod tests {
         config::{LocalConfig, Settings},
         infra::database,
     };
+    use tokio::sync::oneshot;
 
     fn state_with_host(host: SunshineHostConfig) -> AppState {
         let mut settings = Settings::default();
@@ -231,6 +281,70 @@ mod tests {
             },
             crate::system::ResourceMonitor::frozen(Default::default()),
         )
+    }
+
+    async fn initialized_state() -> AppState {
+        let settings = Settings::default();
+        let pool = database::in_memory_pool().expect("in-memory test pool");
+        database::initialize_schema(&pool)
+            .await
+            .expect("initialize test schema");
+        AppState::new(
+            settings,
+            pool,
+            "unused".into(),
+            LocalConfig {
+                application_version: env!("CARGO_PKG_VERSION").to_string(),
+                admin_username: "admin".into(),
+                admin_password_hash: "unused".into(),
+            },
+            crate::system::ResourceMonitor::frozen(Default::default()),
+        )
+    }
+
+    fn commit_pause() -> (
+        impl std::future::Future<Output = ()> + Send + 'static,
+        oneshot::Receiver<()>,
+        oneshot::Sender<()>,
+    ) {
+        let (committed_tx, committed_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        (
+            async move {
+                let _ = committed_tx.send(());
+                let _ = release_rx.await;
+            },
+            committed_rx,
+            release_tx,
+        )
+    }
+
+    async fn cancel_waiter_after_commit<T>(
+        state: &AppState,
+        waiter: tokio::task::JoinHandle<AppResult<T>>,
+        committed: oneshot::Receiver<()>,
+        release: oneshot::Sender<()>,
+    ) where
+        T: Send + 'static,
+    {
+        tokio::time::timeout(Duration::from_secs(2), committed)
+            .await
+            .expect("database commit barrier timed out")
+            .expect("mutation ended before the database commit barrier");
+        waiter.abort();
+        match waiter.await {
+            Err(error) if error.is_cancelled() => {}
+            _ => panic!("request waiter was not cancelled at the commit barrier"),
+        }
+        release
+            .send(())
+            .expect("detached mutation stopped when its waiter was cancelled");
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            state.hosts.sunshine_health_refresh.notified(),
+        )
+        .await
+        .expect("detached mutation did not publish its memory snapshot");
     }
 
     /// 回归：旧实现会对黑洞地址执行 TCP/HTTP 探测；列表现在只能读内存快照，必须在
@@ -259,5 +373,85 @@ mod tests {
         assert_eq!(response.0[0].probe_status, SunshineProbeStatus::Pending);
         assert_eq!(response.0[0].reachable, None);
         assert_eq!(response.0[0].connected, None);
+    }
+
+    #[tokio::test]
+    async fn cancelled_requests_finish_database_and_memory_publication() {
+        let state = initialized_state().await;
+        let host = SunshineHostConfig {
+            id: "cancelled-mutation-host".into(),
+            name: "before-update".into(),
+            host: "192.0.2.10".into(),
+            username: "admin".into(),
+            password: String::new(),
+            verify_tls: false,
+            ..SunshineHostConfig::default()
+        };
+
+        let (pause, committed, release) = commit_pause();
+        let create_waiter = tokio::spawn(finish_sunshine_mutation(create_host_and_publish(
+            state.clone(),
+            host.clone(),
+            pause,
+        )));
+        cancel_waiter_after_commit(&state, create_waiter, committed, release).await;
+        assert!(
+            state
+                .hosts
+                .sunshine
+                .read()
+                .await
+                .iter()
+                .any(|stored| stored.id == host.id),
+            "cancelled create committed SQLite but did not publish memory"
+        );
+        assert_eq!(
+            database::load_sunshine_hosts(state.db().as_ref())
+                .await
+                .expect("reload created host")
+                .len(),
+            1
+        );
+
+        state.hosts.sunshine_health.write().await.insert(
+            host.id.clone(),
+            crate::state::SunshineHostHealth::completed(true, &Ok(())),
+        );
+        let (pause, committed, release) = commit_pause();
+        let update_waiter = tokio::spawn(finish_sunshine_mutation(update_host_and_publish(
+            state.clone(),
+            host.id.clone(),
+            SunshineHostPatchRequest {
+                name: Some("after-update".into()),
+                ..SunshineHostPatchRequest::default()
+            },
+            pause,
+        )));
+        cancel_waiter_after_commit(&state, update_waiter, committed, release).await;
+        let memory_name = state.hosts.sunshine.read().await[0].name.clone();
+        let stored = database::load_sunshine_hosts(state.db().as_ref())
+            .await
+            .expect("reload updated host");
+        assert_eq!(memory_name, "after-update");
+        assert_eq!(stored[0].name, memory_name);
+        let health = state.hosts.sunshine_health.read().await;
+        assert_eq!(health[&host.id].reachable, None);
+        drop(health);
+
+        let (pause, committed, release) = commit_pause();
+        let delete_waiter = tokio::spawn(finish_sunshine_mutation(delete_host_and_publish(
+            state.clone(),
+            host.id.clone(),
+            pause,
+        )));
+        cancel_waiter_after_commit(&state, delete_waiter, committed, release).await;
+        assert!(state.hosts.sunshine.read().await.is_empty());
+        assert!(state.hosts.sunshine_health.read().await.is_empty());
+        assert!(
+            database::load_sunshine_hosts(state.db().as_ref())
+                .await
+                .expect("reload after delete")
+                .is_empty()
+        );
     }
 }
