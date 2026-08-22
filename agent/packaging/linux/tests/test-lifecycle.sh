@@ -826,6 +826,139 @@ assert_absent "$test_root/var/lib/unionc-agent"
 assert_exists "$test_root/user.deleted"
 assert_exists "$test_root/group.deleted"
 
+# A missing ownership marker proves nothing by itself. If the matching global
+# account still exists (or NSS cannot prove absence), both purge entry points
+# must fail before deleting the backup, the other marker, or either account.
+reset_safe_reinstall_state
+write_trusted_rpm_backup
+rm -f "$test_root/var/lib/unionc-agent-package/managed-user" \
+  "$test_root/var/lib/unionc-agent-package/managed-group"
+if "$test_root/postremove.sh" purge >"$test_root/purge-missing-markers-postremove.log" 2>&1; then
+  fail 'postremove purge accepted live accounts without ownership markers'
+fi
+assert_absent "$test_root/var/lib/unionc-agent"
+assert_absent "$test_root/etc/unionc-agent"
+assert_exists "$test_root/var/lib/unionc-agent-package/config.json.remove-backup"
+assert_absent "$test_root/user.deleted"
+assert_absent "$test_root/group.deleted"
+
+reset_safe_reinstall_state
+rm -rf "$test_root/var/lib/unionc-agent-package"
+if "$test_root/purge-local-state.sh" --yes \
+  >"$test_root/purge-missing-bookkeeping-live-accounts.log" 2>&1; then
+  fail 'purge helper accepted live accounts after the bookkeeping directory disappeared'
+fi
+assert_absent "$test_root/user.deleted"
+assert_absent "$test_root/group.deleted"
+
+reset_safe_reinstall_state
+write_trusted_rpm_backup
+rm -f "$test_root/var/lib/unionc-agent-package/managed-user" \
+  "$test_root/var/lib/unionc-agent-package/managed-group"
+if "$test_root/purge-local-state.sh" --yes \
+  >"$test_root/purge-missing-markers-helper.log" 2>&1; then
+  fail 'purge helper accepted live accounts without ownership markers'
+fi
+assert_exists "$test_root/var/lib/unionc-agent-package/config.json.remove-backup"
+assert_absent "$test_root/user.deleted"
+assert_absent "$test_root/group.deleted"
+
+# Preflight is all-or-nothing: one missing proof cannot let the other valid
+# marker delete half of the service identity before the conflict is reported.
+reset_safe_reinstall_state
+rm -f "$test_root/var/lib/unionc-agent-package/managed-group"
+if "$test_root/postremove.sh" purge >"$test_root/purge-missing-group-marker.log" 2>&1; then
+  fail 'postremove purge deleted a user before noticing the missing group marker'
+fi
+assert_exists "$test_root/var/lib/unionc-agent-package/managed-user"
+assert_absent "$test_root/user.deleted"
+assert_absent "$test_root/group.deleted"
+
+reset_safe_reinstall_state
+rm -f "$test_root/var/lib/unionc-agent-package/managed-user"
+if "$test_root/purge-local-state.sh" --yes \
+  >"$test_root/purge-missing-user-marker.log" 2>&1; then
+  fail 'purge helper accepted a live user without its ownership marker'
+fi
+assert_exists "$test_root/var/lib/unionc-agent-package/managed-group"
+assert_absent "$test_root/user.deleted"
+assert_absent "$test_root/group.deleted"
+
+reset_safe_reinstall_state
+rm -f "$test_root/var/lib/unionc-agent-package/managed-user"
+if FAIL_PASSWD_ENUM=1 "$test_root/postremove.sh" purge \
+  >"$test_root/purge-missing-user-nss.log" 2>&1; then
+  fail 'postremove purge treated an NSS failure as proof that a markerless user was absent'
+fi
+assert_absent "$test_root/user.deleted"
+assert_absent "$test_root/group.deleted"
+
+reset_safe_reinstall_state
+rm -f "$test_root/var/lib/unionc-agent-package/managed-group"
+if FAIL_GROUP_ENUM=1 "$test_root/purge-local-state.sh" --yes \
+  >"$test_root/purge-missing-group-nss.log" 2>&1; then
+  fail 'purge helper treated an NSS failure as proof that a markerless group was absent'
+fi
+assert_absent "$test_root/user.deleted"
+assert_absent "$test_root/group.deleted"
+
+# Present markers are also parsed during the all-or-nothing preflight. A valid
+# proof for one identity cannot authorize its deletion before a malformed proof
+# for the other identity is discovered.
+reset_safe_reinstall_state
+write_trusted_rpm_backup
+printf 'format=0.3.1\ngid=998\n' \
+  >"$test_root/var/lib/unionc-agent-package/managed-group"
+if "$test_root/postremove.sh" purge >"$test_root/purge-valid-user-bad-group.log" 2>&1; then
+  fail 'postremove purge deleted a user before parsing the invalid group marker'
+fi
+assert_exists "$test_root/var/lib/unionc-agent-package/config.json.remove-backup"
+assert_exists "$test_root/var/lib/unionc-agent-package/managed-user"
+assert_exists "$test_root/var/lib/unionc-agent-package/managed-group"
+assert_absent "$test_root/user.deleted"
+assert_absent "$test_root/group.deleted"
+
+reset_safe_reinstall_state
+write_trusted_rpm_backup
+printf 'format=0.3.1\nuid=998\nprimary_gid=998\n' \
+  >"$test_root/var/lib/unionc-agent-package/managed-user"
+if "$test_root/purge-local-state.sh" --yes \
+  >"$test_root/purge-bad-user-valid-group.log" 2>&1; then
+  fail 'purge helper accepted an invalid user marker before processing the group'
+fi
+assert_exists "$test_root/var/lib/unionc-agent-package/config.json.remove-backup"
+assert_exists "$test_root/var/lib/unionc-agent-package/managed-user"
+assert_exists "$test_root/var/lib/unionc-agent-package/managed-group"
+assert_absent "$test_root/user.deleted"
+assert_absent "$test_root/group.deleted"
+
+# Marker absence is safe only after the corresponding account is known gone.
+# This permits partial cleanup retries and makes a completed purge idempotent.
+reset_safe_reinstall_state
+rm -f "$test_root/var/lib/unionc-agent-package/managed-user"
+: >"$test_root/user.deleted"
+"$test_root/postremove.sh" purge >"$test_root/purge-partial-marker-retry.log"
+assert_exists "$test_root/group.deleted"
+assert_absent "$test_root/var/lib/unionc-agent-package"
+
+reset_safe_reinstall_state
+rm -f "$test_root/var/lib/unionc-agent-package/managed-group"
+: >"$test_root/group.deleted"
+if "$test_root/postremove.sh" purge >"$test_root/purge-group-gone-before-user.log" 2>&1; then
+  fail 'postremove purge accepted a live user after its required group disappeared'
+fi
+assert_absent "$test_root/user.deleted"
+assert_exists "$test_root/var/lib/unionc-agent-package/managed-user"
+
+reset_safe_reinstall_state
+rm -f "$test_root/var/lib/unionc-agent-package/managed-user" \
+  "$test_root/var/lib/unionc-agent-package/managed-group"
+START_ACCOUNTS_ABSENT=1 "$test_root/postremove.sh" purge \
+  >"$test_root/purge-already-absent.log"
+assert_absent "$test_root/var/lib/unionc-agent-package"
+START_ACCOUNTS_ABSENT=1 "$test_root/purge-local-state.sh" --yes \
+  >"$test_root/purge-idempotent-helper.log"
+
 # Account ownership markers authorize root to delete global OS identities, so
 # purge must reject bookkeeping that is not the exact root-only layout created
 # by postinstall. Fixed Agent state is still removed, while every file under an

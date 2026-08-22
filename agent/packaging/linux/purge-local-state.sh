@@ -222,6 +222,52 @@ else
     purge_incomplete=1
     account_bookkeeping_trusted=0
   fi
+  if [ "$account_bookkeeping_trusted" -eq 1 ] &&
+    { [ -e "$managed_user_marker" ] || [ -L "$managed_user_marker" ]; } &&
+    ! load_user_marker; then
+    echo "invalid managed-user marker; preserving package account records and accounts" >&2
+    purge_incomplete=1
+    account_bookkeeping_trusted=0
+  fi
+  if [ "$account_bookkeeping_trusted" -eq 1 ] &&
+    { [ -e "$managed_group_marker" ] || [ -L "$managed_group_marker" ]; } &&
+    ! load_group_marker; then
+    echo "invalid managed-group marker; preserving package account records and accounts" >&2
+    purge_incomplete=1
+    account_bookkeeping_trusted=0
+  fi
+  if [ "$account_bookkeeping_trusted" -eq 1 ] &&
+    [ ! -e "$managed_user_marker" ] && [ ! -L "$managed_user_marker" ]; then
+    user_lookup_status=0
+    if lookup_user_entry; then
+      echo "managed-user marker is missing while the unionc-agent user still exists; preserving package account records and accounts" >&2
+      purge_incomplete=1
+      account_bookkeeping_trusted=0
+    else
+      user_lookup_status=$?
+      if [ "$user_lookup_status" -ne 1 ]; then
+        echo "managed-user marker is missing and users cannot be enumerated safely; preserving package account records and accounts" >&2
+        purge_incomplete=1
+        account_bookkeeping_trusted=0
+      fi
+    fi
+  fi
+  if [ "$account_bookkeeping_trusted" -eq 1 ] &&
+    [ ! -e "$managed_group_marker" ] && [ ! -L "$managed_group_marker" ]; then
+    group_lookup_status=0
+    if lookup_group_entry; then
+      echo "managed-group marker is missing while the unionc-agent group still exists; preserving package account records and accounts" >&2
+      purge_incomplete=1
+      account_bookkeeping_trusted=0
+    else
+      group_lookup_status=$?
+      if [ "$group_lookup_status" -ne 1 ]; then
+        echo "managed-group marker is missing and groups cannot be enumerated safely; preserving package account records and accounts" >&2
+        purge_incomplete=1
+        account_bookkeeping_trusted=0
+      fi
+    fi
+  fi
 fi
 
 # Keep these destructive targets literal. Do not replace them with environment
