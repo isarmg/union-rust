@@ -7,9 +7,12 @@ export PATH
 service_name=unionc-agent.service
 package_version=0.3.2
 account_state_dir=/var/lib/unionc-agent-package
+config_dir=/etc/unionc-agent
+config_path="$config_dir/config.json"
 rpm_config_backup="$account_state_dir/config.json.remove-backup"
 managed_user_marker="$account_state_dir/managed-user"
 managed_group_marker="$account_state_dir/managed-group"
+restore_temporary=
 purge_incomplete=0
 recorded_user_uid=
 recorded_user_primary_gid=
@@ -36,6 +39,38 @@ marker_is_trusted() {
   [ -f "$marker_path" ] &&
     [ ! -L "$marker_path" ] &&
     trusted_path_has_metadata "$marker_path" 0:0:600
+}
+
+require_current_config() {
+  current_config_path=$1
+  config_version_marker=$(
+    awk -v expected="$package_version" '
+      {
+        remaining = $0
+        while (match(remaining, /"application_version"[[:space:]]*:/)) {
+          seen += 1
+          remaining = substr(remaining, RSTART + RLENGTH)
+          if (match(remaining, /^[[:space:]]*"[^"]*"/)) {
+            value = substr(remaining, RSTART, RLENGTH)
+            sub(/^[[:space:]]*"/, "", value)
+            sub(/"$/, "", value)
+            if (value == expected) valid += 1
+          }
+        }
+      }
+      END { printf "%d:%d", seen, valid }
+    ' "$current_config_path"
+  ) || return 1
+  [ "$config_version_marker" = 1:1 ]
+}
+
+cleanup_restore_temporary() {
+  cleanup_status=$?
+  trap - EXIT
+  if [ -n "$restore_temporary" ]; then
+    rm -f -- "$restore_temporary" || true
+  fi
+  exit "$cleanup_status"
 }
 
 systemd_daemon_reload() {
@@ -164,6 +199,11 @@ managed_user_is_still_expected() {
     [ "$user_gid" = "$group_gid" ] &&
     [ "$user_home" = /var/lib/unionc-agent ] &&
     { [ "$user_shell" = /usr/sbin/nologin ] || [ "$user_shell" = /sbin/nologin ]; }
+}
+
+managed_restore_identity_is_still_expected() {
+  managed_user_is_still_expected &&
+    [ "$(printf '%s\n' "$group_entry" | cut -d: -f3)" = "$recorded_group_gid" ]
 }
 
 # Return 0 when the package-created group is referenced, 1 when it is unused,
@@ -324,11 +364,75 @@ purge_local_data() {
 }
 
 restore_rpm_config() {
-  [ -f "$rpm_config_backup" ] || return 0
-  install -d -m 0750 -o root -g unionc-agent /etc/unionc-agent
-  cp -p "$rpm_config_backup" /etc/unionc-agent/config.json
-  chown root:unionc-agent /etc/unionc-agent/config.json
-  chmod 0640 /etc/unionc-agent/config.json
+  if [ ! -e "$account_state_dir" ] && [ ! -L "$account_state_dir" ]; then
+    return 0
+  fi
+  account_state_is_trusted || {
+    echo "unionc-agent postremove: refusing RPM config restore from an unsafe bookkeeping directory" >&2
+    return 1
+  }
+  if [ ! -e "$rpm_config_backup" ] && [ ! -L "$rpm_config_backup" ]; then
+    return 0
+  fi
+
+  marker_is_trusted "$managed_user_marker" && load_user_marker || {
+    echo "unionc-agent postremove: refusing RPM config restore without a trusted managed-user marker" >&2
+    return 1
+  }
+  marker_is_trusted "$managed_group_marker" && load_group_marker || {
+    echo "unionc-agent postremove: refusing RPM config restore without a trusted managed-group marker" >&2
+    return 1
+  }
+  lookup_user_entry && lookup_group_entry && managed_restore_identity_is_still_expected || {
+    echo "unionc-agent postremove: refusing RPM config restore for a changed service account identity" >&2
+    return 1
+  }
+  [ -f "$rpm_config_backup" ] && [ ! -L "$rpm_config_backup" ] &&
+    trusted_path_has_metadata "$rpm_config_backup" 0:0:600 &&
+    require_current_config "$rpm_config_backup" || {
+      echo "unionc-agent postremove: refusing an unsafe or invalid RPM config backup" >&2
+      return 1
+    }
+
+  if [ -e "$config_dir" ] || [ -L "$config_dir" ]; then
+    [ -d "$config_dir" ] && [ ! -L "$config_dir" ] &&
+      trusted_path_has_metadata "$config_dir" "0:$recorded_group_gid:750" || {
+        echo "unionc-agent postremove: refusing to restore into an unsafe config directory" >&2
+        return 1
+      }
+  else
+    install -d -m 0750 -o root -g "$recorded_group_gid" "$config_dir"
+  fi
+  [ -d "$config_dir" ] && [ ! -L "$config_dir" ] &&
+    trusted_path_has_metadata "$config_dir" "0:$recorded_group_gid:750" || {
+      echo "unionc-agent postremove: config directory did not become safe" >&2
+      return 1
+    }
+
+  if [ -e "$config_path" ] || [ -L "$config_path" ]; then
+    [ -f "$config_path" ] && [ ! -L "$config_path" ] &&
+      trusted_path_has_metadata "$config_path" "0:$recorded_group_gid:640" &&
+      require_current_config "$config_path" || {
+        echo "unionc-agent postremove: refusing to replace an unsafe or invalid config file" >&2
+        return 1
+      }
+  fi
+
+  restore_temporary="$config_dir/.config.json.restore.$$"
+  trap cleanup_restore_temporary EXIT
+  rm -f -- "$restore_temporary"
+  umask 077
+  cp -p -- "$rpm_config_backup" "$restore_temporary"
+  chown "root:$recorded_group_gid" "$restore_temporary"
+  chmod 0640 "$restore_temporary"
+  [ -f "$restore_temporary" ] && [ ! -L "$restore_temporary" ] &&
+    trusted_path_has_metadata "$restore_temporary" "0:$recorded_group_gid:640" &&
+    require_current_config "$restore_temporary" || {
+      echo "unionc-agent postremove: restored config temporary failed validation" >&2
+      return 1
+    }
+  mv -f -- "$restore_temporary" "$config_path"
+  restore_temporary=
   rm -f -- "$rpm_config_backup"
 }
 
@@ -338,12 +442,12 @@ case "${1:-}" in
     # removes local identity. It never contacts the UnionC Server.
     purge_local_data
     ;;
-  *)
-    # Ordinary removal and same-version reinstall preserve current identity.
-    # On Debian this is usually already a conffile; on RPM restore the private
-    # backup if the package manager removed it.
+  0)
+    # RPM final erase may remove an unchanged noreplace config. Restore only
+    # for that numeric ABI; Debian conffiles and RPM replacement do not use it.
     restore_rpm_config
     ;;
+  *) : ;;
 esac
 
 systemd_daemon_reload

@@ -14,6 +14,7 @@ config_path="$config_dir/config.json"
 rpm_config_backup="$account_state_dir/config.json.remove-backup"
 managed_user_marker="$account_state_dir/managed-user"
 managed_group_marker="$account_state_dir/managed-group"
+config_restore_temporary=
 group_marker_state=absent
 user_marker_state=absent
 recorded_group_gid=
@@ -140,6 +141,9 @@ inspect_existing_markers() {
   if [ -e "$managed_group_marker" ] || [ -L "$managed_group_marker" ]; then
     [ -f "$managed_group_marker" ] && [ ! -L "$managed_group_marker" ] ||
       die "managed group marker is not a safe regular file"
+    read_path_metadata "$managed_group_marker"
+    [ "$path_uid:$path_gid:$path_mode" = 0:0:600 ] ||
+      die "managed group marker must be owned by root:root with permissions 0600"
     if load_group_marker; then
       group_marker_state=valid
     else
@@ -150,6 +154,9 @@ inspect_existing_markers() {
   if [ -e "$managed_user_marker" ] || [ -L "$managed_user_marker" ]; then
     [ -f "$managed_user_marker" ] && [ ! -L "$managed_user_marker" ] ||
       die "managed user marker is not a safe regular file"
+    read_path_metadata "$managed_user_marker"
+    [ "$path_uid:$path_gid:$path_mode" = 0:0:600 ] ||
+      die "managed user marker must be owned by root:root with permissions 0600"
     if load_user_marker; then
       user_marker_state=valid
     else
@@ -280,6 +287,10 @@ EOF
 rollback_account_creation() {
   rollback_status=$?
   trap - EXIT
+  set +e
+  if [ -n "$config_restore_temporary" ]; then
+    rm -f -- "$config_restore_temporary"
+  fi
   if [ "$rollback_status" -eq 0 ]; then
     exit 0
   fi
@@ -288,7 +299,6 @@ rollback_account_creation() {
   # this invocation and not yet committed are candidates for rollback. Every
   # deletion re-enumerates NSS and requires the exact numeric identity plus the
   # immutable service attributes established by useradd/groupadd.
-  set +e
   if [ "$user_created_now" -eq 1 ] && [ "$user_creation_committed" -eq 0 ] &&
     [ "$user_marker_state" != valid ]; then
     user_lookup_status=0
@@ -520,12 +530,6 @@ else
     die "$state_dir was not created for the recorded UnionC Agent identity with permissions 0700"
 fi
 
-# The current package's pre-remove hook protects config across remove and
-# same-version reinstall. Consume that private backup before starting service.
-if [ -f "$rpm_config_backup" ]; then
-  cp -p "$rpm_config_backup" "$config_path"
-  rm -f "$rpm_config_backup"
-fi
 [ -d "$config_dir" ] && [ ! -L "$config_dir" ] ||
   die "$config_dir was redirected during postinstall"
 [ -f "$config_path" ] && [ ! -L "$config_path" ] ||
@@ -541,6 +545,28 @@ read_path_metadata "$config_dir"
 read_path_metadata "$config_path"
 [ "$path_uid:$path_gid:$path_mode" = "0:$user_gid:640" ] ||
   die "$config_path could not be secured for the UnionC Agent group"
+
+# The current package's pre-remove hook protects config across remove and
+# same-version reinstall. Validate and secure every input before the atomic
+# rename commit point; a committed restore is not rolled back by later service
+# startup failures.
+if [ -f "$rpm_config_backup" ]; then
+  config_restore_temporary="$config_dir/.config.json.restore.$$"
+  rm -f -- "$config_restore_temporary"
+  umask 077
+  cp -p -- "$rpm_config_backup" "$config_restore_temporary"
+  chown "root:$user_gid" "$config_restore_temporary"
+  chmod 0640 "$config_restore_temporary"
+  [ -f "$config_restore_temporary" ] && [ ! -L "$config_restore_temporary" ] ||
+    die "restored config temporary is not a safe regular file"
+  require_current_config "$config_restore_temporary"
+  read_path_metadata "$config_restore_temporary"
+  [ "$path_uid:$path_gid:$path_mode" = "0:$user_gid:640" ] ||
+    die "restored config temporary has foreign ownership or permissions"
+  mv -f -- "$config_restore_temporary" "$config_path"
+  config_restore_temporary=
+  rm -f -- "$rpm_config_backup"
+fi
 
 service_started=0
 if [ -d /run/systemd/system ]; then

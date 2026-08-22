@@ -88,6 +88,14 @@ sudo unionc-agent pair --config /etc/unionc-agent/config.json \
 | 可选 GPU drop-in | `/etc/systemd/system/unionc-agent.service.d/gpu.conf` |
 | purge 工具 | `/usr/sbin/unionc-agent-purge` |
 
+RPM 普通卸载可能暂时移走 `%config(noreplace)`，因此 pre-remove 会把当前配置原子备份到
+`/var/lib/unionc-agent-package/config.json.remove-backup`，post-remove 再原子恢复。写入与
+恢复都要求记账目录为 `root:root 0700`、两个当前 marker 为 `root:root 0600`，配置和当前
+数值账户绑定仍一致；备份本身必须是唯一标注当前版本的 `root:root 0600` 普通文件。来源、
+目标或账户身份有任何符号链接、权限或版本异常时，不会把可疑路径“修正”后继续使用。原子
+rename 是恢复提交点：提交前失败会同时保留原配置和备份；提交后恢复配置已经生效，后续
+服务启动失败不会回滚它。
+
 配对后的只读验证与日志：
 
 ```bash

@@ -239,6 +239,12 @@ DEB/RPM 包负责完整的本地生命周期，Agent 本身不包含自更新器
 不会打印“服务已运行”的假成功。在容器镜像/chroot 等 systemd 未作为 PID 1 运行的环境中，
 包只安装文件并明确提示稍后手工 `systemctl enable --now unionc-agent`。
 
+RPM 普通卸载为防止 `%config(noreplace)` 被移走，会在 root-only 记账目录中通过临时文件和
+原子 rename 保存配置，再以相同方式恢复。整个事务会重新验证配置、两个 ownership marker、
+备份、服务账户的数值身份以及恢复目标；完整临时配置校验通过后才原子提交。提交前失败会
+保留旧配置和备份，且不会沿符号链接读取、覆盖或删除外部文件。原子 rename 是提交点：
+提交后恢复配置已经生效，后续服务启动失败不会再回滚配置。
+
 普通卸载刻意保留 `/etc/unionc-agent`、`/var/lib/unionc-agent`、GPU systemd drop-in 和
 专用账户。purge 才会清理这些路径以及**由包首次创建**的 `unionc-agent` 用户/组；安装前
 已经存在的合法同名账户不会被包接管或删除。若包创建的账户后来被人为改成非预期值，
