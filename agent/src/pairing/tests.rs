@@ -32,6 +32,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn pairing_status_url_appends_path_segments_without_query_or_fragment_ambiguity() {
+        let request_id = Uuid::new_v4();
+        let endpoint = pairing_status_endpoint(
+            "https://unionc.example/api/agent/v2/pairing-requests/",
+            request_id,
+        )
+        .unwrap();
+        assert_eq!(
+            endpoint.as_str(),
+            format!(
+                "https://unionc.example/api/agent/v2/pairing-requests/{request_id}/status"
+            )
+        );
+
+        for invalid in [
+            "https://unionc.example/api/agent/v2/pairing-requests?tenant=one",
+            "https://unionc.example/api/agent/v2/pairing-requests#bootstrap",
+        ] {
+            assert!(pairing_status_endpoint(invalid, request_id).is_err());
+        }
+    }
+
     fn one_shot_pairing_server() -> (String, thread::JoinHandle<()>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();

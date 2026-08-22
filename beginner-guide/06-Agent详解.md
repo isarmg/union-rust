@@ -73,6 +73,10 @@ Agent 不负责：
 | HTTP 超时 | 10 秒 |
 | jitter | ±10% |
 | spool 上限 | 64 MiB |
+
+显式 `pairing_endpoint` 必须是可追加配对请求路径的纯 HTTP(S) URL，不能包含 query 或
+fragment；轮询会在其路径后追加 `/<request_id>/status`。report/OTLP endpoint 的既有
+query 参数语义不受这个配对专用限制影响。
 | OTLP | 关闭 |
 | 非回环 HTTP | 禁止 |
 

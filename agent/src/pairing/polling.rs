@@ -34,13 +34,10 @@ pub async fn poll_existing(config: &AgentConfig) -> anyhow::Result<Option<Pairin
     };
     validate_state_version(version)?;
 
-    let endpoint = format!(
-        "{}/{request_id}/status",
-        pairing_endpoint.trim_end_matches('/')
-    );
+    let endpoint = pairing_status_endpoint(&pairing_endpoint, request_id)?;
     let client = build_client(config)?;
     let response = client
-        .post(&endpoint)
+        .post(endpoint.as_str())
         .header(header::AUTHORIZATION, format!("Pairing {polling_secret}"))
         .send()
         .await
@@ -50,7 +47,7 @@ pub async fn poll_existing(config: &AgentConfig) -> anyhow::Result<Option<Pairin
     let body = read_limited(response, "pairing status").await?;
     ensure_pairing_status(status, &[StatusCode::OK], &body, "poll pairing status")?;
     let polled: PairingStatusResponse =
-        parse_pairing_json(&body, &content_type, &endpoint, "pairing status response")?;
+        parse_pairing_json(&body, &content_type, endpoint.as_str(), "pairing status response")?;
 
     match polled.status {
         PairingStatus::Waiting => {
@@ -130,6 +127,26 @@ pub async fn poll_existing(config: &AgentConfig) -> anyhow::Result<Option<Pairin
             }))
         }
     }
+}
+
+fn pairing_status_endpoint(
+    pairing_endpoint: &str,
+    request_id: Uuid,
+) -> anyhow::Result<reqwest::Url> {
+    let mut endpoint = reqwest::Url::parse(pairing_endpoint)
+        .context("stored pairing endpoint is not a valid URL")?;
+    if endpoint.query().is_some() || endpoint.fragment().is_some() {
+        bail!("stored pairing endpoint must not contain a query or fragment");
+    }
+    let request_id = request_id.to_string();
+    let mut segments = endpoint
+        .path_segments_mut()
+        .map_err(|_| anyhow::anyhow!("stored pairing endpoint cannot accept path segments"))?;
+    segments.pop_if_empty();
+    segments.push(&request_id);
+    segments.push("status");
+    drop(segments);
+    Ok(endpoint)
 }
 
 fn load_state_for_network(config: &AgentConfig) -> anyhow::Result<Option<StoredPairingState>> {

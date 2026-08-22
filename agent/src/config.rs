@@ -509,7 +509,7 @@ impl AgentConfig {
         };
         if validates_delivery {
             validate_endpoint(&self.endpoint, self.allow_insecure_http)?;
-            validate_endpoint(&self.pairing_endpoint(), self.allow_insecure_http)?;
+            validate_pairing_endpoint(&self.pairing_endpoint(), self.allow_insecure_http)?;
         }
         #[cfg(not(feature = "otlp"))]
         if validates_delivery && (self.otlp_endpoint.is_some() || self.otlp_token.is_some()) {
@@ -719,6 +719,18 @@ fn validate_endpoint(endpoint: &str, allow_insecure_http: bool) -> anyhow::Resul
     }
 }
 
+fn validate_pairing_endpoint(endpoint: &str, allow_insecure_http: bool) -> anyhow::Result<()> {
+    validate_endpoint(endpoint, allow_insecure_http)?;
+    let url = reqwest::Url::parse(endpoint).expect("validate_endpoint accepted the URL");
+    if url.query().is_some() || url.fragment().is_some() {
+        bail!(
+            "pairing_endpoint must not contain a query or fragment because request-specific paths \
+             are appended while polling"
+        );
+    }
+    Ok(())
+}
+
 fn is_loopback_host(host: Option<&str>) -> bool {
     host.is_some_and(|host| {
         host.eq_ignore_ascii_case("localhost")
@@ -863,6 +875,29 @@ mod tests {
         assert!(validate_endpoint("http://192.0.2.10/report", false).is_err());
         assert!(validate_endpoint("http://127.0.0.1/report", false).is_ok());
         assert!(validate_endpoint("https://telemetry.example/report", false).is_ok());
+    }
+
+    #[test]
+    fn pairing_endpoint_rejects_query_and_fragment_without_restricting_telemetry() {
+        for endpoint in [
+            "https://unionc.example/api/agent/v2/pairing-requests?tenant=one",
+            "https://unionc.example/api/agent/v2/pairing-requests#bootstrap",
+            "https://unionc.example/api/agent/v2/pairing-requests?#",
+        ] {
+            let config = AgentConfig {
+                pairing_endpoint: Some(endpoint.into()),
+                ..AgentConfig::default()
+            };
+            let error = config
+                .validate(AgentCommand::Run)
+                .expect_err("pairing request paths cannot be appended after a query or fragment");
+            assert!(error.to_string().contains("query or fragment"));
+        }
+
+        assert!(
+            validate_endpoint("https://telemetry.example/report?tenant=one#client", false).is_ok(),
+            "the generic telemetry endpoint keeps its existing query/fragment policy"
+        );
     }
 
     #[test]
