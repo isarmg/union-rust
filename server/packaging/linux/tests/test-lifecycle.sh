@@ -82,6 +82,7 @@ EOF
 
 cat >"$test_root/trusted-bin/install" <<'EOF'
 #!/bin/sh
+printf 'install %s\n' "$*" >>"$TEST_LOG"
 destination=
 for argument in "$@"; do
   destination=$argument
@@ -113,9 +114,13 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 case "$metadata_path" in
-  "$test_root/var/lib/unionc-package") metadata=0:0:700 ;;
-  "$test_root/var/lib/unionc-package/managed-user"|\
-  "$test_root/var/lib/unionc-package/managed-group") metadata=0:0:600 ;;
+  "$test_root/var/lib/unionc-package") metadata=${STAT_ACCOUNT_STATE:-0:0:700} ;;
+  "$test_root/var/lib/unionc-package/managed-user")
+    metadata=${STAT_MANAGED_USER:-0:0:600}
+    ;;
+  "$test_root/var/lib/unionc-package/managed-group")
+    metadata=${STAT_MANAGED_GROUP:-0:0:600}
+    ;;
   "$test_root/var/lib/unionc") metadata=998:998:700 ;;
   *) exec /usr/bin/stat -c "$format" -- "$metadata_path" ;;
 esac
@@ -141,6 +146,9 @@ EOF
 done
 
 chmod 0755 "$test_root/trusted-bin/"* "$test_root/attacker-bin/"*
+TEST_LOG="$test_root/commands.log"
+export TEST_LOG
+: >"$TEST_LOG"
 
 cat >"$test_root/etc/unionc/unionc.env" <<EOF
 UNIONC_PACKAGE_VERSION=$package_version
@@ -164,5 +172,25 @@ PATH="$test_root/attacker-bin" "$test_root/postinstall.sh" \
   fail 'postinstall did not execute the packaged Server binary'
 [ ! -e "$test_root/attacker-command-ran" ] ||
   fail 'postinstall executed a command from the caller PATH'
+
+# A root hook must reject foreign ownership proof before changing its metadata.
+# Otherwise install -d could turn attacker-controlled marker storage into a
+# root-owned directory and make its contents appear authoritative.
+: >"$TEST_LOG"
+if STAT_ACCOUNT_STATE=1000:1000:777 "$test_root/postinstall.sh" \
+  >"$test_root/foreign-account-state.log" 2>&1; then
+  fail 'postinstall adopted a foreign package account-state directory'
+fi
+[ ! -s "$TEST_LOG" ] ||
+  fail 'postinstall normalized a foreign package account-state directory'
+
+if STAT_MANAGED_USER=1000:1000:600 "$test_root/postinstall.sh" \
+  >"$test_root/foreign-user-marker.log" 2>&1; then
+  fail 'postinstall trusted a managed-user marker not owned by root'
+fi
+if STAT_MANAGED_GROUP=0:0:666 "$test_root/postinstall.sh" \
+  >"$test_root/writable-group-marker.log" 2>&1; then
+  fail 'postinstall trusted a writable managed-group marker'
+fi
 
 echo 'Server Linux lifecycle checks passed'

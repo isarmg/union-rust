@@ -106,9 +106,10 @@ unit 已包含一组 systemd 硬化选项，并显式设置 `UNIONC_DATA_DIR` �
 包内环境文件的 `UNIONC_PACKAGE_VERSION=0.3.2` 是安装归属标记，不是可调运行参数，不能
 删除或修改。安装脚本还会把 `/var/lib/unionc-package` 中的版本化 marker 与实际 UID/GID、
 账户 home/shell、数据目录所有权和 0700 权限逐一比对；既有文件、账户或目录缺少当前标记
-时会 fail closed，不执行旧安装接管。root 生命周期脚本会覆盖调用者传入的 `PATH`，版本
-校验也固定调用包内 `/usr/bin/unionc`，不能由同名外部程序替换。普通卸载保留数据与 marker，
-仅支持同一 0.3.2 重装。
+时会 fail closed，不执行旧安装接管。marker 目录必须保持 `root:root/0700`，两个 marker
+文件必须保持 `root:root/0600`；安装钩子不会先修复不可信元数据再读取其中内容。root 生命周期
+脚本会覆盖调用者传入的 `PATH`，版本校验也固定调用包内 `/usr/bin/unionc`，不能由同名外部
+程序替换。普通卸载保留数据与 marker，仅支持同一 0.3.2 重装。
 
 ### 正式发布制品与门禁
 

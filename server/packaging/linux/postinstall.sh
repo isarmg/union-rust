@@ -32,6 +32,20 @@ done
 [ "$("$server_binary" --version)" = "unionc $package_version" ] ||
   die "installed binary version does not match package lifecycle version $package_version"
 
+read_path_metadata() {
+  metadata_path=$1
+  path_metadata=$(stat -c '%u:%g:%a' -- "$metadata_path") ||
+    die "cannot read ownership and permissions for $metadata_path"
+  path_uid=${path_metadata%%:*}
+  path_metadata_remainder=${path_metadata#*:}
+  path_gid=${path_metadata_remainder%%:*}
+  path_mode=${path_metadata_remainder#*:}
+  case "$path_uid:$path_gid:$path_mode" in
+    *[!0-9:]*) die "$metadata_path has invalid ownership or permission metadata" ;;
+    :*|*::*|*:) die "$metadata_path has incomplete ownership or permission metadata" ;;
+  esac
+}
+
 # nFPM lays down this config before invoking postinstall. Its exact marker
 # distinguishes the current package payload from a retained or unrelated file
 # before this hook creates an account, marker directory, or data directory.
@@ -110,6 +124,9 @@ inspect_existing_markers() {
   if [ -e "$managed_group_marker" ] || [ -L "$managed_group_marker" ]; then
     [ -f "$managed_group_marker" ] && [ ! -L "$managed_group_marker" ] ||
       die "managed group marker is not a safe regular file"
+    read_path_metadata "$managed_group_marker"
+    [ "$path_uid:$path_gid:$path_mode" = 0:0:600 ] ||
+      die "managed group marker must be owned by root:root with permissions 0600"
     load_group_marker || die "managed group marker is not for UnionC $package_version"
     group_marker_state=valid
   fi
@@ -117,6 +134,9 @@ inspect_existing_markers() {
   if [ -e "$managed_user_marker" ] || [ -L "$managed_user_marker" ]; then
     [ -f "$managed_user_marker" ] && [ ! -L "$managed_user_marker" ] ||
       die "managed user marker is not a safe regular file"
+    read_path_metadata "$managed_user_marker"
+    [ "$path_uid:$path_gid:$path_mode" = 0:0:600 ] ||
+      die "managed user marker must be owned by root:root with permissions 0600"
     load_user_marker || die "managed user marker is not for UnionC $package_version"
     user_marker_state=valid
   fi
@@ -161,12 +181,22 @@ write_user_marker() {
 
 # The root-owned marker directory binds the current package version to the
 # exact numeric service identity. Removing the package deliberately keeps it,
-# so only an exact 0.3.2 reinstall can reclaim the retained state.
+# so only an exact 0.3.2 reinstall can reclaim the retained state. Never
+# normalize an existing foreign directory before trusting marker files below.
 if [ -e "$account_state_dir" ] || [ -L "$account_state_dir" ]; then
   [ -d "$account_state_dir" ] && [ ! -L "$account_state_dir" ] ||
     die "package account state path is not a safe directory"
+  read_path_metadata "$account_state_dir"
+  [ "$path_uid:$path_gid:$path_mode" = 0:0:700 ] ||
+    die "package account state directory must be owned by root:root with permissions 0700"
+else
+  install -d -m 0700 -o root -g root "$account_state_dir"
 fi
-install -d -m 0700 -o root -g root "$account_state_dir"
+[ -d "$account_state_dir" ] && [ ! -L "$account_state_dir" ] ||
+  die "package account state path did not become a safe directory"
+read_path_metadata "$account_state_dir"
+[ "$path_uid:$path_gid:$path_mode" = 0:0:700 ] ||
+  die "package account state directory was not created as root:root with permissions 0700"
 inspect_existing_markers
 
 data_dir_preexisting=0
