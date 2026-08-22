@@ -120,9 +120,11 @@ sudo unionc-agent-purge --yes
 sudo dnf remove unionc-agent
 ```
 
-purge 只删除固定的 UnionC 路径。专用用户和组只有在当前 root-only marker 证明它们确由
-本包创建、创建时 UID/GID 与当前属性仍精确匹配、且组没有其他 primary/supplementary 成员
-时才会删除；查询失败一律保留。碰巧同名的预存账户不会被接管。
+purge 只删除固定的 UnionC 路径。专用用户和组只有在记账目录仍为 `root:root 0700`、当前
+marker 仍为 `root:root 0600`，且 marker 证明它们确由本包创建、创建时 UID/GID 与当前属性
+仍精确匹配、组没有其他 primary/supplementary 成员时才会删除；查询失败一律保留。目录、
+marker 类型或元数据不匹配时，脚本仍清理固定的 Agent 状态和配置，但会完整保留记账目录、
+RPM 配置备份及两个账户并返回失败，供管理员检查后重试。碰巧同名的预存账户不会被接管。
 
 Linux `.tar.gz` 是 portable binary bundle，不是安装包，不提供账户、权限、升级或卸载语义。
 

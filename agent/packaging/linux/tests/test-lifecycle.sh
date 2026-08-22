@@ -246,6 +246,12 @@ case "$path" in
   "$test_root/var/lib/unionc-agent-package")
     metadata=${STAT_ACCOUNT_STATE:-0:0:700}
     ;;
+  "$test_root/var/lib/unionc-agent-package/managed-user")
+    metadata=${STAT_MANAGED_USER:-0:0:600}
+    ;;
+  "$test_root/var/lib/unionc-agent-package/managed-group")
+    metadata=${STAT_MANAGED_GROUP:-0:0:600}
+    ;;
   "$test_root/var/lib/unionc-agent")
     metadata=${STAT_AGENT_STATE:-${AGENT_UID:-998}:${AGENT_GID:-998}:700}
     ;;
@@ -447,9 +453,98 @@ assert_absent "$test_root/var/lib/unionc-agent"
 assert_exists "$test_root/user.deleted"
 assert_exists "$test_root/group.deleted"
 
+# Account ownership markers authorize root to delete global OS identities, so
+# purge must reject bookkeeping that is not the exact root-only layout created
+# by postinstall. Fixed Agent state is still removed, while every file under an
+# untrusted bookkeeping root and both accounts are preserved for inspection.
+reset_safe_reinstall_state
+: >"$test_root/var/lib/unionc-agent-package/config.json.remove-backup"
+if STAT_ACCOUNT_STATE=1000:1000:700 "$test_root/postremove.sh" purge \
+  >"$test_root/purge-foreign-bookkeeping-owner.log" 2>&1; then
+  fail 'postremove purge trusted a non-root account bookkeeping directory'
+fi
+assert_absent "$test_root/var/lib/unionc-agent"
+assert_absent "$test_root/etc/unionc-agent"
+assert_exists "$test_root/var/lib/unionc-agent-package/config.json.remove-backup"
+assert_exists "$test_root/var/lib/unionc-agent-package/managed-user"
+assert_exists "$test_root/var/lib/unionc-agent-package/managed-group"
+assert_absent "$test_root/user.deleted"
+assert_absent "$test_root/group.deleted"
+
+reset_safe_reinstall_state
+: >"$test_root/var/lib/unionc-agent-package/config.json.remove-backup"
+if STAT_ACCOUNT_STATE=0:0:777 "$test_root/purge-local-state.sh" --yes \
+  >"$test_root/purge-open-bookkeeping-mode.log" 2>&1; then
+  fail 'purge helper trusted an account bookkeeping directory with an unsafe mode'
+fi
+assert_exists "$test_root/var/lib/unionc-agent-package/config.json.remove-backup"
+assert_exists "$test_root/var/lib/unionc-agent-package/managed-user"
+assert_exists "$test_root/var/lib/unionc-agent-package/managed-group"
+assert_absent "$test_root/user.deleted"
+assert_absent "$test_root/group.deleted"
+
+# A trusted parent is insufficient when either authorization marker itself is
+# writable by another identity. Validate every present marker before deleting
+# the backup, either account, or either marker.
+reset_safe_reinstall_state
+: >"$test_root/var/lib/unionc-agent-package/config.json.remove-backup"
+if STAT_MANAGED_USER=1000:1000:600 "$test_root/postremove.sh" purge \
+  >"$test_root/purge-foreign-user-marker.log" 2>&1; then
+  fail 'postremove purge trusted a non-root managed-user marker'
+fi
+assert_exists "$test_root/var/lib/unionc-agent-package/config.json.remove-backup"
+assert_exists "$test_root/var/lib/unionc-agent-package/managed-user"
+assert_exists "$test_root/var/lib/unionc-agent-package/managed-group"
+assert_absent "$test_root/user.deleted"
+assert_absent "$test_root/group.deleted"
+
+reset_safe_reinstall_state
+: >"$test_root/var/lib/unionc-agent-package/config.json.remove-backup"
+if STAT_MANAGED_GROUP=0:0:666 "$test_root/purge-local-state.sh" --yes \
+  >"$test_root/purge-open-group-marker.log" 2>&1; then
+  fail 'purge helper trusted a group marker with an unsafe mode'
+fi
+assert_exists "$test_root/var/lib/unionc-agent-package/config.json.remove-backup"
+assert_exists "$test_root/var/lib/unionc-agent-package/managed-user"
+assert_exists "$test_root/var/lib/unionc-agent-package/managed-group"
+assert_absent "$test_root/user.deleted"
+assert_absent "$test_root/group.deleted"
+
+prepare_symlinked_purge_bookkeeping() {
+  reset_safe_reinstall_state
+  foreign_bookkeeping="$test_root/foreign-purge-bookkeeping"
+  rm -rf -- "$foreign_bookkeeping"
+  : >"$test_root/var/lib/unionc-agent-package/config.json.remove-backup"
+  mv "$test_root/var/lib/unionc-agent-package" "$foreign_bookkeeping"
+  : >"$foreign_bookkeeping/sentinel"
+  ln -s "$foreign_bookkeeping" "$test_root/var/lib/unionc-agent-package"
+}
+
+assert_foreign_purge_bookkeeping_preserved() {
+  assert_exists "$test_root/foreign-purge-bookkeeping/sentinel"
+  assert_exists "$test_root/foreign-purge-bookkeeping/config.json.remove-backup"
+  assert_exists "$test_root/foreign-purge-bookkeeping/managed-user"
+  assert_exists "$test_root/foreign-purge-bookkeeping/managed-group"
+  assert_absent "$test_root/user.deleted"
+  assert_absent "$test_root/group.deleted"
+}
+
+prepare_symlinked_purge_bookkeeping
+if "$test_root/postremove.sh" purge >"$test_root/purge-bookkeeping-symlink-postremove.log" 2>&1; then
+  fail 'postremove purge followed a symlinked account bookkeeping directory'
+fi
+assert_foreign_purge_bookkeeping_preserved
+
+prepare_symlinked_purge_bookkeeping
+if "$test_root/purge-local-state.sh" --yes \
+  >"$test_root/purge-bookkeeping-symlink-helper.log" 2>&1; then
+  fail 'purge helper followed a symlinked account bookkeeping directory'
+fi
+assert_foreign_purge_bookkeeping_preserved
+
 # A creation-time numeric marker prevents a later same-name account from being
 # mistaken for the package-created identity.
-rm -f "$test_root/user.deleted" "$test_root/group.deleted"
+reset_safe_reinstall_state
 mkdir -p "$test_root/var/lib/unionc-agent"
 : >"$test_root/var/lib/unionc-agent/agent-token"
 write_account_markers 997 998 998

@@ -15,6 +15,29 @@ recorded_user_uid=
 recorded_user_primary_gid=
 recorded_group_gid=
 
+trusted_path_has_metadata() {
+  metadata_path=$1
+  expected_metadata=$2
+  actual_metadata=$(stat -c '%u:%g:%a' -- "$metadata_path" 2>/dev/null) || return 1
+  [ "$actual_metadata" = "$expected_metadata" ]
+}
+
+account_state_is_trusted() {
+  if [ ! -e "$account_state_dir" ] && [ ! -L "$account_state_dir" ]; then
+    return 0
+  fi
+  [ -d "$account_state_dir" ] &&
+    [ ! -L "$account_state_dir" ] &&
+    trusted_path_has_metadata "$account_state_dir" 0:0:700
+}
+
+marker_is_trusted() {
+  marker_path=$1
+  [ -f "$marker_path" ] &&
+    [ ! -L "$marker_path" ] &&
+    trusted_path_has_metadata "$marker_path" 0:0:600
+}
+
 usage() {
   cat <<'EOF'
 Usage: sudo unionc-agent-purge --yes
@@ -181,118 +204,135 @@ EOF
   return 1
 }
 
+account_bookkeeping_trusted=1
+if ! account_state_is_trusted; then
+  echo "unsafe account bookkeeping directory; preserving package account records and accounts" >&2
+  purge_incomplete=1
+  account_bookkeeping_trusted=0
+else
+  if { [ -e "$managed_user_marker" ] || [ -L "$managed_user_marker" ]; } &&
+    ! marker_is_trusted "$managed_user_marker"; then
+    echo "unsafe managed-user marker; preserving package account records and accounts" >&2
+    purge_incomplete=1
+    account_bookkeeping_trusted=0
+  fi
+  if { [ -e "$managed_group_marker" ] || [ -L "$managed_group_marker" ]; } &&
+    ! marker_is_trusted "$managed_group_marker"; then
+    echo "unsafe managed-group marker; preserving package account records and accounts" >&2
+    purge_incomplete=1
+    account_bookkeeping_trusted=0
+  fi
+fi
+
 # Keep these destructive targets literal. Do not replace them with environment
 # variables or globs: this helper runs as root and is intentionally local-only.
 rm -rf -- /var/lib/unionc-agent
 rm -rf -- /etc/unionc-agent
 rm -rf -- /etc/systemd/system/unionc-agent.service.d
-rm -f -- "$rpm_config_backup"
 
-if [ -e "$managed_user_marker" ] || [ -L "$managed_user_marker" ]; then
-  if [ ! -f "$managed_user_marker" ] || [ -L "$managed_user_marker" ]; then
-    echo "unsafe managed-user marker; preserving the account" >&2
-    purge_incomplete=1
-  elif ! load_user_marker; then
-    echo "invalid managed-user marker; preserving the account" >&2
-    purge_incomplete=1
-  else
-    user_lookup_status=0
-    if lookup_user_entry; then
-      group_lookup_status=0
-      if lookup_group_entry; then
-        if managed_user_is_still_expected; then
-          if userdel unionc-agent; then
-            rm -f -- "$managed_user_marker"
-          else
-            echo "could not remove the dedicated unionc-agent user" >&2
-            purge_incomplete=1
-          fi
-        else
-          echo "the unionc-agent user identity changed; leaving it for safety" >&2
-          purge_incomplete=1
-        fi
-      else
-        group_lookup_status=$?
-        echo "the dedicated group is absent or could not be enumerated; preserving the user" >&2
-        purge_incomplete=1
-      fi
-    else
-      user_lookup_status=$?
-      if [ "$user_lookup_status" -eq 1 ]; then
-        rm -f -- "$managed_user_marker"
-      else
-        echo "could not enumerate users; preserving the dedicated user" >&2
-        purge_incomplete=1
-      fi
-    fi
-  fi
-fi
+if [ "$account_bookkeeping_trusted" -eq 1 ]; then
+  rm -f -- "$rpm_config_backup"
 
-if [ -e "$managed_group_marker" ] || [ -L "$managed_group_marker" ]; then
-  if [ ! -f "$managed_group_marker" ] || [ -L "$managed_group_marker" ]; then
-    echo "unsafe managed-group marker; preserving the group" >&2
-    purge_incomplete=1
-  elif ! load_group_marker; then
-    echo "invalid managed-group marker; preserving the group" >&2
-    purge_incomplete=1
-  else
-    user_lookup_status=0
-    if lookup_user_entry; then
-      echo "the unionc-agent user remains; leaving its group" >&2
+  if [ -e "$managed_user_marker" ] || [ -L "$managed_user_marker" ]; then
+    if ! load_user_marker; then
+      echo "invalid managed-user marker; preserving the account" >&2
       purge_incomplete=1
     else
-      user_lookup_status=$?
-      if [ "$user_lookup_status" -eq 2 ]; then
-        echo "could not enumerate users; preserving the dedicated group" >&2
-        purge_incomplete=1
-      else
+      user_lookup_status=0
+      if lookup_user_entry; then
         group_lookup_status=0
         if lookup_group_entry; then
-          current_group_gid=$(printf '%s\n' "$group_entry" | cut -d: -f3)
-          if [ "$current_group_gid" != "$recorded_group_gid" ]; then
-            echo "the unionc-agent group gid changed; leaving it for safety" >&2
-            purge_incomplete=1
-          else
-            group_usage_status=0
-            if group_id_is_in_use "$recorded_group_gid"; then
-              group_usage_status=0
+          if managed_user_is_still_expected; then
+            if userdel unionc-agent; then
+              rm -f -- "$managed_user_marker"
             else
-              group_usage_status=$?
+              echo "could not remove the dedicated unionc-agent user" >&2
+              purge_incomplete=1
             fi
-            case "$group_usage_status" in
-              0)
-                echo "the unionc-agent group is still in use; preserving it" >&2
-                purge_incomplete=1
-                ;;
-              1)
-                if groupdel unionc-agent; then
-                  rm -f -- "$managed_group_marker"
-                else
-                  echo "could not remove the dedicated unionc-agent group" >&2
-                  purge_incomplete=1
-                fi
-                ;;
-              *)
-                echo "could not verify group usage; preserving the group" >&2
-                purge_incomplete=1
-                ;;
-            esac
+          else
+            echo "the unionc-agent user identity changed; leaving it for safety" >&2
+            purge_incomplete=1
           fi
         else
           group_lookup_status=$?
-          if [ "$group_lookup_status" -eq 1 ]; then
-            rm -f -- "$managed_group_marker"
+          echo "the dedicated group is absent or could not be enumerated; preserving the user" >&2
+          purge_incomplete=1
+        fi
+      else
+        user_lookup_status=$?
+        if [ "$user_lookup_status" -eq 1 ]; then
+          rm -f -- "$managed_user_marker"
+        else
+          echo "could not enumerate users; preserving the dedicated user" >&2
+          purge_incomplete=1
+        fi
+      fi
+    fi
+  fi
+
+  if [ -e "$managed_group_marker" ] || [ -L "$managed_group_marker" ]; then
+    if ! load_group_marker; then
+      echo "invalid managed-group marker; preserving the group" >&2
+      purge_incomplete=1
+    else
+      user_lookup_status=0
+      if lookup_user_entry; then
+        echo "the unionc-agent user remains; leaving its group" >&2
+        purge_incomplete=1
+      else
+        user_lookup_status=$?
+        if [ "$user_lookup_status" -eq 2 ]; then
+          echo "could not enumerate users; preserving the dedicated group" >&2
+          purge_incomplete=1
+        else
+          group_lookup_status=0
+          if lookup_group_entry; then
+            current_group_gid=$(printf '%s\n' "$group_entry" | cut -d: -f3)
+            if [ "$current_group_gid" != "$recorded_group_gid" ]; then
+              echo "the unionc-agent group gid changed; leaving it for safety" >&2
+              purge_incomplete=1
+            else
+              group_usage_status=0
+              if group_id_is_in_use "$recorded_group_gid"; then
+                group_usage_status=0
+              else
+                group_usage_status=$?
+              fi
+              case "$group_usage_status" in
+                0)
+                  echo "the unionc-agent group is still in use; preserving it" >&2
+                  purge_incomplete=1
+                  ;;
+                1)
+                  if groupdel unionc-agent; then
+                    rm -f -- "$managed_group_marker"
+                  else
+                    echo "could not remove the dedicated unionc-agent group" >&2
+                    purge_incomplete=1
+                  fi
+                  ;;
+                *)
+                  echo "could not verify group usage; preserving the group" >&2
+                  purge_incomplete=1
+                  ;;
+              esac
+            fi
           else
-            echo "could not enumerate groups; preserving the dedicated group" >&2
-            purge_incomplete=1
+            group_lookup_status=$?
+            if [ "$group_lookup_status" -eq 1 ]; then
+              rm -f -- "$managed_group_marker"
+            else
+              echo "could not enumerate groups; preserving the dedicated group" >&2
+              purge_incomplete=1
+            fi
           fi
         fi
       fi
     fi
   fi
-fi
 
-rmdir "$account_state_dir" >/dev/null 2>&1 || true
+  rmdir "$account_state_dir" >/dev/null 2>&1 || true
+fi
 
 if [ -d /run/systemd/system ]; then
   systemctl daemon-reload
