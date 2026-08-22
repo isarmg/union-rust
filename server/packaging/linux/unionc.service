@@ -1,0 +1,50 @@
+[Unit]
+Description=UnionC console backend
+Documentation=https://github.com/sarmg/unionc
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unionc
+Group=unionc
+ExecStart=/usr/bin/unionc
+
+# 数据目录必须显式声明。UnionC 的 SQLite、管理员配置与开发主密钥都落在这里；
+# 早期版本用相对路径，工作目录一变就会"找不到配置"并静默新建一个管理员账号。
+Environment=UNIONC_DATA_DIR=/var/lib/unionc
+WorkingDirectory=/var/lib/unionc
+EnvironmentFile=-/etc/unionc/unionc.env
+Environment=UNIONC_ENV=production
+
+Restart=on-failure
+RestartSec=5s
+
+StateDirectory=unionc
+StateDirectoryMode=0700
+ConfigurationDirectory=unionc
+UMask=0077
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+ReadWritePaths=/var/lib/unionc
+
+[Install]
+WantedBy=multi-user.target

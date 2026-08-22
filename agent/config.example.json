@@ -1,0 +1,19 @@
+{
+  "application_version": "0.3.2",
+  "endpoint": "https://unionc.example.com/api/agent/v1/report",
+  "pairing_endpoint": "https://unionc.example.com/api/agent/v2/pairing-requests",
+  "otlp_endpoint": null,
+  "otlp_token": null,
+  "host_name": null,
+  "interval_seconds": 10,
+  "slow_interval_seconds": 30,
+  "request_timeout_seconds": 10,
+  "jitter_percent": 10,
+  "state_dir": "/var/lib/unionc-agent",
+  "spool_max_bytes": 67108864,
+  "tls_identity_pem": null,
+  "tls_identity_pkcs12": null,
+  "tls_identity_password": null,
+  "tls_ca_pem": null,
+  "allow_insecure_http": false
+}

@@ -1,0 +1,57 @@
+name: unionc
+arch: ${NFPM_ARCH}
+platform: linux
+version: ${VERSION}
+section: admin
+priority: optional
+maintainer: UnionC
+description: |
+  UnionC console backend with embedded SQLite — read-only multi-host monitoring and Sunshine management.
+license: MIT OR Apache-2.0
+overrides:
+  deb:
+    # The lifecycle scripts call useradd/groupadd, which Debian ships in
+    # passwd. `adduser` is a different front-end and is not the RPM package
+    # name, so a shared dependency list would make one of the formats wrong.
+    depends:
+      - passwd
+      - systemd
+  rpm:
+    # Fedora/RHEL provide the same account-management commands here.
+    depends:
+      - shadow-utils
+      - systemd
+# ⚠ 必须从**工作区根**执行：
+#   cargo build --release --workspace
+#   NFPM_ARCH=amd64 server/packaging/linux/build-packages.sh
+# build-packages.sh 从 Cargo 读取唯一当前版本，并在调用 nFPM 前核对待打包二进制；
+# 不要直接给本文件注入任意 VERSION。
+# 合并为 Cargo workspace 后产物在根 target/，路径因此全部根相对。
+#
+# ⚠⚠ 不要在 `contents[].src` 里写 `${VAR}`。
+#
+# nfpm **只**对 name/arch/version 这类标量字段做环境变量展开，`contents[].src`
+# 原样保留。写成 `./target/${RUST_TARGET}/release/unionc` 实测（nfpm v2.44.0）
+# 直接失败：
+#
+#   glob failed: ./target/${RUST_TARGET}/release/unionc: no matching files
+#
+# 交叉编译的产物请先落到 target/release/ 再打包，例如：
+#   cargo build --release -p unionc --target x86_64-unknown-linux-musl
+#   install -Dm755 target/x86_64-unknown-linux-musl/release/unionc target/release/unionc
+contents:
+  - src: ./target/release/unionc
+    dst: /usr/bin/unionc
+    file_info:
+      mode: 0755
+  - src: ./server/packaging/linux/unionc.env.example
+    dst: /etc/unionc/unionc.env
+    type: config|noreplace
+    file_info:
+      mode: 0640
+  - src: ./server/packaging/linux/unionc.service
+    dst: /usr/lib/systemd/system/unionc.service
+scripts:
+  postinstall: ./server/packaging/linux/postinstall.sh
+  preremove: ./server/packaging/linux/preremove.sh
+  postremove: ./server/packaging/linux/postremove.sh

@@ -1,0 +1,325 @@
+#!/bin/sh
+set -eu
+
+service_name=unionc-agent.service
+package_version=0.3.2
+account_state_dir=/var/lib/unionc-agent-package
+rpm_config_backup="$account_state_dir/config.json.remove-backup"
+managed_user_marker="$account_state_dir/managed-user"
+managed_group_marker="$account_state_dir/managed-group"
+purge_incomplete=0
+recorded_user_uid=
+recorded_user_primary_gid=
+recorded_group_gid=
+
+systemd_daemon_reload() {
+  if [ -d /run/systemd/system ]; then
+    command -v systemctl >/dev/null 2>&1 || {
+      echo "unionc-agent postremove: systemd is running but systemctl is unavailable" >&2
+      exit 1
+    }
+    systemctl daemon-reload
+    # A removed or purged unit may no longer exist, so reset-failed is best effort.
+    systemctl reset-failed "$service_name" >/dev/null 2>&1 || true
+  fi
+}
+
+load_user_marker() {
+  marker_format_seen=0
+  marker_uid_seen=0
+  marker_primary_gid_seen=0
+  recorded_user_uid=
+  recorded_user_primary_gid=
+  while IFS= read -r marker_line || [ -n "$marker_line" ]; do
+    case "$marker_line" in
+      format="$package_version")
+        [ "$marker_format_seen" -eq 0 ] || return 1
+        marker_format_seen=1
+        ;;
+      uid=*)
+        [ "$marker_uid_seen" -eq 0 ] || return 1
+        recorded_user_uid=${marker_line#uid=}
+        marker_uid_seen=1
+        ;;
+      primary_gid=*)
+        [ "$marker_primary_gid_seen" -eq 0 ] || return 1
+        recorded_user_primary_gid=${marker_line#primary_gid=}
+        marker_primary_gid_seen=1
+        ;;
+      *) return 1 ;;
+    esac
+  done <"$managed_user_marker"
+  [ "$marker_format_seen" -eq 1 ] && [ "$marker_uid_seen" -eq 1 ] &&
+    [ "$marker_primary_gid_seen" -eq 1 ] || return 1
+  case "$recorded_user_uid:$recorded_user_primary_gid" in
+    *[!0-9:]*) return 1 ;;
+    :*|*:) return 1 ;;
+  esac
+}
+
+load_group_marker() {
+  marker_format_seen=0
+  marker_gid_seen=0
+  recorded_group_gid=
+  while IFS= read -r marker_line || [ -n "$marker_line" ]; do
+    case "$marker_line" in
+      format="$package_version")
+        [ "$marker_format_seen" -eq 0 ] || return 1
+        marker_format_seen=1
+        ;;
+      gid=*)
+        [ "$marker_gid_seen" -eq 0 ] || return 1
+        recorded_group_gid=${marker_line#gid=}
+        marker_gid_seen=1
+        ;;
+      *) return 1 ;;
+    esac
+  done <"$managed_group_marker"
+  [ "$marker_format_seen" -eq 1 ] && [ "$marker_gid_seen" -eq 1 ] || return 1
+  case "$recorded_group_gid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+}
+
+# Enumerate the account databases instead of treating every failed keyed lookup
+# as "absent". Status 2 means the query was unavailable or ambiguous and all
+# account deletion must fail closed.
+lookup_user_entry() {
+  passwd_listing=$(getent passwd 2>/dev/null) || return 2
+  user_entry=
+  user_match_count=0
+  while IFS= read -r directory_entry || [ -n "$directory_entry" ]; do
+    case "$directory_entry" in
+      unionc-agent:*)
+        user_match_count=$((user_match_count + 1))
+        user_entry=$directory_entry
+        ;;
+    esac
+  done <<EOF
+$passwd_listing
+EOF
+  case "$user_match_count" in
+    0) return 1 ;;
+    1) return 0 ;;
+    *) return 2 ;;
+  esac
+}
+
+lookup_group_entry() {
+  group_listing=$(getent group 2>/dev/null) || return 2
+  group_entry=
+  group_match_count=0
+  while IFS= read -r directory_entry || [ -n "$directory_entry" ]; do
+    case "$directory_entry" in
+      unionc-agent:*)
+        group_match_count=$((group_match_count + 1))
+        group_entry=$directory_entry
+        ;;
+    esac
+  done <<EOF
+$group_listing
+EOF
+  case "$group_match_count" in
+    0) return 1 ;;
+    1) return 0 ;;
+    *) return 2 ;;
+  esac
+}
+
+managed_user_is_still_expected() {
+  group_gid=$(printf '%s\n' "$group_entry" | cut -d: -f3)
+  user_uid=$(printf '%s\n' "$user_entry" | cut -d: -f3)
+  user_gid=$(printf '%s\n' "$user_entry" | cut -d: -f4)
+  user_home=$(printf '%s\n' "$user_entry" | cut -d: -f6)
+  user_shell=$(printf '%s\n' "$user_entry" | cut -d: -f7)
+
+  [ "$user_uid" = "$recorded_user_uid" ] &&
+    [ "$user_gid" = "$recorded_user_primary_gid" ] &&
+    [ "$user_gid" = "$group_gid" ] &&
+    [ "$user_home" = /var/lib/unionc-agent ] &&
+    { [ "$user_shell" = /usr/sbin/nologin ] || [ "$user_shell" = /sbin/nologin ]; }
+}
+
+# Return 0 when the package-created group is referenced, 1 when it is unused,
+# and 2 when usage cannot be established safely.
+group_id_is_in_use() {
+  sought_gid=$1
+  current_group_gid=$(printf '%s\n' "$group_entry" | cut -d: -f3)
+  group_members=$(printf '%s\n' "$group_entry" | cut -d: -f4-)
+  [ "$current_group_gid" = "$sought_gid" ] || return 2
+  case "$group_members" in
+    *:*) return 2 ;;
+    '') ;;
+    *) return 0 ;;
+  esac
+
+  current_passwd_listing=$(getent passwd 2>/dev/null) || return 2
+  while IFS=: read -r account_name _password _uid primary_gid _gecos _home _shell; do
+    [ -n "$account_name" ] || continue
+    if [ "$primary_gid" = "$sought_gid" ]; then
+      return 0
+    fi
+  done <<EOF
+$current_passwd_listing
+EOF
+  return 1
+}
+
+purge_local_data() {
+  # Fixed, non-configurable targets are intentional: a root maintainer script
+  # must never expand an environment-controlled path into a recursive removal.
+  rm -rf -- /var/lib/unionc-agent
+  rm -rf -- /etc/unionc-agent
+  rm -rf -- /etc/systemd/system/unionc-agent.service.d
+  rm -f -- "$rpm_config_backup"
+
+  if [ -e "$managed_user_marker" ] || [ -L "$managed_user_marker" ]; then
+    if [ ! -f "$managed_user_marker" ] || [ -L "$managed_user_marker" ]; then
+      echo "unionc-agent postremove: unsafe managed-user marker; preserving the account" >&2
+      purge_incomplete=1
+    elif ! load_user_marker; then
+      echo "unionc-agent postremove: invalid managed-user marker; preserving the account" >&2
+      purge_incomplete=1
+    else
+      user_lookup_status=0
+      if lookup_user_entry; then
+        group_lookup_status=0
+        if lookup_group_entry; then
+          if managed_user_is_still_expected; then
+            if userdel unionc-agent; then
+              rm -f -- "$managed_user_marker"
+            else
+              echo "unionc-agent postremove: could not remove the dedicated user" >&2
+              purge_incomplete=1
+            fi
+          else
+            echo "unionc-agent postremove: dedicated user identity changed; leaving it for safety" >&2
+            purge_incomplete=1
+          fi
+        else
+          group_lookup_status=$?
+          echo "unionc-agent postremove: dedicated group is absent or could not be enumerated; preserving the user" >&2
+          purge_incomplete=1
+        fi
+      else
+        user_lookup_status=$?
+        if [ "$user_lookup_status" -eq 1 ]; then
+          rm -f -- "$managed_user_marker"
+        else
+          echo "unionc-agent postremove: could not enumerate users; preserving the dedicated user" >&2
+          purge_incomplete=1
+        fi
+      fi
+    fi
+  fi
+
+  if [ -e "$managed_group_marker" ] || [ -L "$managed_group_marker" ]; then
+    if [ ! -f "$managed_group_marker" ] || [ -L "$managed_group_marker" ]; then
+      echo "unionc-agent postremove: unsafe managed-group marker; preserving the group" >&2
+      purge_incomplete=1
+    elif ! load_group_marker; then
+      echo "unionc-agent postremove: invalid managed-group marker; preserving the group" >&2
+      purge_incomplete=1
+    else
+      user_lookup_status=0
+      if lookup_user_entry; then
+        echo "unionc-agent postremove: dedicated user remains; leaving its group" >&2
+        purge_incomplete=1
+      else
+        user_lookup_status=$?
+        if [ "$user_lookup_status" -eq 2 ]; then
+          echo "unionc-agent postremove: could not enumerate users; preserving the dedicated group" >&2
+          purge_incomplete=1
+        else
+          group_lookup_status=0
+          if lookup_group_entry; then
+            current_group_gid=$(printf '%s\n' "$group_entry" | cut -d: -f3)
+            if [ "$current_group_gid" != "$recorded_group_gid" ]; then
+              echo "unionc-agent postremove: dedicated group gid changed; leaving it for safety" >&2
+              purge_incomplete=1
+            else
+              group_usage_status=0
+              if group_id_is_in_use "$recorded_group_gid"; then
+                group_usage_status=0
+              else
+                group_usage_status=$?
+              fi
+              case "$group_usage_status" in
+                0)
+                  echo "unionc-agent postremove: dedicated group is still in use; preserving it" >&2
+                  purge_incomplete=1
+                  ;;
+                1)
+                  if groupdel unionc-agent; then
+                    rm -f -- "$managed_group_marker"
+                  else
+                    echo "unionc-agent postremove: could not remove the dedicated group" >&2
+                    purge_incomplete=1
+                  fi
+                  ;;
+                *)
+                  echo "unionc-agent postremove: could not verify group usage; preserving the group" >&2
+                  purge_incomplete=1
+                  ;;
+              esac
+            fi
+          else
+            group_lookup_status=$?
+            if [ "$group_lookup_status" -eq 1 ]; then
+              rm -f -- "$managed_group_marker"
+            else
+              echo "unionc-agent postremove: could not enumerate groups; preserving the dedicated group" >&2
+              purge_incomplete=1
+            fi
+          fi
+        fi
+      fi
+    fi
+  fi
+
+  rmdir "$account_state_dir" >/dev/null 2>&1 || true
+}
+
+restore_rpm_config() {
+  [ -f "$rpm_config_backup" ] || return 0
+  install -d -m 0750 -o root -g unionc-agent /etc/unionc-agent
+  cp -p "$rpm_config_backup" /etc/unionc-agent/config.json
+  chown root:unionc-agent /etc/unionc-agent/config.json
+  chmod 0640 /etc/unionc-agent/config.json
+  rm -f -- "$rpm_config_backup"
+}
+
+case "${1:-}" in
+  purge)
+    # Debian's explicit purge is the only package-manager transaction that
+    # removes local identity. It never contacts the UnionC Server.
+    purge_local_data
+    ;;
+  *)
+    # Ordinary removal and same-version reinstall preserve current identity.
+    # On Debian this is usually already a conffile; on RPM restore the private
+    # backup if the package manager removed it.
+    restore_rpm_config
+    ;;
+esac
+
+systemd_daemon_reload
+
+case "${1:-}" in
+  purge)
+    if [ "$purge_incomplete" -ne 0 ]; then
+      echo "unionc-agent postremove: local purge is incomplete; fix the account conflict and retry" >&2
+      exit 1
+    fi
+    cat <<'EOF'
+UnionC Agent 的本地配置、凭据、spool、GPU drop-in 和包管理的专用账户已清理。
+此操作没有连接 UnionC Server；请确认已在管理台撤销对应实例。
+EOF
+    ;;
+  *)
+    cat <<EOF
+UnionC Agent 程序和系统服务已移除；本地配置、实例凭据、spool 与专用账户均已保留。
+重新安装同一 $package_version 包后可继续使用原实例。跨版本安装前必须先 purge 并重新配对。
+EOF
+    ;;
+esac

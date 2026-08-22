@@ -1,0 +1,20 @@
+# 建议为 Agent 使用独立域名，以便强制 mTLS 而不影响浏览器管理台。
+telemetry.example.com {
+    tls {
+        client_auth {
+            mode require_and_verify
+            trust_pool file {
+                pem_file /etc/caddy/unionc-agent-ca.pem
+            }
+        }
+    }
+
+    request_body {
+        max_size 2MB
+    }
+
+    handle /v1/metrics {
+        reverse_proxy 127.0.0.1:4318
+    }
+}
+

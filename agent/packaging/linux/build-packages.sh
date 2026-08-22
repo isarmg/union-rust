@@ -1,0 +1,50 @@
+#!/bin/sh
+set -eu
+
+die() {
+  echo "unionc-agent package build: $*" >&2
+  exit 1
+}
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repository_root=$(CDPATH= cd -- "$script_dir/../../.." && pwd)
+cd "$repository_root"
+
+package_id=$(cargo pkgid -p unionc-agent) || die "cannot resolve the Agent Cargo package"
+case "$package_id" in
+  *@*) package_version=${package_id##*@} ;;
+  *) die "unexpected cargo pkgid output: $package_id" ;;
+esac
+case "$package_version" in
+  *[!0-9.]*|*.*.*.*|.*|*.) die "Agent version is not strict MAJOR.MINOR.PATCH: $package_version" ;;
+esac
+[ "$(printf '%s' "$package_version" | awk -F. 'NF == 3 && $1 != "" && $2 != "" && $3 != "" { print "yes" }')" = yes ] ||
+  die "Agent version is not strict MAJOR.MINOR.PATCH: $package_version"
+
+agent_binary=${AGENT_BINARY:-target/release/unionc-agent}
+[ -x "$agent_binary" ] || die "Agent binary is missing or not executable: $agent_binary"
+[ "$("$agent_binary" --version)" = "unionc-agent $package_version" ] ||
+  die "Agent binary version does not match Cargo package version $package_version"
+
+config_version=$(sed -n 's/^  "application_version": "\([^"]*\)",$/\1/p' agent/config.example.json)
+[ "$config_version" = "$package_version" ] ||
+  die "config.example.json version $config_version does not match Agent $package_version"
+
+nfpm_bin=${NFPM_BIN:-nfpm}
+command -v "$nfpm_bin" >/dev/null 2>&1 || [ -x "$nfpm_bin" ] ||
+  die "nFPM is unavailable: $nfpm_bin"
+package_arch=${NFPM_ARCH:-amd64}
+case "$package_arch" in
+  amd64) rpm_arch=x86_64 ;;
+  arm64) rpm_arch=aarch64 ;;
+  *) rpm_arch=$package_arch ;;
+esac
+
+mkdir -p dist
+VERSION="$package_version" NFPM_ARCH="$package_arch" "$nfpm_bin" package \
+  --config agent/packaging/nfpm.yaml --packager deb \
+  --target "dist/unionc-agent_${package_version}_${package_arch}.deb"
+VERSION="$package_version" NFPM_ARCH="$package_arch" "$nfpm_bin" package \
+  --config agent/packaging/nfpm.yaml --packager rpm \
+  --target "dist/unionc-agent-${package_version}.${rpm_arch}.rpm"
+

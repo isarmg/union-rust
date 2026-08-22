@@ -1,0 +1,890 @@
+/*
+ * 管理后台全局样式。
+ *
+ * 阅读建议：
+ * 1. :root 和 body 定义整站基础颜色、字体和背景。
+ * 2. .app-shell、.sidebar、.main 定义页面大框架。
+ * 3. 后面的 class 基本和 App.tsx 里的组件同名，可以一边看组件一边找样式。
+ * 4. CSS 里大量使用 CSS 变量，例如 --text、--surface，方便浅色/深色主题切换。
+ */
+/* 全局盒模型修正。
+ * 默认的 box-sizing: content-box 会让 padding 和 border "向外"撑大元素：
+ *   你写 width: 100px; padding: 10px，实际占用宽度会变成 120px，布局容易出错。
+ * border-box 则把 padding 和 border "算进" width 里：
+ *   写 width: 100px，实际占用就是 100px，内容区缩小但外框不变，更符合直觉。
+ * * 选择器匹配所有元素，一次性统一修改，是现代 CSS 的标准起手式。 */
+* {
+  box-sizing: border-box;
+}
+
+html {
+  /* 禁止浏览器（尤其是移动端 Safari）在横屏时自动放大字体。
+     移动浏览器会在页面宽度不足时自动放大字号，可能破坏精心设计的布局，
+     设为 100% 表示"不自动调整，尊重 CSS 里写的字号"。 */
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;          /* 浏览器默认给 body 加了 8px 外边距，这里清除掉，避免出现意外空白 */
+  min-width: 320px;   /* 最窄不低于 320px（iPhone SE 的宽度），防止内容被挤得无法阅读 */
+  min-height: 100vh;  /* vh = viewport height，100vh 等于屏幕高度，确保背景色铺满全屏 */
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  /* overflow-wrap: anywhere 允许浏览器在任意字符处换行（包括中文、长URL、哈希值等）。
+     没有这条规则，超长的不带空格文字（如 https://very-long-url.com/...）会撑破容器，
+     出现横向滚动条。anywhere 比 break-word 更激进，连单词中间也可以断行。 */
+  overflow-wrap: anywhere;
+}
+
+/* 表单元素字体重置。
+ * 浏览器对 button/input/select/textarea 有自己的默认字体（通常是系统 UI 字体），
+ * 不会自动继承父元素的 font-family。
+ * font: inherit 是简写，同时继承字体族、字号、字重等，让表单元素与正文保持一致。 */
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  line-height: inherit;
+}
+
+h1,
+h2,
+h3 {
+  line-height: 1.2;  /* 标题行高比正文更紧，视觉上更紧凑有力 */
+  /* text-wrap: balance 让多行标题换行更均衡，避免最后一行只剩一两个字（孤行）。
+     浏览器会自动调整每行的断行位置，让各行长度尽量接近。
+     只对标题等少量文字有效，长段落不建议使用（性能较差）。 */
+  text-wrap: balance;
+  overflow-wrap: anywhere; /* 同 body，防止长单词/URL 撑破标题区域 */
+}
+
+p,
+li,
+dt,
+dd,
+label,
+button,
+input,
+select,
+textarea,
+th,
+td,
+a {
+  overflow-wrap: anywhere;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed; /* 鼠标悬停时显示"禁止"图标，提示用户按钮不可点击 */
+  opacity: 0.58;       /* 半透明表示禁用状态，比直接隐藏更友好，让用户知道按钮存在但不可用 */
+}
+
+/* 应用主容器：使用 grid 把左侧导航和右侧内容区分成两列。
+ * min-width 确保内容块不会因视口过窄而被压缩；
+ * 窄屏时页面横向滚动，而不是缩小卡片。 */
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 100vh;
+  padding: 16px;
+  color: var(--text);
+  background: var(--bg);
+}
+
+/* 顶部横向导航栏：品牌 + 导航项 + 右侧状态工具。 */
+.sidebar {
+  --nav-control-height: 36px;
+  --nav-icon-size: 18px;
+  position: sticky;
+  top: 16px;
+  z-index: 10;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: var(--surface-strong);
+  box-shadow: var(--shadow);
+}
+
+/* 导航和按钮的基础交互样式。多个选择器放一起，是为了让按钮视觉语言保持一致。 */
+.nav-list {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  gap: 4px;
+}
+
+.nav-item,
+.toolbar-button,
+.action-button,
+.icon-button {
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+}
+
+.nav-item {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: var(--nav-control-height);
+  min-height: var(--nav-control-height);
+  padding: 0 10px;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  text-align: left;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.nav-item svg {
+  /* flex: 0 0 auto 是三个 flex 属性的简写：flex-grow flex-shrink flex-basis
+   * 0 = 不放大（不参与剩余空间分配）
+   * 0 = 不缩小（空间不足时也保持原尺寸）
+   * auto = 宽度由内容（SVG 的 width/height 属性）决定
+   * 效果：图标始终保持固定大小，不会因为旁边的文字挤压而变形。 */
+  flex: 0 0 auto;
+  width: var(--nav-icon-size);
+  height: var(--nav-icon-size);
+}
+
+.nav-item span {
+  min-width: 0;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.nav-item:hover,
+.nav-item.active {
+  color: var(--text);
+  background: transparent;
+}
+
+.sidebar-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;  /* 推到导航栏右侧 */
+  flex-shrink: 0;
+}
+
+.connection-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: var(--nav-control-height);
+  background: var(--surface-strong);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+
+.conn-icon.connected {
+  color: var(--good, #2a9d5c);
+}
+
+.conn-icon.disconnected {
+  color: var(--danger, #d62c2c);
+}
+
+.signal {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%; /* 把正方形变成圆形（50% = 半径等于宽/高的一半） */
+}
+
+.signal.online {
+  background: var(--good);
+}
+
+.signal.offline {
+  background: var(--warn);
+}
+
+/* 主内容区：flex 列，填满剩余高度，无背景面板 */
+.main {
+  min-width: 0;
+  min-height: 0;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 普通 view-stack：填满 .main 高度，内容顶部对齐 */
+.main > .view-stack {
+  flex: 1;
+  min-height: 0;
+  align-content: start;
+}
+
+/* 日志页：app-shell 固定 100vh，main 填满剩余高度，使 pre 在固定框内滚动。
+ * overflow: clip 裁剪溢出内容，但不像 overflow: hidden 那样建立新的滚动容器，
+ * 因此 sidebar 的 position: sticky 仍以视口为基准，不会产生额外位移。 */
+.app-shell:has(.logs-view-stack) {
+  height: 100vh;
+  overflow: clip;
+}
+
+.main:has(.logs-view-stack) {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 日志页：覆盖 grid 为 flex，让内部链路可以逐级撑满剩余高度 */
+.main > .logs-view-stack {
+  display: flex;
+  flex-direction: column;
+}
+
+.logs-view-stack > .section-band {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 16px;
+}
+
+.logs-view-stack .log-viewer {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.logs-view-stack .log-viewer pre {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
+.logs-host-selector {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.logs-host-selector select {
+  min-height: 36px;
+  padding: 0 10px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+
+.eyebrow {
+  margin: 0 0 4px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 32px;
+  line-height: 1.16;
+  font-weight: 720;
+}
+
+/* 通用按钮行：让多个按钮在窄屏时可以自动换行。 */
+.button-row,
+.section-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.toolbar-button,
+.action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  /* flex: 1 1 118px 的含义：
+   * 1 → flex-grow: 1，可以放大填满剩余空间
+   * 1 → flex-shrink: 1，空间不足时可以缩小
+   * 118px → flex-basis: 118px，初始/基准宽度（不是最小宽度，只是参考值）
+   * 效果：按钮默认从 118px 开始，多个按钮在一行里等比例伸缩，
+   * 宽度不足时会自动换行（依赖父级 flex-wrap: wrap）。 */
+  flex: 1 1 118px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 12px;
+  color: var(--text);
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+.toolbar-button span,
+.action-button span {
+  min-width: 0;
+  line-height: 1.2;
+  text-align: center;
+  white-space: normal;
+}
+
+.toolbar-button:hover,
+.action-button:hover,
+.icon-button:hover {
+  border-color: var(--primary);
+}
+
+.action-button.primary {
+  color: #ffffff;
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.action-button.danger {
+  color: #ffffff;
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  color: var(--text);
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+/* 圆形 LED 状态指示灯：直径 = 0.8em（与当前字体等高），纯色圆，无文字 */
+.status-led {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  border-radius: 50%;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
+.status-led.good   { background: var(--good); }
+.status-led.warn   { background: var(--warn); }
+.status-led.danger { background: var(--danger); }
+
+.inline-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.inline-notice.warn {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.inline-notice.danger {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+/* 视图堆叠区：每个页面视图之间保持稳定间距。 */
+.view-stack {
+  display: grid;
+  gap: var(--theme-block-gap);
+}
+
+/* 内容块内所有子组件继承统一字体大小 */
+.card-inner .tag-chip,
+.card-inner .muted-inline {
+  font-size: inherit;
+  min-height: unset;
+}
+
+.card-inner .tag-chip {
+  padding: 1px 5px;
+}
+
+/* section-band / tool-panel 为纯布局容器，无视觉背景边框 */
+
+.metric-row-value {
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.metric-row-detail {
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.service-card span,
+.service-card time {
+  color: var(--muted);
+}
+
+.section-header p {
+  color: var(--muted);
+}
+
+/* 内容分区和工具面板：纯布局容器，间距由父级 view-stack gap 和 .main padding 统一管理。 */
+.section-band,
+.tool-panel {
+  min-width: 0;
+}
+
+.section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--content-block-gap);
+  min-width: 0;
+  margin-bottom: var(--content-block-gap);
+}
+
+.section-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.section-title svg {
+  flex: 0 0 var(--theme-title-size);
+  width: var(--theme-title-size);
+  height: var(--theme-title-size);
+  margin: 0;
+  color: var(--primary);
+}
+
+.section-title h2 {
+  height: var(--theme-title-size);
+  font-size: var(--theme-title-size);
+  line-height: var(--theme-title-size);
+}
+
+.section-title p {
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+
+.service-details dt,
+.service-details dd,
+.detail-list dt,
+.detail-list dd {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.service-details,
+.detail-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.service-details div,
+.detail-list div {
+  display: grid;
+  /* 两列布局：左列（标签）宽度随内容自动适应，右列（值）占满剩余空间。
+   * auto 会让左列尽量窄，恰好容纳文字；minmax(0, 1fr) 让右列填满剩余宽度。
+   * 类似"名称: 值"的键值对展示都适合用这种布局。 */
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2ch;   /* ch 单位 = 当前字体"0"字符的宽度，2ch 大约是 2 个汉字的间距 */
+}
+
+.inline-field span,
+.field-hint {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.field-hint {
+  line-height: 1.4;
+  font-weight: 600;
+}
+
+.inline-field {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.inline-field input,
+.inline-field select,
+.inline-field textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 10px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  outline: 0;
+}
+
+.inline-field input:focus-visible,
+.inline-field select:focus-visible,
+.inline-field textarea:focus-visible,
+button:focus-visible,
+a:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--primary) 35%, transparent);
+  outline-offset: 2px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.inline-field textarea {
+  min-height: 78px;
+  padding: 9px 10px;
+  resize: vertical;
+}
+
+
+.subsection-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.instance-list-title {
+  margin-bottom: var(--content-block-gap);
+}
+
+
+.check-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.check-field input {
+  width: 16px;
+  height: 16px;
+  /* accent-color 设置表单控件（checkbox/radio/range）的强调色，
+   * 让它们的选中色和主题色保持一致，无需复杂的自定义样式。
+   * 这是 CSS 的现代特性，浏览器会自动处理选中状态的颜色。 */
+  accent-color: var(--primary);
+}
+
+.paths-field textarea {
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+
+.paths-field {
+  grid-column: 1 / -1;
+}
+
+dt {
+  color: var(--subtle);
+}
+
+dd {
+  margin: 0;
+  min-width: 0;
+}
+
+/* 多行文字截断（最多显示 2 行，超出显示省略号）。
+ * 这是 WebKit 的私有属性组合，目前仍是跨浏览器实现多行截断的主流方式：
+ * -webkit-line-clamp: 2 → 最多显示 2 行
+ * -webkit-box-orient: vertical → 子元素竖向排列
+ * display: -webkit-box → 启用 WebKit 弹性盒（-webkit-line-clamp 依赖它工作）
+ * overflow: hidden → 超出 2 行的内容隐藏
+ * white-space: normal → 允许换行（与单行截断的 nowrap 相反） */
+.truncate {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: normal;
+}
+
+/* 资源监控和日志区域：磁盘、进度条、等宽文本等样式。 */
+.service-message {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.service-action-row {
+  align-items: start;
+}
+
+.sidebar-footer .icon-button {
+  height: var(--nav-control-height);
+}
+
+.sidebar-footer svg {
+  width: var(--nav-icon-size);
+  height: var(--nav-icon-size);
+}
+
+/* 卡片宽度由 content-grid 的列数决定。 */
+.service-action-row > .service-card {
+  width: auto;
+}
+
+.service-action-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.view-action-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.view-action-col .action-button {
+  flex: none;
+}
+
+.split-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+/* 磁盘卡片外观由统一规则提供，内部布局由 card-inner 处理 */
+
+.progress {
+  height: 8px;
+  overflow: hidden;     /* 裁掉超出轨道宽度的进度条（当百分比计算有小数误差时） */
+  background: var(--border);
+  border-radius: 999px; /* 足够大的值让两端变成半圆，无论轨道多高都是胶囊形状 */
+}
+
+.progress span {
+  display: block; /* span 默认是行内元素，需要改成块级才能设置 height 和 background */
+  height: 100%;
+  /* linear-gradient(方向, 起始色, 结束色) 创建线性渐变背景。
+   * 90deg = 从左到右（0deg 是从下到上）。
+   * 这里从主色到绿色，视觉上表示"从有到满/从平均到良好"。 */
+  background: linear-gradient(90deg, var(--primary), var(--good));
+}
+
+.mono {
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+
+.loading-block,
+.empty-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  color: var(--muted);
+}
+
+.log-viewer {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+}
+
+.log-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 36px;
+  padding: 0 12px;
+  align-items: center;
+  color: var(--muted);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+/* 日志/代码预览区域：深色背景 + 等宽字体风格，方便阅读日志输出。 */
+pre {
+  min-height: 320px;
+  max-height: 58vh; /* 最多占视口高度的 58%，超出后出现滚动条，防止日志过长占满页面 */
+  margin: 0;
+  padding: 14px;
+  overflow: auto;   /* 内容超出时同时支持横向和纵向滚动 */
+  color: #d7e4ea;
+  background: #11191e; /* 深色终端风格背景 */
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.6;
+  /* white-space: pre-wrap 保留原始空格和换行（pre 的行为），
+   * 同时允许长行在容器边界处自动换行（wrap 的行为），
+   * 防止超长日志行撑破容器产生横向滚动。 */
+  white-space: pre-wrap;
+}
+
+.search-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+
+.search-box input {
+  width: min(260px, 42vw);
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  background: transparent;
+}
+
+.search-box.full-width,
+.search-box.full-width input {
+  width: 100%;
+}
+
+/* 独立登录页使用应用会话完成认证。 */
+.login-screen {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow-y: auto;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.login-card {
+  width: min(380px, 100%);
+  flex: 0 0 auto;
+  color: var(--text);
+}
+
+.login-card .login-input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  outline: 0;
+}
+
+.login-card .card-row:has(.login-input),
+.login-card .card-inner > .card-row:nth-child(5) {
+  grid-template-columns: minmax(0, 1fr);
+  column-gap: 0;
+}
+
+.login-card .card-row:has(.login-input) > .card-row-label,
+.login-card .card-inner > .card-row:nth-child(5) > .card-row-label {
+  display: none;
+}
+
+.login-card .login-label-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 1em;
+  height: 1em;
+  border: 1px solid currentColor;
+  border-radius: 0.25em;
+  flex: 0 0 1em;
+}
+
+.login-card .card-row-label:has(.login-label-icon) {
+  gap: 1ch;
+}
+
+.login-card .login-label-icon svg {
+  width: 0.65em;
+  height: 0.65em;
+  stroke-width: 1.75;
+}
+
+.login-card .login-input:focus {
+  border-bottom-color: var(--primary);
+}
+
+.login-card .login-error {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--danger);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.login-card .card-actions {
+  grid-template-columns: 1fr;
+}
+
+.settings-panel-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.session-error-card,
+.fatal-error-card {
+  display: grid;
+  width: min(480px, 100%);
+  gap: 14px;
+  padding: 24px;
+  color: var(--text);
+  background: var(--surface-strong);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow);
+}
+
+.fatal-error-screen {
+  place-items: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation-duration: 1.8s;
+    animation-iteration-count: 1;
+  }
+}

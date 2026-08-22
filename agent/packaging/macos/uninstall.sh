@@ -1,0 +1,561 @@
+#!/bin/sh
+set -eu
+
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+export PATH
+
+identifier="com.unionc.agent"
+user="_unioncagent"
+group="_unioncagent"
+state="/Library/Application Support/UnionC Agent"
+log="/var/log/unionc-agent.log"
+share="/usr/local/share/unionc-agent"
+ownership_dir="/var/db/unionc-agent"
+ownership_marker="$ownership_dir/account-ownership"
+package_version="@UNIONC_AGENT_PACKAGE_VERSION@"
+purge=0
+assume_yes=0
+user_created=0
+group_created=0
+created_user_uid="-"
+created_user_primary_gid="-"
+created_group_gid="-"
+ownership_marker_valid=0
+purge_incomplete=0
+owned_user_blocked=0
+
+usage() {
+  cat <<'EOF'
+Usage: sudo uninstall.sh [--purge [--yes]]
+
+Without --purge, removes the executable and LaunchDaemons but preserves local identity,
+credentials, configuration, spool, logs, the dedicated account, package receipt, and this
+maintenance helper so a reinstall can resume the same instance.
+
+--purge  Permanently delete all preserved local Agent data, logs, account/group, helper,
+         and package receipt. Revoke the instance in the UnionC Web console first.
+--yes    Skip the interactive PURGE confirmation (for managed, non-interactive removal).
+EOF
+}
+
+die() {
+  echo "unionc-agent uninstall: $*" >&2
+  exit 1
+}
+
+for argument in "$@"; do
+  case "$argument" in
+    --purge) purge=1 ;;
+    --yes) assume_yes=1 ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      die "unknown option: $argument"
+      ;;
+  esac
+done
+
+[ "$(id -u)" -eq 0 ] || die "run this helper with sudo"
+if [ "$assume_yes" -eq 1 ] && [ "$purge" -ne 1 ]; then
+  die "--yes is only valid together with --purge"
+fi
+
+if [ "$purge" -eq 1 ]; then
+  cat >&2 <<'EOF'
+WARNING: --purge does not revoke the server-side Agent credential.
+First revoke/decommission this instance in the UnionC Web console. Continuing permanently
+deletes this Mac's host-id, agent-token, pairing state, queued reports, configuration, and logs.
+EOF
+  if [ "$assume_yes" -ne 1 ]; then
+    [ -t 0 ] || die "non-interactive purge requires both --purge and --yes"
+    printf "Type PURGE to continue: " >&2
+    IFS= read -r confirmation
+    [ "$confirmation" = "PURGE" ] || die "purge cancelled"
+  fi
+fi
+
+load_ownership_marker() {
+  [ -e "$ownership_marker" ] || return 0
+  if [ ! -f "$ownership_marker" ] || [ -L "$ownership_marker" ]; then
+    echo "Ignoring unsafe Agent account ownership marker; account and group will be preserved" >&2
+    purge_incomplete=1
+    return 0
+  fi
+  marker_owner="$(stat -f '%Su:%Sg' "$ownership_marker" 2>/dev/null || true)"
+  if [ "$marker_owner" != "root:wheel" ]; then
+    echo "Ignoring non-root Agent account ownership marker; account and group will be preserved" >&2
+    purge_incomplete=1
+    return 0
+  fi
+
+  marker_user=0
+  marker_group=0
+  marker_user_uid="-"
+  marker_user_primary_gid="-"
+  marker_group_gid="-"
+  seen_user=0
+  seen_group=0
+  seen_format=0
+  seen_user_uid=0
+  seen_user_primary_gid=0
+  seen_group_gid=0
+  marker_invalid=0
+  while IFS= read -r marker_line; do
+    case "$marker_line" in
+      format="$package_version")
+        [ "$seen_format" -eq 0 ] || marker_invalid=1
+        seen_format=1
+        ;;
+      user_created=0|user_created=1)
+        [ "$seen_user" -eq 0 ] || marker_invalid=1
+        marker_user="${marker_line#user_created=}"
+        seen_user=1
+        ;;
+      group_created=0|group_created=1)
+        [ "$seen_group" -eq 0 ] || marker_invalid=1
+        marker_group="${marker_line#group_created=}"
+        seen_group=1
+        ;;
+      user_uid=*)
+        [ "$seen_user_uid" -eq 0 ] || marker_invalid=1
+        marker_user_uid="${marker_line#user_uid=}"
+        seen_user_uid=1
+        ;;
+      user_primary_gid=*)
+        [ "$seen_user_primary_gid" -eq 0 ] || marker_invalid=1
+        marker_user_primary_gid="${marker_line#user_primary_gid=}"
+        seen_user_primary_gid=1
+        ;;
+      group_gid=*)
+        [ "$seen_group_gid" -eq 0 ] || marker_invalid=1
+        marker_group_gid="${marker_line#group_gid=}"
+        seen_group_gid=1
+        ;;
+      *) marker_invalid=1 ;;
+    esac
+  done < "$ownership_marker"
+  if [ "$marker_invalid" -eq 1 ] || [ "$seen_format" -ne 1 ] ||
+    [ "$seen_user" -ne 1 ] || [ "$seen_group" -ne 1 ] ||
+    [ "$seen_user_uid" -ne 1 ] || [ "$seen_user_primary_gid" -ne 1 ] ||
+    [ "$seen_group_gid" -ne 1 ]; then
+    echo "Ignoring invalid Agent account ownership marker; account and group will be preserved" >&2
+    purge_incomplete=1
+    return 0
+  fi
+  if [ "$marker_user" -eq 1 ]; then
+    case "$marker_user_uid" in ''|*[!0-9]*) marker_invalid=1 ;; esac
+    case "$marker_user_primary_gid" in ''|*[!0-9]*) marker_invalid=1 ;; esac
+  elif [ "$marker_user_uid" != "-" ] || [ "$marker_user_primary_gid" != "-" ]; then
+    marker_invalid=1
+  fi
+  if [ "$marker_group" -eq 1 ]; then
+    case "$marker_group_gid" in ''|*[!0-9]*) marker_invalid=1 ;; esac
+  elif [ "$marker_group_gid" != "-" ]; then
+    marker_invalid=1
+  fi
+  if [ "$marker_invalid" -eq 1 ]; then
+    echo "Ignoring invalid Agent account ownership IDs; account and group will be preserved" >&2
+    purge_incomplete=1
+    return 0
+  fi
+  user_created="$marker_user"
+  group_created="$marker_group"
+  created_user_uid="$marker_user_uid"
+  created_user_primary_gid="$marker_user_primary_gid"
+  created_group_gid="$marker_group_gid"
+  ownership_marker_valid=1
+}
+
+if [ "$purge" -eq 1 ]; then
+  load_ownership_marker
+fi
+
+stop_job() {
+  service_target="$1"
+  if launchctl print "$service_target" >/dev/null 2>&1; then
+    launchctl bootout "$service_target"
+  fi
+}
+
+# Stop the rotation helper first: if it is between bootout and bootstrap of the Agent, its
+# signal trap restores the Agent, and the second call below then stops that restored job.
+stop_job system/com.unionc.agent.logrotate
+stop_job system/com.unionc.agent
+
+rm -f /Library/LaunchDaemons/com.unionc.agent.logrotate.plist
+rm -f /Library/LaunchDaemons/com.unionc.agent.plist
+rm -f /usr/local/libexec/unionc-agent-logrotate
+rm -f /usr/local/libexec/unionc-agent
+rm -f "$share/newsyslog.conf"
+
+command_link="/usr/local/bin/unionc-agent"
+if [ -L "$command_link" ]; then
+  link_target="$(readlink "$command_link")"
+  case "$link_target" in
+    ../libexec/unionc-agent|/usr/local/libexec/unionc-agent)
+      rm -f "$command_link"
+      ;;
+    *)
+      echo "Preserving unexpected symlink $command_link -> $link_target" >&2
+      ;;
+  esac
+elif [ -e "$command_link" ]; then
+  echo "Preserving non-package path at $command_link" >&2
+fi
+
+if [ "$purge" -ne 1 ]; then
+  rmdir /usr/local/libexec >/dev/null 2>&1 || true
+  cat <<EOF
+UnionC Agent program and LaunchDaemons were removed.
+
+Preserved for identity-safe reinstall:
+  $state
+  $log and rotated logs
+  local account $user:$group
+  package receipt $identifier
+  $share/uninstall.sh
+
+To permanently decommission later, first revoke the instance in the Web console, then run:
+  sudo $share/uninstall.sh --purge
+EOF
+  exit 0
+fi
+
+# This assertion keeps the destructive target fixed even if this script is edited or sourced.
+[ "$state" = "/Library/Application Support/UnionC Agent" ] ||
+  die "refusing to purge an unexpected state path"
+rm -rf "$state"
+rm -f "$log"
+for archived_log in /var/log/unionc-agent.log.*; do
+  if [ -e "$archived_log" ] || [ -L "$archived_log" ]; then
+    rm -f "$archived_log"
+  fi
+done
+
+dscl_value() {
+  record="$1"
+  field="$2"
+  dscl_record="$(dscl . -read "$record" "$field" 2>/dev/null)" || return 1
+  printf '%s\n' "$dscl_record" | sed -n "s/^$field: //p"
+}
+
+listing_contains_id() {
+  account_listing="$1"
+  sought_id="$2"
+  while read -r _record_name listed_id _remaining; do
+    if [ "$listed_id" = "$sought_id" ]; then
+      return 0
+    fi
+  done <<EOF
+$account_listing
+EOF
+  return 1
+}
+
+listing_contains_name() {
+  account_listing="$1"
+  sought_name="$2"
+  while read -r listed_name _remaining; do
+    if [ "$listed_name" = "$sought_name" ]; then
+      return 0
+    fi
+  done <<EOF
+$account_listing
+EOF
+  return 1
+}
+
+record_attribute_has_values() {
+  record_dump="$1"
+  attribute="$2"
+  inside_attribute=0
+  while IFS= read -r record_line; do
+    case "$record_line" in
+      "$attribute:"*)
+        inside_attribute=1
+        attribute_value="${record_line#*:}"
+        case "$attribute_value" in
+          *[![:space:]]*) return 0 ;;
+        esac
+        ;;
+      [[:space:]]*)
+        if [ "$inside_attribute" -eq 1 ]; then
+          case "$record_line" in
+            *[![:space:]]*) return 0 ;;
+          esac
+        fi
+        ;;
+      *)
+        if [ "$inside_attribute" -eq 1 ]; then
+          return 1
+        fi
+        ;;
+    esac
+  done <<EOF
+$record_dump
+EOF
+  return 1
+}
+
+text_contains_token() (
+  token_text="$1"
+  sought_token="$2"
+  # Directory Service tokens never contain whitespace. Disable pathname expansion before the
+  # intentional IFS split so an administrator-created `*` value cannot expand against cwd.
+  set -f
+  set -- $token_text
+  for candidate_token in "$@"; do
+    if [ "$candidate_token" = "$sought_token" ]; then
+      return 0
+    fi
+  done
+  return 1
+)
+
+record_attribute_contains_token() {
+  record_dump="$1"
+  attribute="$2"
+  sought_token="$3"
+  inside_attribute=0
+  while IFS= read -r record_line; do
+    case "$record_line" in
+      "$attribute:"*)
+        inside_attribute=1
+        attribute_value="${record_line#*:}"
+        if text_contains_token "$attribute_value" "$sought_token"; then
+          return 0
+        fi
+        ;;
+      [[:space:]]*)
+        if [ "$inside_attribute" -eq 1 ] &&
+          text_contains_token "$record_line" "$sought_token"; then
+          return 0
+        fi
+        ;;
+      *)
+        if [ "$inside_attribute" -eq 1 ]; then
+          return 1
+        fi
+        ;;
+    esac
+  done <<EOF
+$record_dump
+EOF
+  return 1
+}
+
+group_is_in_use() {
+  group_name="$1"
+  group_id="$2"
+  if ! primary_group_listing="$(dscl . -list /Users PrimaryGroupID)"; then
+    return 2
+  fi
+  if listing_contains_id "$primary_group_listing" "$group_id"; then
+    return 0
+  fi
+
+  if ! group_record="$(dscl . -read "/Groups/$group_name")"; then
+    return 2
+  fi
+  for membership_attribute in GroupMembership GroupMembers NestedGroups; do
+    if record_attribute_has_values "$group_record" "$membership_attribute"; then
+      return 0
+    fi
+  done
+
+  group_guid="$(dscl_value "/Groups/$group_name" GeneratedUID || true)"
+  case "$group_guid" in
+    ''|*[!0-9A-Fa-f-]*) return 2 ;;
+  esac
+  [ "${#group_guid}" -eq 36 ] || return 2
+
+  # Do not infer anything from `dscl -search` exit codes: macOS versions do not provide a
+  # sufficiently useful contract for distinguishing "no match" from a query failure. Enumerate
+  # every local group and read each record instead; any failed enumeration/read is unknown.
+  if ! all_group_names="$(dscl . -list /Groups)"; then
+    return 2
+  fi
+  while IFS= read -r referencing_group; do
+    [ -n "$referencing_group" ] || continue
+    [ "$referencing_group" = "$group_name" ] && continue
+    if ! referencing_record="$(dscl . -read "/Groups/$referencing_group")"; then
+      return 2
+    fi
+    if record_attribute_contains_token "$referencing_record" NestedGroups "$group_guid" ||
+      record_attribute_contains_token "$referencing_record" GroupMembers "$group_guid" ||
+      record_attribute_contains_token "$referencing_record" GroupMembership "$group_name"; then
+      return 0
+    fi
+  done <<EOF
+$all_group_names
+EOF
+  return 1
+}
+
+user_record_state="unknown"
+group_record_state="unknown"
+if local_user_names="$(dscl . -list /Users)"; then
+  if listing_contains_name "$local_user_names" "$user"; then
+    user_record_state="present"
+  else
+    user_record_state="absent"
+  fi
+else
+  echo "Could not enumerate local users; account cleanup will fail closed" >&2
+  purge_incomplete=1
+fi
+if local_group_names="$(dscl . -list /Groups)"; then
+  if listing_contains_name "$local_group_names" "$group"; then
+    group_record_state="present"
+  else
+    group_record_state="absent"
+  fi
+else
+  echo "Could not enumerate local groups; account cleanup will fail closed" >&2
+  purge_incomplete=1
+fi
+
+current_group_gid=""
+current_group_name=""
+if [ "$group_record_state" = "present" ]; then
+  current_group_gid="$(dscl_value "/Groups/$group" PrimaryGroupID || true)"
+  current_group_name="$(dscl_value "/Groups/$group" RealName || true)"
+  case "$current_group_gid" in
+    ''|*[!0-9]*) current_group_gid="" ;;
+  esac
+fi
+
+if [ "$user_record_state" = "present" ]; then
+  if [ "$user_created" -eq 1 ]; then
+    real_name="$(dscl_value "/Users/$user" RealName || true)"
+    user_uid="$(dscl_value "/Users/$user" UniqueID || true)"
+    user_gid="$(dscl_value "/Users/$user" PrimaryGroupID || true)"
+    user_shell="$(dscl_value "/Users/$user" UserShell || true)"
+    user_home="$(dscl_value "/Users/$user" NFSHomeDirectory || true)"
+    hidden="$(dscl_value "/Users/$user" IsHidden || true)"
+    if [ "$real_name" = "UnionC Agent" ] && [ "$user_shell" = "/usr/bin/false" ] &&
+      [ "$user_home" = "/var/empty" ] && [ "$hidden" = "1" ] &&
+      [ "$current_group_name" = "UnionC Agent" ] && [ -n "$current_group_gid" ] &&
+      [ "$user_uid" = "$created_user_uid" ] &&
+      [ "$user_gid" = "$created_user_primary_gid" ] &&
+      [ "$user_gid" = "$current_group_gid" ]; then
+      dscl . -delete "/Users/$user"
+      user_created=0
+      created_user_uid="-"
+      created_user_primary_gid="-"
+    else
+      echo "Preserving $user because its attributes no longer match the installer account" >&2
+      purge_incomplete=1
+      owned_user_blocked=1
+    fi
+  else
+    if [ "$ownership_marker_valid" -eq 1 ]; then
+      echo "Preserving pre-existing $user account (not created by this package)" >&2
+    else
+      echo "Preserving $user because no root-only marker proves this package created it" >&2
+    fi
+  fi
+elif [ "$user_record_state" = "absent" ]; then
+  user_created=0
+  created_user_uid="-"
+  created_user_primary_gid="-"
+elif [ "$user_created" -eq 1 ]; then
+  echo "Preserving marker-owned $user because local user enumeration failed" >&2
+  purge_incomplete=1
+  owned_user_blocked=1
+fi
+
+if [ "$group_record_state" = "present" ]; then
+  if [ "$group_created" -eq 1 ]; then
+    group_name="$(dscl_value "/Groups/$group" RealName || true)"
+    group_gid="$(dscl_value "/Groups/$group" PrimaryGroupID || true)"
+    group_in_use=0
+    group_usage_status=0
+    if [ "$owned_user_blocked" -eq 1 ]; then
+      # Keep the installer group available so an administrator can restore the user's original
+      # PrimaryGroupID and retry the purge without having to reconstruct the group record.
+      group_in_use=1
+    fi
+    case "$group_gid" in
+      ''|*[!0-9]*) group_in_use=1 ;;
+      *)
+        if group_is_in_use "$group" "$group_gid"; then
+          group_in_use=1
+        else
+          group_usage_status="$?"
+        fi
+        if [ "$group_usage_status" -eq 2 ]; then
+          echo "Could not safely determine whether $group is still in use; preserving it (fail closed)" >&2
+          group_in_use=1
+          purge_incomplete=1
+        fi
+        ;;
+    esac
+    if [ "$group_name" = "UnionC Agent" ] && [ "$group_gid" = "$created_group_gid" ] &&
+      [ "$group_in_use" -eq 0 ]; then
+      dscl . -delete "/Groups/$group"
+      group_created=0
+      created_group_gid="-"
+    else
+      echo "Preserving $group because its attributes changed or it is still in use" >&2
+      purge_incomplete=1
+    fi
+  else
+    if [ "$ownership_marker_valid" -eq 1 ]; then
+      echo "Preserving pre-existing $group group (not created by this package)" >&2
+    else
+      echo "Preserving $group because no root-only marker proves this package created it" >&2
+    fi
+  fi
+elif [ "$group_record_state" = "absent" ]; then
+  group_created=0
+  created_group_gid="-"
+elif [ "$group_created" -eq 1 ]; then
+  echo "Preserving marker-owned $group because local group enumeration failed" >&2
+  purge_incomplete=1
+fi
+
+if [ "$ownership_marker_valid" -eq 1 ]; then
+  if [ "$user_created" -eq 0 ] && [ "$group_created" -eq 0 ]; then
+    rm -f "$ownership_marker"
+  else
+    marker_temporary="$ownership_dir/.account-ownership.$$"
+    umask 077
+    {
+      printf 'format=%s\n' "$package_version"
+      printf 'user_created=%s\n' "$user_created"
+      printf 'user_uid=%s\n' "$created_user_uid"
+      printf 'user_primary_gid=%s\n' "$created_user_primary_gid"
+      printf 'group_created=%s\n' "$group_created"
+      printf 'group_gid=%s\n' "$created_group_gid"
+    } > "$marker_temporary"
+    chown root:wheel "$marker_temporary"
+    chmod 0600 "$marker_temporary"
+    mv -f "$marker_temporary" "$ownership_marker"
+  fi
+fi
+rmdir "$ownership_dir" >/dev/null 2>&1 || true
+
+if [ "$purge_incomplete" -eq 1 ]; then
+  cat >&2 <<EOF
+UnionC Agent purge is incomplete: local state, logs, and program files were removed, but an
+installer-owned account/group or its ownership marker could not be safely removed. The package
+receipt and maintenance helper were retained for repair and retry:
+  $share/uninstall.sh
+EOF
+  exit 2
+fi
+
+if pkgutil --pkg-info "$identifier" >/dev/null 2>&1; then
+  pkgutil --forget "$identifier" >/dev/null
+fi
+
+rm -f "$share/uninstall.sh"
+rmdir "$share" >/dev/null 2>&1 || true
+rmdir /usr/local/libexec >/dev/null 2>&1 || true
+
+echo "UnionC Agent program and installer-owned local data were purged; server revoke is separate."
+exit 0

@@ -1,0 +1,176 @@
+//! 统一错误类型。
+//!
+//! Axum 的 handler 可以返回 `Result<T, AppError>`。当出现错误时，`IntoResponse`
+//! 会把错误转换成统一 JSON 响应，前端就能稳定读取 `message` 字段。
+
+use axum::{
+    Json,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
+use thiserror::Error;
+
+use crate::config::LocalConfigError;
+use crate::system::ErrorResponse;
+
+/// 项目内 handler 常用的结果类型别名。
+pub type AppResult<T> = Result<T, AppError>;
+
+/// 应用错误分类。
+#[derive(Debug, Error)]
+pub enum AppError {
+    /// 请求参数不合法，返回 400。
+    #[error("{0}")]
+    BadRequest(String),
+    /// 请求体媒体类型不符合端点契约，返回 415。
+    #[error("{0}")]
+    UnsupportedMediaType(String),
+    /// 本地管理员配置校验失败，返回可细分机器码。
+    #[error(transparent)]
+    LocalConfig(#[from] LocalConfigError),
+    /// 主机地址格式错误，返回稳定机器码 `invalid_host`。
+    #[error("{0}")]
+    InvalidHost(String),
+    /// 认证失败，返回 401。
+    #[error("unauthorized")]
+    Unauthorized,
+    /// 已认证但请求缺少必要的安全证明，返回 403。
+    #[error("{0}")]
+    Forbidden(String),
+    /// The Agent's host instance is persistently revoked. Distinct from an
+    /// unknown or superseded token so the daemon can enter a deauthorized state.
+    #[error("agent credential has been revoked")]
+    AgentRevoked,
+    /// 请求没有经过预期的反向代理链路（缺少 `X-Forwarded-Proto` / `X-Forwarded-For`），
+    /// 返回 421 Misdirected Request。
+    ///
+    /// # 为什么不复用 403
+    ///
+    /// 这不是"凭据不对"，而是"请求走错了路"——凭据可能完全有效。二者混用 403 会造成
+    /// 真实的误判：Agent 把 403 归类为持久撤销并停止自动注册，于是一次反向代理漏透传
+    /// 请求头的**部署配置失误**，在客户端表现为整台实例被退役。
+    /// 421 的语义正是"这台服务器不该接收这个请求"，且它天然属于可重试类——
+    /// 运维修好反代之后，同一份报文原样重发即可成功。
+    #[error("{0}")]
+    MisdirectedRequest(String),
+    /// 请求的资源不存在，返回 404。
+    #[error("{0}")]
+    NotFound(String),
+    /// 曾经存在但已经过期或不可再使用，返回 410。
+    #[error("{0}")]
+    Gone(String),
+    /// 当前状态冲突，例如重复启动服务，返回 409。
+    #[error("{0}")]
+    Conflict(String),
+    /// 请求过于频繁，返回 429。
+    #[error("{0}")]
+    TooManyRequests(String),
+    /// 本地持久层暂不可用，业务接口暂不可用，返回 503。
+    #[error("{0}")]
+    ServiceUnavailable(String),
+    /// 内嵌 SQLite 当前无法完成最小查询。
+    #[error("{0}")]
+    DatabaseUnavailable(String),
+    /// 外部进程或依赖服务出错，返回 502。
+    #[error("{0}")]
+    Process(String),
+    /// 管理员配置的上游 HTTP 服务错误；消息可安全返回给已认证控制台。
+    #[error("{0}")]
+    Upstream(String),
+    /// 文件系统错误。
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    /// 数据库错误。
+    #[error(transparent)]
+    Sqlx(#[from] sqlx_core::Error),
+    /// 其他使用 anyhow 传递的错误。
+    #[error(transparent)]
+    Anyhow(#[from] anyhow::Error),
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let status = match &self {
+            AppError::BadRequest(_) | AppError::LocalConfig(_) | AppError::InvalidHost(_) => {
+                StatusCode::BAD_REQUEST
+            }
+            AppError::UnsupportedMediaType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            AppError::Unauthorized => StatusCode::UNAUTHORIZED,
+            AppError::Forbidden(_) | AppError::AgentRevoked => StatusCode::FORBIDDEN,
+            AppError::MisdirectedRequest(_) => StatusCode::MISDIRECTED_REQUEST,
+            AppError::NotFound(_) => StatusCode::NOT_FOUND,
+            AppError::Gone(_) => StatusCode::GONE,
+            AppError::Conflict(_) => StatusCode::CONFLICT,
+            AppError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+            AppError::ServiceUnavailable(_) | AppError::DatabaseUnavailable(_) => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+            AppError::Process(_) | AppError::Upstream(_) => StatusCode::BAD_GATEWAY,
+            AppError::Io(_) | AppError::Sqlx(_) | AppError::Anyhow(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        };
+
+        // 内部错误记录完整信息用于调试，但对外只返回通用描述，不泄露路径或 SQL。
+        let client_message = match &self {
+            AppError::BadRequest(msg) => msg.clone(),
+            AppError::UnsupportedMediaType(msg) => msg.clone(),
+            AppError::LocalConfig(error) => error.to_string(),
+            AppError::InvalidHost(msg) => msg.clone(),
+            AppError::Unauthorized => "unauthorized".to_string(),
+            AppError::Forbidden(msg) => msg.clone(),
+            AppError::AgentRevoked => "agent credential has been revoked".to_string(),
+            AppError::MisdirectedRequest(msg) => msg.clone(),
+            AppError::NotFound(msg) => msg.clone(),
+            AppError::Gone(msg) => msg.clone(),
+            AppError::Conflict(msg) => msg.clone(),
+            AppError::TooManyRequests(msg) => msg.clone(),
+            AppError::ServiceUnavailable(msg) => msg.clone(),
+            AppError::DatabaseUnavailable(msg) => msg.clone(),
+            AppError::Process(_) => "upstream service error".to_string(),
+            AppError::Upstream(msg) => msg.clone(),
+            AppError::Io(_) => "storage error".to_string(),
+            AppError::Sqlx(_) => "database error".to_string(),
+            AppError::Anyhow(_) => "internal error".to_string(),
+        };
+
+        if status == StatusCode::INTERNAL_SERVER_ERROR {
+            tracing::error!("internal error: {self}");
+        } else if matches!(&self, AppError::Process(_) | AppError::Upstream(_)) {
+            tracing::warn!("upstream/process error: {self}");
+        }
+
+        let body = Json(ErrorResponse {
+            code: self.code().to_string(),
+            message: client_message,
+        });
+
+        (status, body).into_response()
+    }
+}
+
+impl AppError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::BadRequest(_) => "bad_request",
+            Self::UnsupportedMediaType(_) => "unsupported_media_type",
+            Self::LocalConfig(error) => error.code(),
+            Self::InvalidHost(_) => "invalid_host",
+            Self::Unauthorized => "unauthorized",
+            Self::Forbidden(_) => "forbidden",
+            Self::AgentRevoked => "agent_revoked",
+            Self::MisdirectedRequest(_) => "misdirected_request",
+            Self::NotFound(_) => "not_found",
+            Self::Gone(_) => "gone",
+            Self::Conflict(_) => "conflict",
+            Self::TooManyRequests(_) => "too_many_requests",
+            Self::ServiceUnavailable(_) => "service_unavailable",
+            Self::DatabaseUnavailable(_) => "database_unavailable",
+            Self::Process(_) => "process_error",
+            Self::Upstream(_) => "upstream_error",
+            Self::Io(_) => "storage_error",
+            Self::Sqlx(_) => "database_error",
+            Self::Anyhow(_) => "internal_error",
+        }
+    }
+}

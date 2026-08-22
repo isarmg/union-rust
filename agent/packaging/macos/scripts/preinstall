@@ -1,0 +1,33 @@
+#!/bin/sh
+set -eu
+
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+export PATH
+package_version="@UNIONC_AGENT_PACKAGE_VERSION@"
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "UnionC Agent preinstall must run as root" >&2
+  exit 1
+fi
+
+if installed_receipt="$(pkgutil --pkg-info com.unionc.agent 2>/dev/null)"; then
+  installed_version="$(printf '%s\n' "$installed_receipt" | sed -n 's/^version: //p')"
+  [ "$installed_version" = "$package_version" ] || {
+    echo "UnionC Agent $installed_version is installed; purge it before installing $package_version" >&2
+    exit 1
+  }
+fi
+
+stop_job() {
+  service_target="$1"
+  if launchctl print "$service_target" >/dev/null 2>&1; then
+    launchctl bootout "$service_target"
+  fi
+}
+
+# Stop the rotation helper first so it cannot restart the current Agent while a same-version
+# reinstall replaces the payload. bootout is synchronous before postinstall runs.
+stop_job system/com.unionc.agent.logrotate
+stop_job system/com.unionc.agent
+
+exit 0

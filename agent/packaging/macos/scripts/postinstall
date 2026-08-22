@@ -1,0 +1,371 @@
+#!/bin/sh
+set -eu
+
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+export PATH
+
+user="_unioncagent"
+group="_unioncagent"
+state="/Library/Application Support/UnionC Agent"
+log="/var/log/unionc-agent.log"
+agent_plist="/Library/LaunchDaemons/com.unionc.agent.plist"
+logrotate_plist="/Library/LaunchDaemons/com.unionc.agent.logrotate.plist"
+ownership_dir="/var/db/unionc-agent"
+ownership_marker="$ownership_dir/account-ownership"
+package_version="@UNIONC_AGENT_PACKAGE_VERSION@"
+user_created=0
+group_created=0
+ownership_marker_present=0
+created_user_uid="-"
+created_user_primary_gid="-"
+created_group_gid="-"
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "UnionC Agent postinstall must run as root" >&2
+  exit 1
+fi
+
+install -d -m 0700 -o root -g wheel "$ownership_dir"
+if [ -e "$ownership_marker" ]; then
+  ownership_marker_present=1
+  [ -f "$ownership_marker" ] && [ ! -L "$ownership_marker" ] || {
+    echo "Unsafe UnionC Agent account ownership marker" >&2
+    exit 1
+  }
+  marker_owner="$(stat -f '%Su:%Sg' "$ownership_marker")"
+  [ "$marker_owner" = "root:wheel" ] || {
+    echo "UnionC Agent account ownership marker is not owned by root:wheel" >&2
+    exit 1
+  }
+  seen_user=0
+  seen_group=0
+  seen_format=0
+  seen_user_uid=0
+  seen_user_primary_gid=0
+  seen_group_gid=0
+  while IFS= read -r marker_line; do
+    case "$marker_line" in
+      format="$package_version")
+        [ "$seen_format" -eq 0 ] || { echo "Duplicate Agent ownership marker field" >&2; exit 1; }
+        seen_format=1
+        ;;
+      user_created=0|user_created=1)
+        [ "$seen_user" -eq 0 ] || { echo "Duplicate Agent ownership marker field" >&2; exit 1; }
+        user_created="${marker_line#user_created=}"
+        seen_user=1
+        ;;
+      group_created=0|group_created=1)
+        [ "$seen_group" -eq 0 ] || { echo "Duplicate Agent ownership marker field" >&2; exit 1; }
+        group_created="${marker_line#group_created=}"
+        seen_group=1
+        ;;
+      user_uid=*)
+        [ "$seen_user_uid" -eq 0 ] || { echo "Duplicate Agent ownership marker field" >&2; exit 1; }
+        created_user_uid="${marker_line#user_uid=}"
+        seen_user_uid=1
+        ;;
+      user_primary_gid=*)
+        [ "$seen_user_primary_gid" -eq 0 ] || { echo "Duplicate Agent ownership marker field" >&2; exit 1; }
+        created_user_primary_gid="${marker_line#user_primary_gid=}"
+        seen_user_primary_gid=1
+        ;;
+      group_gid=*)
+        [ "$seen_group_gid" -eq 0 ] || { echo "Duplicate Agent ownership marker field" >&2; exit 1; }
+        created_group_gid="${marker_line#group_gid=}"
+        seen_group_gid=1
+        ;;
+      *)
+        echo "Invalid UnionC Agent account ownership marker" >&2
+        exit 1
+        ;;
+    esac
+  done < "$ownership_marker"
+  [ "$seen_format" -eq 1 ] && [ "$seen_user" -eq 1 ] && [ "$seen_group" -eq 1 ] && [ "$seen_user_uid" -eq 1 ] &&
+    [ "$seen_user_primary_gid" -eq 1 ] && [ "$seen_group_gid" -eq 1 ] || {
+    echo "Incomplete UnionC Agent account ownership marker" >&2
+    exit 1
+  }
+  if [ "$user_created" -eq 1 ]; then
+    case "$created_user_uid" in
+      ''|*[!0-9]*)
+        echo "Invalid UnionC Agent user IDs in account ownership marker" >&2
+        exit 1
+        ;;
+    esac
+    case "$created_user_primary_gid" in
+      ''|*[!0-9]*)
+        echo "Invalid UnionC Agent user IDs in account ownership marker" >&2
+        exit 1
+        ;;
+    esac
+  elif [ "$created_user_uid" != "-" ] || [ "$created_user_primary_gid" != "-" ]; then
+    echo "Invalid UnionC Agent user IDs in account ownership marker" >&2
+    exit 1
+  fi
+  if [ "$group_created" -eq 1 ]; then
+    case "$created_group_gid" in
+      ''|*[!0-9]*)
+        echo "Invalid UnionC Agent group ID in account ownership marker" >&2
+        exit 1
+        ;;
+    esac
+  elif [ "$created_group_gid" != "-" ]; then
+    echo "Invalid UnionC Agent group ID in account ownership marker" >&2
+    exit 1
+  fi
+  if [ "$user_created" -eq 1 ] && [ "$group_created" -eq 1 ] &&
+    [ "$created_user_primary_gid" != "$created_group_gid" ]; then
+    echo "UnionC Agent ownership marker has inconsistent user/group identity binding" >&2
+    exit 1
+  fi
+fi
+
+write_ownership_marker() {
+  marker_temporary="$ownership_dir/.account-ownership.$$"
+  umask 077
+  {
+    printf 'format=%s\n' "$package_version"
+    printf 'user_created=%s\n' "$user_created"
+    printf 'user_uid=%s\n' "$created_user_uid"
+    printf 'user_primary_gid=%s\n' "$created_user_primary_gid"
+    printf 'group_created=%s\n' "$group_created"
+    printf 'group_gid=%s\n' "$created_group_gid"
+  } > "$marker_temporary"
+  chown root:wheel "$marker_temporary"
+  chmod 0600 "$marker_temporary"
+  mv -f "$marker_temporary" "$ownership_marker"
+}
+
+dscl_value() {
+  record="$1"
+  field="$2"
+  dscl_record="$(dscl . -read "$record" "$field" 2>/dev/null)" || return 1
+  printf '%s\n' "$dscl_record" | sed -n "s/^$field: //p"
+}
+
+listing_contains_id() {
+  account_listing="$1"
+  sought_id="$2"
+  while read -r _record_name listed_id _remaining; do
+    if [ "$listed_id" = "$sought_id" ]; then
+      return 0
+    fi
+  done <<EOF
+$account_listing
+EOF
+  return 1
+}
+
+listing_contains_name() {
+  account_listing="$1"
+  sought_name="$2"
+  while read -r listed_name _remaining; do
+    if [ "$listed_name" = "$sought_name" ]; then
+      return 0
+    fi
+  done <<EOF
+$account_listing
+EOF
+  return 1
+}
+
+existing_group_matches_marker() {
+  actual_gid="$1"
+  actual_real_name="$2"
+  case "$actual_gid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$actual_real_name" = "UnionC Agent" ] || return 1
+  [ "$ownership_marker_present" -eq 1 ] &&
+    [ "$group_created" -eq 1 ] &&
+    [ "$actual_gid" = "$created_group_gid" ]
+}
+
+existing_user_matches_marker() {
+  actual_uid="$1"
+  actual_primary_gid="$2"
+  actual_real_name="$3"
+  actual_shell="$4"
+  actual_home="$5"
+  actual_hidden="$6"
+  service_group_gid="$7"
+  for numeric_id in "$actual_uid" "$actual_primary_gid" "$service_group_gid"; do
+    case "$numeric_id" in
+      ''|*[!0-9]*) return 1 ;;
+    esac
+  done
+  [ "$actual_real_name" = "UnionC Agent" ] &&
+    [ "$actual_shell" = "/usr/bin/false" ] &&
+    [ "$actual_home" = "/var/empty" ] &&
+    [ "$actual_hidden" = "1" ] &&
+    [ "$actual_primary_gid" = "$service_group_gid" ] || return 1
+  [ "$ownership_marker_present" -eq 1 ] &&
+    [ "$user_created" -eq 1 ] &&
+    [ "$actual_uid" = "$created_user_uid" ] &&
+    [ "$actual_primary_gid" = "$created_user_primary_gid" ]
+}
+
+next_free_id() {
+  record_type="$1"
+  field="$2"
+  candidate=450
+  record_listing="$(dscl . -list "$record_type" "$field")" || {
+    echo "Could not enumerate $record_type $field while allocating an Agent account ID" >&2
+    exit 1
+  }
+  user_group_listing=""
+  if [ "$record_type" = "/Groups" ]; then
+    user_group_listing="$(dscl . -list /Users PrimaryGroupID)" || {
+      echo "Could not enumerate local user group IDs while allocating the Agent group" >&2
+      exit 1
+    }
+  fi
+  while :; do
+    id_in_use=0
+    if listing_contains_id "$record_listing" "$candidate"; then
+      id_in_use=1
+    fi
+    # A primary GID can still be referenced even if its group record was removed. Never create
+    # the service group with a numeric ID already attached to another local account.
+    if [ "$record_type" = "/Groups" ] &&
+      listing_contains_id "$user_group_listing" "$candidate"; then
+      id_in_use=1
+    fi
+    [ "$id_in_use" -eq 1 ] || break
+    candidate=$((candidate - 1))
+    if [ "$candidate" -lt 200 ]; then
+      echo "No free local account ID in the reserved UnionC Agent range (200-450)" >&2
+      exit 1
+    fi
+  done
+  printf '%s\n' "$candidate"
+}
+
+local_group_names="$(dscl . -list /Groups)" || {
+  echo "Could not enumerate local groups; refusing to create or adopt $group" >&2
+  exit 1
+}
+if ! listing_contains_name "$local_group_names" "$group"; then
+  gid="$(next_free_id /Groups PrimaryGroupID)"
+  dscl . -create "/Groups/$group"
+  dscl . -create "/Groups/$group" RealName "UnionC Agent"
+  dscl . -create "/Groups/$group" PrimaryGroupID "$gid"
+  dscl . -create "/Groups/$group" Password '*'
+  group_created=1
+  created_group_gid="$gid"
+  write_ownership_marker
+  verified_gid="$(dscl_value "/Groups/$group" PrimaryGroupID)" || {
+    echo "Could not verify the newly created $group group" >&2
+    exit 1
+  }
+  [ "$verified_gid" = "$gid" ] || {
+    echo "New $group group has an unexpected PrimaryGroupID" >&2
+    exit 1
+  }
+else
+  gid="$(dscl_value "/Groups/$group" PrimaryGroupID)"
+  group_name="$(dscl_value "/Groups/$group" RealName || true)"
+  if ! existing_group_matches_marker "$gid" "$group_name"; then
+    echo "Existing $group group does not match the installer ownership binding" >&2
+    exit 1
+  fi
+fi
+
+local_user_names="$(dscl . -list /Users)" || {
+  echo "Could not enumerate local users; refusing to create or adopt $user" >&2
+  exit 1
+}
+if ! listing_contains_name "$local_user_names" "$user"; then
+  uid="$(next_free_id /Users UniqueID)"
+  dscl . -create "/Users/$user"
+  dscl . -create "/Users/$user" RealName "UnionC Agent"
+  dscl . -create "/Users/$user" UniqueID "$uid"
+  dscl . -create "/Users/$user" PrimaryGroupID "$gid"
+  dscl . -create "/Users/$user" UserShell /usr/bin/false
+  dscl . -create "/Users/$user" NFSHomeDirectory /var/empty
+  dscl . -create "/Users/$user" IsHidden 1
+  dscl . -create "/Users/$user" Password '*'
+  user_created=1
+  created_user_uid="$uid"
+  created_user_primary_gid="$gid"
+  write_ownership_marker
+  verified_uid="$(dscl_value "/Users/$user" UniqueID)" || {
+    echo "Could not verify the newly created $user account" >&2
+    exit 1
+  }
+  verified_primary_gid="$(dscl_value "/Users/$user" PrimaryGroupID)" || {
+    echo "Could not verify the newly created $user primary group" >&2
+    exit 1
+  }
+  [ "$verified_uid" = "$uid" ] && [ "$verified_primary_gid" = "$gid" ] || {
+    echo "New $user account has unexpected numeric identity attributes" >&2
+    exit 1
+  }
+else
+  existing_uid="$(dscl_value "/Users/$user" UniqueID)"
+  existing_gid="$(dscl_value "/Users/$user" PrimaryGroupID)"
+  existing_real_name="$(dscl_value "/Users/$user" RealName || true)"
+  existing_shell="$(dscl_value "/Users/$user" UserShell || true)"
+  existing_home="$(dscl_value "/Users/$user" NFSHomeDirectory || true)"
+  existing_hidden="$(dscl_value "/Users/$user" IsHidden || true)"
+  if ! existing_user_matches_marker "$existing_uid" "$existing_gid" "$existing_real_name" \
+    "$existing_shell" "$existing_home" "$existing_hidden" "$gid"; then
+    echo "Existing $user account does not match the installer ownership binding" >&2
+    exit 1
+  fi
+fi
+write_ownership_marker
+
+if [ ! -e "$state/config.json" ]; then
+  cp "$state/config.example.json" "$state/config.json"
+fi
+chown -R "$user:$group" "$state"
+chmod 0700 "$state"
+chmod 0600 "$state/config.json" "$state/config.example.json"
+
+touch "$log"
+chown "$user:$group" "$log"
+chmod 0600 "$log"
+
+# 安装与授权刻意分离。未配对时 Agent 只低频记录 awaiting_authorization；用户随后执行
+# `unionc-agent pair --server https://...`，常驻进程会接续同一个浏览器配对请求。
+launchctl enable system/com.unionc.agent
+launchctl enable system/com.unionc.agent.logrotate
+launchctl bootstrap system "$agent_plist"
+launchctl bootstrap system "$logrotate_plist"
+
+cat <<'EOF'
+
+UnionC Agent's LaunchDaemon is started, but this new installation is not paired yet and is not
+sending authorized telemetry.
+
+Create an instance and one-time activation code in the UnionC Web console, then run this
+command locally. It deliberately runs as the service account so the daemon owns and can read
+the generated credential files:
+
+  sudo -u _unioncagent /usr/local/bin/unionc-agent pair \
+    --config '/Library/Application Support/UnionC Agent/config.json' \
+    --server https://unionc.example.com
+
+Replace the example URL with your UnionC console origin. The package does not contain a
+deployment token, and pairing does not expose the long-lived Agent secret to the browser.
+
+After pairing, inspect local state and run the read-only doctor as the same service account:
+
+  sudo -u _unioncagent /usr/local/bin/unionc-agent status --output human \
+    --config '/Library/Application Support/UnionC Agent/config.json'
+  sudo -u _unioncagent /usr/local/bin/unionc-agent doctor --output human \
+    --config '/Library/Application Support/UnionC Agent/config.json'
+
+Inspect the LaunchDaemon and its private log:
+
+  sudo launchctl print system/com.unionc.agent
+  sudo tail -n 100 /var/log/unionc-agent.log
+
+Uninstall helper:
+
+  sudo /usr/local/share/unionc-agent/uninstall.sh
+
+EOF
+
+exit 0

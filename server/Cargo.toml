@@ -1,0 +1,47 @@
+[package]
+name = "unionc"
+description = "UnionC console backend — read-only multi-host monitoring"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+aes-gcm = "0.10"
+bcrypt = "0.15"
+async-stream = "0.3"
+axum = "0.8"
+base64 = "0.22"
+chrono.workspace = true
+futures-util = "0.3"
+mime = "0.3"
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+sqlx-core = { version = "0.8", default-features = false, features = ["chrono", "_rt-tokio"] }
+# SQLite is the runtime database. `bundled` keeps the server self-contained and
+# pins the SQLite feature set (STRICT tables, RETURNING, JSON1 and WAL) instead
+# of depending on the host distribution's libsqlite version.
+sqlx-sqlite = { version = "0.8", default-features = false, features = ["bundled", "chrono"] }
+sysinfo.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = [
+  "macros",
+  "net",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+  "time",
+] }
+tower-http = { version = "0.6", features = ["trace"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+unionc-protocol.workspace = true
+uuid.workspace = true
+# 0.13: rustls 成为默认 TLS 后端，feature 名从 rustls-tls 改为 rustls
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+unionc-agent = { path = "../agent", default-features = false }

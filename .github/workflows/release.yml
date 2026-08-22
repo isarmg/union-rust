@@ -1,0 +1,1231 @@
+name: UnionC release artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  server-linux:
+    name: server (linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+      - name: Install static Linux build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+      - name: Resolve and verify Server version
+        id: server_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_version="$(
+            cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.name == "unionc") | .version'
+          )"
+          if [[ ! "$cargo_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Server Cargo version is not strict MAJOR.MINOR.PATCH: $cargo_version" >&2
+            exit 1
+          fi
+          version="$cargo_version"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            if [[ "$version" != "$cargo_version" ]]; then
+              echo "Tag version $version must match Server Cargo version $cargo_version" >&2
+              exit 1
+            fi
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Build release Server binary
+        run: cargo build --release -p unionc --target x86_64-unknown-linux-musl
+      - name: Install pinned nFPM
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
+      - name: Build Server binary, DEB, and RPM artifacts
+        shell: bash
+        env:
+          SERVER_VERSION: ${{ steps.server_version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          server_binary=target/x86_64-unknown-linux-musl/release/unionc
+          test -x "$server_binary"
+          if readelf -l "$server_binary" | grep -q 'Requesting program interpreter'; then
+            echo "Server release binary must be statically linked for cross-distribution packaging" >&2
+            exit 1
+          fi
+          install -Dm755 "$server_binary" \
+            "dist/unionc-server-${SERVER_VERSION}-linux-x86_64"
+
+          # nFPM's source path is intentionally fixed. Stage the already
+          # verified musl binary there instead of rebuilding a glibc binary.
+          install -Dm755 "$server_binary" target/release/unionc
+
+          nfpm_bin="$(go env GOPATH)/bin/nfpm"
+          NFPM_BIN="$nfpm_bin" NFPM_ARCH=amd64 \
+            server/packaging/linux/build-packages.sh
+
+          test -x "dist/unionc-server-${SERVER_VERSION}-linux-x86_64"
+          deb_dependencies="$(
+            dpkg-deb --field "dist/unionc_${SERVER_VERSION}_amd64.deb" Depends
+          )"
+          grep -Eq '(^|, )passwd($|,)' <<<"$deb_dependencies"
+          grep -Eq '(^|, )systemd($|,)' <<<"$deb_dependencies"
+          if grep -Eq '(^|, )adduser($|,)' <<<"$deb_dependencies"; then
+            echo "Server DEB must depend on passwd, not adduser" >&2
+            exit 1
+          fi
+
+          current_control="$RUNNER_TEMP/unionc-server-current-control"
+          mkdir -p "$current_control"
+          dpkg-deb --control \
+            "dist/unionc_${SERVER_VERSION}_amd64.deb" "$current_control"
+          test ! -e "$current_control/preinst"
+          grep -F 'systemctl restart unionc.service' "$current_control/postinst"
+          grep -F 'systemctl daemon-reload' "$current_control/postrm"
+          dpkg-deb --info "dist/unionc_${SERVER_VERSION}_amd64.deb"
+          dpkg-deb --contents "dist/unionc_${SERVER_VERSION}_amd64.deb"
+      - name: Smoke test Server DEB, fresh SQLite, same-version reinstall, backup, and restore
+        shell: bash
+        env:
+          SERVER_VERSION: ${{ steps.server_version.outputs.version }}
+        run: |
+          set -euo pipefail
+          package="$(find dist -maxdepth 1 -name 'unionc_*_amd64.deb' -print -quit)"
+          test -n "$package" && test -f "$package"
+
+          sudo dpkg -i "$package"
+          test -x /usr/bin/unionc
+          getent passwd unionc >/dev/null
+          getent group unionc >/dev/null
+          test "$(stat -c '%a:%U:%G' /var/lib/unionc)" = "700:unionc:unionc"
+          test "$(stat -c '%a:%U:%G' /var/lib/unionc-package)" = "700:root:root"
+          for marker in managed-user managed-group; do
+            marker_path="/var/lib/unionc-package/$marker"
+            test "$(stat -c '%a:%U:%G' "$marker_path")" = "600:root:root"
+            test "$(sed -n 's/^format=//p' "$marker_path")" = "$SERVER_VERSION"
+          done
+          test "$(sed -n 's/^uid=//p' /var/lib/unionc-package/managed-user)" = \
+            "$(id -u unionc)"
+          test "$(sed -n 's/^primary_gid=//p' /var/lib/unionc-package/managed-user)" = \
+            "$(id -g unionc)"
+          test "$(sed -n 's/^gid=//p' /var/lib/unionc-package/managed-group)" = \
+            "$(getent group unionc | cut -d: -f3)"
+          grep -Fx "UNIONC_PACKAGE_VERSION=$SERVER_VERSION" /etc/unionc/unionc.env
+          ! systemctl is-enabled --quiet unionc.service
+          ! systemctl is-active --quiet unionc.service
+          test ! -e /var/lib/unionc/unionc.db
+
+          sudo tee /etc/unionc/unionc.env >/dev/null <<EOF
+          UNIONC_PACKAGE_VERSION=$SERVER_VERSION
+          UNIONC_ENV=production
+          UNIONC_SECRET_KEY=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+          UNIONC_ALLOW_BOOTSTRAP=1
+          UNIONC_BOOTSTRAP_PASSWORD=release-smoke-password-2026
+          EOF
+          sudo chown root:unionc /etc/unionc/unionc.env
+          sudo chmod 0640 /etc/unionc/unionc.env
+
+          wait_ready() {
+            for _ in $(seq 1 60); do
+              if curl --fail --silent --show-error \
+                http://127.0.0.1:8081/api/ready >/dev/null; then
+                return 0
+              fi
+              sleep 1
+            done
+            sudo journalctl -u unionc.service --no-pager -n 120 || true
+            return 1
+          }
+          run_maintenance() {
+            sudo systemd-run --quiet --wait --pipe --collect \
+              --uid=unionc --gid=unionc \
+              -p WorkingDirectory=/var/lib/unionc \
+              -p Environment=UNIONC_DATA_DIR=/var/lib/unionc \
+              -p EnvironmentFile=/etc/unionc/unionc.env \
+              /usr/bin/unionc "$@"
+          }
+
+          sudo systemctl enable --now unionc.service
+          systemctl is-enabled --quiet unionc.service
+          wait_ready
+          test "$(stat -c '%a:%U:%G' /var/lib/unionc/unionc.db)" = "600:unionc:unionc"
+          sudo sed -i \
+            -e '/^UNIONC_ALLOW_BOOTSTRAP=/d' \
+            -e '/^UNIONC_BOOTSTRAP_PASSWORD=/d' \
+            /etc/unionc/unionc.env
+
+          sudo install -d -m 0700 -o unionc -g unionc /var/backups/unionc-release
+          backup=/var/backups/unionc-release/unionc.db
+          run_maintenance backup --output "$backup"
+          test "$(stat -c '%a:%U:%G' "$backup")" = "600:unionc:unionc"
+          test "$(stat -c '%a:%U:%G' "${backup}.manifest.json")" = "600:unionc:unionc"
+
+          sudo systemctl stop unionc.service
+          run_maintenance restore --input "$backup" --force
+          run_maintenance integrity-check
+          pre_restore="$(find /var/lib/unionc -maxdepth 1 \
+            -name 'unionc.pre-restore-*.db' -type f -print -quit)"
+          test -n "$pre_restore"
+          test "$(stat -c '%a:%U:%G' "$pre_restore")" = "600:unionc:unionc"
+          test "$(stat -c '%a:%U:%G' "${pre_restore}.manifest.json")" = \
+            "600:unionc:unionc"
+          run_maintenance restore --input "$pre_restore" --force
+          run_maintenance integrity-check
+          sudo systemctl start unionc.service
+          wait_ready
+
+          # Reinstall only the current package against its current schema.
+          sudo dpkg -i "$package"
+          test "$(dpkg-query -W -f='${Version}' unionc)" = \
+            "$(dpkg-deb --field "$package" Version)"
+          systemctl is-enabled --quiet unionc.service
+          wait_ready
+
+          sudo dpkg --remove unionc
+          test ! -e /usr/bin/unionc
+          test -e /var/lib/unionc/unionc.db
+
+          # A retained marker from any other version must fail closed. Restore
+          # it only to let dpkg finish cleaning up this disposable runner.
+          sudo sed -i "s/^format=.*/format=0.0.0/" \
+            /var/lib/unionc-package/managed-user
+          if sudo dpkg -i "$package"; then
+            echo "Server package adopted another version's ownership marker" >&2
+            exit 1
+          fi
+          test -e /var/lib/unionc/unionc.db
+          sudo sed -i "s/^format=.*/format=$SERVER_VERSION/" \
+            /var/lib/unionc-package/managed-user
+          sudo dpkg --configure unionc
+          sudo dpkg --remove unionc
+      - name: Smoke test Server RPM dependencies, fresh SQLite, and same-version reinstall
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE/dist:/artifacts:ro" \
+            fedora:44 /bin/bash -euxo pipefail -c '
+              package="$(find /artifacts -maxdepth 1 -name "unionc-*.x86_64.rpm" -print -quit)"
+              test -n "$package"
+
+              rpm -qp --scripts "$package" >/tmp/unionc-current-rpm-scripts
+              grep -F "systemctl restart unionc.service" /tmp/unionc-current-rpm-scripts
+
+              dnf install -y curl util-linux "$package"
+              test "$(rpm -q --qf "%{VERSION}" unionc)" = \
+                "$(rpm -qp --qf "%{VERSION}" "$package")"
+              rpm -q --requires unionc | grep -Fx shadow-utils
+              rpm -q --requires unionc | grep -Fx systemd
+              ! rpm -q --requires unionc | grep -Fx adduser
+              test -x /usr/bin/unionc
+              getent passwd unionc >/dev/null
+              test "$(stat -c "%a:%U:%G" /var/lib/unionc)" = "700:unionc:unionc"
+              test "$(stat -c "%a:%U:%G" /var/lib/unionc-package)" = "700:root:root"
+              package_version="$(rpm -q --qf "%{VERSION}" unionc)"
+              grep -Fx "UNIONC_PACKAGE_VERSION=$package_version" /etc/unionc/unionc.env
+              test "$(sed -n "s/^format=//p" /var/lib/unionc-package/managed-user)" = \
+                "$package_version"
+              test "$(sed -n "s/^format=//p" /var/lib/unionc-package/managed-group)" = \
+                "$package_version"
+
+              # Start the binary directly because the Fedora container does
+              # not boot systemd; this validates SQLite creation and runtime.
+              setpriv --reuid=unionc --regid=unionc --init-groups \
+                env UNIONC_ENV=production UNIONC_DATA_DIR=/var/lib/unionc \
+                UNIONC_SECRET_KEY=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY= \
+                UNIONC_ALLOW_BOOTSTRAP=1 \
+                UNIONC_BOOTSTRAP_PASSWORD=release-smoke-password-2026 \
+                /usr/bin/unionc >/tmp/unionc-server.log 2>&1 &
+              server_pid=$!
+              cleanup() {
+                kill -TERM "$server_pid" >/dev/null 2>&1 || true
+                wait "$server_pid" >/dev/null 2>&1 || true
+              }
+              trap cleanup EXIT
+              for _ in $(seq 1 60); do
+                if curl --fail --silent http://127.0.0.1:8081/api/ready >/dev/null; then
+                  break
+                fi
+                sleep 1
+              done
+              curl --fail --silent --show-error \
+                http://127.0.0.1:8081/api/ready >/dev/null
+              test "$(stat -c "%a:%U:%G" /var/lib/unionc/unionc.db)" = "600:unionc:unionc"
+              cleanup
+              trap - EXIT
+
+              setpriv --reuid=unionc --regid=unionc --init-groups \
+                env UNIONC_ENV=production UNIONC_DATA_DIR=/var/lib/unionc \
+                UNIONC_SECRET_KEY=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY= \
+                /usr/bin/unionc integrity-check
+
+              dnf reinstall -y "$package"
+              test "$(rpm -q --qf "%{VERSION}" unionc)" = \
+                "$(rpm -qp --qf "%{VERSION}" "$package")"
+              setpriv --reuid=unionc --regid=unionc --init-groups \
+                env UNIONC_ENV=production UNIONC_DATA_DIR=/var/lib/unionc \
+                UNIONC_SECRET_KEY=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY= \
+                /usr/bin/unionc integrity-check
+
+              dnf remove -y unionc
+              test ! -e /usr/bin/unionc
+              test -e /var/lib/unionc/unionc.db
+            '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unionc-server-linux
+          path: |
+            dist/unionc-server-*-linux-x86_64
+            dist/unionc_*.deb
+            dist/unionc-*.rpm
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+      - name: Resolve and verify Agent version
+        id: agent_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_version="$(
+            cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.name == "unionc-agent") | .version'
+          )"
+          if [[ ! "$cargo_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Agent Cargo version is not strict MAJOR.MINOR.PATCH: $cargo_version" >&2
+            exit 1
+          fi
+          version="$cargo_version"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            if [[ "$version" != "$cargo_version" ]]; then
+              echo "Tag version $version must match Agent Cargo version $cargo_version" >&2
+              exit 1
+            fi
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: cargo build --release -p unionc-agent
+      - name: Install pinned nFPM
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
+      - name: Build portable, DEB, and RPM artifacts from one package definition
+        shell: bash
+        env:
+          AGENT_VERSION: ${{ steps.agent_version.outputs.version }}
+        run: |
+          set -euo pipefail
+          version="$AGENT_VERSION"
+          bundle="dist/unionc-agent-linux-x86_64"
+          install -Dm755 target/release/unionc-agent "$bundle/unionc-agent"
+          install -Dm600 agent/config.example.json "$bundle/config.example.json"
+          install -Dm644 agent/packaging/linux/unionc-agent.service "$bundle/unionc-agent.service"
+          install -Dm644 agent/packaging/linux/unionc-agent-gpu.conf "$bundle/unionc-agent-gpu.conf"
+          install -Dm644 agent/packaging/linux/PORTABLE-README.md "$bundle/README.md"
+          tar -C dist -czf dist/unionc-agent-linux-x86_64.tar.gz unionc-agent-linux-x86_64
+
+          nfpm_bin="$(go env GOPATH)/bin/nfpm"
+          NFPM_BIN="$nfpm_bin" NFPM_ARCH=amd64 \
+            agent/packaging/linux/build-packages.sh
+
+          dpkg-deb --info "dist/unionc-agent_${version}_amd64.deb"
+          dpkg-deb --contents "dist/unionc-agent_${version}_amd64.deb"
+      - name: Test Linux packaging lifecycle helpers
+        run: sh agent/packaging/linux/test-lifecycle.sh
+      - name: Smoke test DEB fresh install, ordinary remove, same-version reinstall, and purge
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="$(find dist -maxdepth 1 -name 'unionc-agent_*_amd64.deb' -print -quit)"
+          test -n "$package"
+          sudo dpkg -i "$package"
+          systemctl is-enabled --quiet unionc-agent.service
+          systemctl is-active --quiet unionc-agent.service
+          sudo touch /var/lib/unionc-agent/release-lifecycle-marker
+
+          sudo dpkg --remove unionc-agent
+          test ! -e /usr/bin/unionc-agent
+          test -e /var/lib/unionc-agent/release-lifecycle-marker
+          test -e /etc/unionc-agent/config.json
+
+          sudo dpkg -i "$package"
+          systemctl is-active --quiet unionc-agent.service
+          sudo dpkg --purge unionc-agent
+          test ! -e /var/lib/unionc-agent
+          test ! -e /etc/unionc-agent
+          ! getent passwd unionc-agent
+          ! getent group unionc-agent
+      - name: Smoke test RPM fresh install, ordinary remove, same-version reinstall, and purge
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE/dist:/artifacts:ro" \
+            fedora:44 /bin/bash -euxo pipefail -c '
+              package="$(find /artifacts -maxdepth 1 -name "unionc-agent-*.x86_64.rpm" -print -quit)"
+              test -n "$package"
+              dnf install -y "$package"
+              test -x /usr/bin/unionc-agent
+              touch /var/lib/unionc-agent/release-lifecycle-marker
+
+              dnf remove -y unionc-agent
+              test ! -e /usr/bin/unionc-agent
+              test -e /var/lib/unionc-agent/release-lifecycle-marker
+              test -e /etc/unionc-agent/config.json
+
+              dnf install -y "$package"
+              /usr/sbin/unionc-agent-purge --yes
+              dnf remove -y unionc-agent
+              test ! -e /var/lib/unionc-agent
+              test ! -e /etc/unionc-agent
+              ! getent passwd unionc-agent
+              ! getent group unionc-agent
+            '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unionc-agent-linux
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.tar.gz
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Resolve MSI version
+        id: version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "cargo metadata failed." }
+          $agentPackage = @($metadata.packages | Where-Object name -eq "unionc-agent")
+          if ($agentPackage.Count -ne 1) {
+              throw "cargo metadata did not contain exactly one unionc-agent package."
+          }
+          $version = $agentPackage[0].version
+          if ($env:GITHUB_REF -like "refs/tags/v*") {
+              $version = $env:GITHUB_REF_NAME.Substring(1)
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+              throw "Windows MSI releases require a strict vMAJOR.MINOR.PATCH tag; found '$version'."
+          }
+          if ($agentPackage[0].version -ne $version) {
+              throw "MSI version $version must exactly match the unionc-agent Cargo package version."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Build native Windows service, tray companion, and maintenance helper
+        run: >-
+          cargo build --release -p unionc-agent --target x86_64-pc-windows-msvc
+          --bin unionc-agent --bin unionc-agent-maintenance --bin unionc-agent-tray
+      - name: Verify native Windows PE subsystems
+        shell: powershell
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+
+          function Assert-PeSubsystem {
+              param(
+                  [Parameter(Mandatory = $true)]
+                  [string] $LiteralPath,
+                  [Parameter(Mandatory = $true)]
+                  [int] $ExpectedSubsystem
+              )
+
+              if (-not (Test-Path -LiteralPath $LiteralPath -PathType Leaf)) {
+                  throw "PE file does not exist: $LiteralPath"
+              }
+              $bytes = [System.IO.File]::ReadAllBytes($LiteralPath)
+              if ($bytes.Length -lt 64) {
+                  throw "PE file is too short to contain a DOS header: $LiteralPath"
+              }
+
+              $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3c)
+              if ($peOffset -lt 0 -or $peOffset -gt ($bytes.Length - 24)) {
+                  throw "PE header offset is outside the file: $LiteralPath"
+              }
+              if ([System.BitConverter]::ToUInt32($bytes, $peOffset) -ne 0x00004550) {
+                  throw "PE signature is invalid: $LiteralPath"
+              }
+
+              $optionalHeaderSize = [System.BitConverter]::ToUInt16($bytes, $peOffset + 20)
+              $optionalHeaderOffset = $peOffset + 24
+              if ($optionalHeaderSize -lt 70 -or
+                  $optionalHeaderOffset -gt ($bytes.Length - $optionalHeaderSize)) {
+                  throw "PE optional header is truncated: $LiteralPath"
+              }
+              $magic = [System.BitConverter]::ToUInt16($bytes, $optionalHeaderOffset)
+              if ($magic -ne 0x010b -and $magic -ne 0x020b) {
+                  throw "PE optional header has an unsupported magic value: $LiteralPath"
+              }
+
+              $actualSubsystem = [System.BitConverter]::ToUInt16($bytes, $optionalHeaderOffset + 68)
+              if ($actualSubsystem -ne $ExpectedSubsystem) {
+                  throw "Unexpected PE subsystem for ${LiteralPath}: expected $ExpectedSubsystem, found $actualSubsystem."
+              }
+              Write-Host "Verified PE subsystem $actualSubsystem for $LiteralPath"
+          }
+
+          $releaseRoot = Join-Path $env:GITHUB_WORKSPACE "target\x86_64-pc-windows-msvc\release"
+          Assert-PeSubsystem `
+              -LiteralPath (Join-Path $releaseRoot "unionc-agent.exe") `
+              -ExpectedSubsystem 3
+          Assert-PeSubsystem `
+              -LiteralPath (Join-Path $releaseRoot "unionc-agent-maintenance.exe") `
+              -ExpectedSubsystem 2
+          Assert-PeSubsystem `
+              -LiteralPath (Join-Path $releaseRoot "unionc-agent-tray.exe") `
+              -ExpectedSubsystem 2
+      - name: Validate WiX MSI authoring
+        shell: powershell
+        run: agent\packaging\windows\tests\Test-WixAuthoring.ps1
+      - name: Build unsigned development MSI
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        shell: pwsh
+        env:
+          PRODUCT_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $agent = Join-Path $env:GITHUB_WORKSPACE "target\x86_64-pc-windows-msvc\release\unionc-agent.exe"
+          $helper = Join-Path $env:GITHUB_WORKSPACE "target\x86_64-pc-windows-msvc\release\unionc-agent-maintenance.exe"
+          $tray = Join-Path $env:GITHUB_WORKSPACE "target\x86_64-pc-windows-msvc\release\unionc-agent-tray.exe"
+          & agent\packaging\windows\wix\build-msi.cmd $env:PRODUCT_VERSION $agent $helper $tray
+          if ($LASTEXITCODE -ne 0) { throw "WiX MSI build failed with exit code $LASTEXITCODE." }
+
+          $built = Join-Path $env:GITHUB_WORKSPACE (
+              "agent\packaging\windows\wix\bin\x64\Release\UnionC-Agent-{0}-x64.msi" -f $env:PRODUCT_VERSION
+          )
+          if (-not (Test-Path -LiteralPath $built -PathType Leaf)) {
+              throw "WiX did not create the expected MSI: $built"
+          }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item -LiteralPath $built -Destination (
+              "dist\UnionC-Agent-{0}-x64-unsigned-development.msi" -f $env:PRODUCT_VERSION
+          )
+      - name: Sign native executables, build MSI, and sign MSI
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+          SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
+          PRODUCT_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_PFX_BASE64) -or
+              [string]::IsNullOrWhiteSpace($env:SIGNING_PFX_PASSWORD)) {
+              throw "Tagged releases require WINDOWS_SIGNING_PFX_BASE64 and WINDOWS_SIGNING_PFX_PASSWORD."
+          }
+
+          $pfxPath = Join-Path $env:RUNNER_TEMP "unionc-windows-signing.pfx"
+          [IO.File]::WriteAllBytes(
+              $pfxPath,
+              [Convert]::FromBase64String($env:SIGNING_PFX_BASE64)
+          )
+          $password = ConvertTo-SecureString $env:SIGNING_PFX_PASSWORD -AsPlainText -Force
+          $certificates = @(Import-PfxCertificate `
+              -FilePath $pfxPath `
+              -CertStoreLocation Cert:\CurrentUser\My `
+              -Password $password `
+              -Exportable:$false)
+          $certificate = $certificates | Where-Object HasPrivateKey | Select-Object -First 1
+          if ($null -eq $certificate) {
+              throw "The Windows signing PFX contains no certificate with a private key."
+          }
+
+          try {
+              $agent = Join-Path $env:GITHUB_WORKSPACE "target\x86_64-pc-windows-msvc\release\unionc-agent.exe"
+              $helper = Join-Path $env:GITHUB_WORKSPACE "target\x86_64-pc-windows-msvc\release\unionc-agent-maintenance.exe"
+              $tray = Join-Path $env:GITHUB_WORKSPACE "target\x86_64-pc-windows-msvc\release\unionc-agent-tray.exe"
+              foreach ($file in @($agent, $helper, $tray)) {
+                  $signature = Set-AuthenticodeSignature `
+                      -FilePath $file `
+                      -Certificate $certificate `
+                      -HashAlgorithm SHA256 `
+                      -TimestampServer "http://timestamp.digicert.com"
+                  if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+                      throw "Authenticode signing failed for ${file}: $($signature.StatusMessage)"
+                  }
+              }
+
+              # The MSI embeds the signed helper and installs the signed service/tray images.
+              & agent\packaging\windows\wix\build-msi.cmd $env:PRODUCT_VERSION $agent $helper $tray
+              if ($LASTEXITCODE -ne 0) {
+                  throw "WiX MSI build failed with exit code $LASTEXITCODE."
+              }
+              $msi = Join-Path $env:GITHUB_WORKSPACE (
+                  "agent\packaging\windows\wix\bin\x64\Release\UnionC-Agent-{0}-x64.msi" -f $env:PRODUCT_VERSION
+              )
+              if (-not (Test-Path -LiteralPath $msi -PathType Leaf)) {
+                  throw "WiX did not create the expected MSI: $msi"
+              }
+              $msiSignature = Set-AuthenticodeSignature `
+                  -FilePath $msi `
+                  -Certificate $certificate `
+                  -HashAlgorithm SHA256 `
+                  -TimestampServer "http://timestamp.digicert.com"
+              if ($msiSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+                  throw "Authenticode signing failed for ${msi}: $($msiSignature.StatusMessage)"
+              }
+
+              $allSignatures = @($agent, $helper, $tray, $msi) |
+                  ForEach-Object { Get-AuthenticodeSignature -FilePath $_ }
+              if (@($allSignatures | Where-Object Status -ne "Valid").Count -ne 0 -or
+                  @($allSignatures.SignerCertificate.Thumbprint | Select-Object -Unique).Count -ne 1) {
+                  throw "The Agent, tray, maintenance helper, and MSI do not have one valid common signer."
+              }
+              New-Item -ItemType Directory -Force dist | Out-Null
+              $releaseMsi = Join-Path $env:GITHUB_WORKSPACE (
+                  "dist\UnionC-Agent-{0}-x64.msi" -f $env:PRODUCT_VERSION
+              )
+              Copy-Item -LiteralPath $msi -Destination $releaseMsi
+          }
+          finally {
+              foreach ($imported in $certificates) {
+                  Remove-Item -LiteralPath ("Cert:\CurrentUser\My\{0}" -f $imported.Thumbprint) `
+                      -Force -ErrorAction SilentlyContinue
+              }
+              Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
+          }
+      - name: Smoke test native Windows MSI lifecycle
+        shell: pwsh
+        env:
+          PRODUCT_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installedRoot = Join-Path $env:ProgramFiles "UnionC Agent"
+          $installedTray = Join-Path $installedRoot "unionc-agent-tray.exe"
+          $stateRoot = Join-Path $env:ProgramData "UnionC Agent"
+          $trayRunKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+          $trayRunName = "UnionCAgentTray"
+          $commonPrograms = [Environment]::GetFolderPath(
+              [Environment+SpecialFolder]::CommonPrograms
+          )
+          $trayShortcut = Join-Path $commonPrograms "UnionC Agent.lnk"
+          $stateMarker = ".unionc-agent-managed-$env:PRODUCT_VERSION"
+          $installJournal = Join-Path $env:ProgramData `
+              "UnionC Agent.install-journal-$env:PRODUCT_VERSION"
+          $uninstallJournal = Join-Path $env:ProgramData `
+              "UnionC Agent.uninstall-journal-$env:PRODUCT_VERSION"
+          $purgeQuarantine = Join-Path $env:ProgramData `
+              "UnionC Agent.purge-quarantine-$env:PRODUCT_VERSION"
+          $logs = Join-Path $env:RUNNER_TEMP "unionc-agent-msi-logs"
+          New-Item -ItemType Directory -Force $logs | Out-Null
+
+          if (-not ("UnionC.MsiNativeMethods" -as [type])) {
+              Add-Type -TypeDefinition @"
+          using System;
+          using System.Runtime.InteropServices;
+          using System.Text;
+
+          namespace UnionC {
+              public static class MsiNativeMethods {
+                  [DllImport("msi.dll", EntryPoint = "MsiGetShortcutTargetW",
+                      CharSet = CharSet.Unicode, ExactSpelling = true)]
+                  public static extern uint MsiGetShortcutTarget(
+                      string shortcutTarget,
+                      StringBuilder productCode,
+                      StringBuilder featureId,
+                      StringBuilder componentCode);
+
+                  [DllImport("msi.dll", EntryPoint = "MsiGetComponentPathW",
+                      CharSet = CharSet.Unicode, ExactSpelling = true)]
+                  public static extern int MsiGetComponentPath(
+                      string productCode,
+                      string componentCode,
+                      StringBuilder path,
+                      ref uint pathLength);
+              }
+          }
+          "@
+          }
+
+          function Invoke-Msi {
+              param(
+                  [Parameter(Mandatory = $true)][ValidateSet('/i', '/x')][string]$Operation,
+                  [Parameter(Mandatory = $true)][string]$Package,
+                  [Parameter(Mandatory = $true)][string]$Name,
+                  [string]$Properties = "",
+                  [switch]$ExpectFailure
+              )
+              $log = Join-Path $logs "${Name}.log"
+              $arguments = "${Operation} `"${Package}`" ${Properties} /qn /norestart /l*v `"${log}`""
+              $process = Start-Process -FilePath msiexec.exe -ArgumentList $arguments -Wait -PassThru
+              $succeeded = $process.ExitCode -in @(0, 3010)
+              if ($ExpectFailure -and $succeeded) {
+                  throw "MSI operation '$Name' unexpectedly succeeded. Log: $log"
+              }
+              if (-not $ExpectFailure -and -not $succeeded) {
+                  Get-Content -LiteralPath $log -Tail 120
+                  throw "MSI operation '$Name' failed with exit code $($process.ExitCode). Log: $log"
+              }
+          }
+
+          function Assert-ServiceRunning {
+              $service = Get-Service -Name "UnionCAgent" -ErrorAction Stop
+              $service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running,
+                  [TimeSpan]::FromSeconds(30))
+              $definition = Get-CimInstance Win32_Service -Filter "Name='UnionCAgent'"
+              if ($definition.StartMode -ne "Auto" -or
+                  $definition.StartName -ne "NT AUTHORITY\LocalService" -or
+                  $definition.PathName -notmatch '--windows-service run --config') {
+                  throw "Installed SCM service definition is not the expected UnionC Agent service."
+              }
+              $serviceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\UnionCAgent"
+              if ((Get-ItemPropertyValue -LiteralPath $serviceKey -Name ServiceSidType) -ne 1) {
+                  throw "UnionCAgent does not have an unrestricted service SID."
+              }
+              if ((Get-ItemPropertyValue -LiteralPath $serviceKey `
+                  -Name FailureActionsOnNonCrashFailures) -ne 1) {
+                  throw "UnionCAgent does not enable failure actions for non-crash failures."
+              }
+          }
+
+          function Assert-StateAcl {
+              $serviceSid = (New-Object System.Security.Principal.NTAccount(
+                  "NT SERVICE", "UnionCAgent"
+              )).Translate([System.Security.Principal.SecurityIdentifier]).Value
+              $protectedPaths = @($stateRoot)
+              foreach ($child in @(
+                  $stateMarker, "config.json", "release-lifecycle-marker"
+              )) {
+                  $candidate = Join-Path $stateRoot $child
+                  if (Test-Path -LiteralPath $candidate) { $protectedPaths += $candidate }
+              }
+              foreach ($protectedPath in $protectedPaths) {
+                  $acl = Get-Acl -LiteralPath $protectedPath
+                  $allowSids = @($acl.Access |
+                      Where-Object AccessControlType -eq `
+                          ([System.Security.AccessControl.AccessControlType]::Allow) |
+                      ForEach-Object {
+                          $_.IdentityReference.Translate(
+                              [System.Security.Principal.SecurityIdentifier]
+                          ).Value
+                      })
+                  if ($allowSids -notcontains $serviceSid -or
+                      $allowSids -contains "S-1-5-19" -or
+                      $allowSids -notcontains "S-1-3-4") {
+                      throw "$protectedPath is not isolated to the dedicated service SID."
+                  }
+                  if ($protectedPath -in @(
+                      $stateRoot,
+                      (Join-Path $stateRoot $stateMarker),
+                      (Join-Path $stateRoot "config.json")
+                  )) {
+                      $ownerSid = $acl.GetOwner(
+                          [System.Security.Principal.SecurityIdentifier]
+                      ).Value
+                      if ($ownerSid -ne "S-1-5-18" -or -not $acl.AreAccessRulesProtected) {
+                          throw "$protectedPath lacks the exact managed SYSTEM/protected anchor."
+                      }
+                  }
+              }
+          }
+
+          function Assert-TrayIntegration {
+              if (Get-Process -Name "unionc-agent-tray" -ErrorAction SilentlyContinue) {
+                  throw "A quiet MSI install incorrectly launched an interactive tray process."
+              }
+              if (-not (Test-Path -LiteralPath $installedTray -PathType Leaf)) {
+                  throw "The installed tray companion is missing."
+              }
+              $expectedRun = '"{0}" --startup' -f $installedTray
+              $actualRun = Get-ItemPropertyValue -LiteralPath $trayRunKey `
+                  -Name $trayRunName -ErrorAction Stop
+              if ($actualRun -cne $expectedRun) {
+                  throw "The tray Run registration is not the fixed installed command."
+              }
+              if (-not (Test-Path -LiteralPath $trayShortcut -PathType Leaf)) {
+                  throw "The UnionC Agent Start menu shortcut is missing."
+              }
+
+              # Advertised MSI shortcuts store a Darwin descriptor instead of a normal shell-link
+              # target, so WScript.Shell.TargetPath is not a reliable assertion. Ask Windows
+              # Installer which installed component the actual shortcut advertises instead.
+              $productCode = New-Object System.Text.StringBuilder 39
+              $featureId = New-Object System.Text.StringBuilder 39
+              $componentCode = New-Object System.Text.StringBuilder 39
+              $shortcutResult = [UnionC.MsiNativeMethods]::MsiGetShortcutTarget(
+                  $trayShortcut, $productCode, $featureId, $componentCode
+              )
+              if ($shortcutResult -ne 0 -or $featureId.ToString() -cne "AgentFeature" -or
+                  $componentCode.ToString() -ine "{882DF421-2758-42E4-95D4-730C2571803E}") {
+                  throw "The Start menu shortcut does not advertise the tray component."
+              }
+
+              $componentPath = New-Object System.Text.StringBuilder 32768
+              [uint32]$componentPathLength = $componentPath.Capacity
+              $componentState = [UnionC.MsiNativeMethods]::MsiGetComponentPath(
+                  $productCode.ToString(), $componentCode.ToString(),
+                  $componentPath, [ref]$componentPathLength
+              )
+              if ($componentState -ne 3 -or -not [string]::Equals(
+                  [IO.Path]::GetFullPath($componentPath.ToString()),
+                  [IO.Path]::GetFullPath($installedTray),
+                  [StringComparison]::OrdinalIgnoreCase
+              )) {
+                  throw "The advertised tray component is not installed at the fixed path."
+              }
+
+              # The service/config remains isolated, but every interactive user must be able
+              # to execute the signed tray image from the protected Program Files tree.
+              $usersRules = @((Get-Acl -LiteralPath $installedTray).Access | Where-Object {
+                  $_.AccessControlType -eq `
+                      [System.Security.AccessControl.AccessControlType]::Allow -and
+                  $_.IdentityReference.Translate(
+                      [System.Security.Principal.SecurityIdentifier]
+                  ).Value -eq "S-1-5-32-545"
+              })
+              if ($usersRules.Count -ne 1 -or
+                  [int]$usersRules[0].FileSystemRights -ne 0x1200a9) {
+                  throw "The tray image does not grant BUILTIN\\Users exact read/execute access."
+              }
+          }
+
+          function Start-TrayForRemovalSmoke {
+              $process = Start-Process -FilePath $installedTray -ArgumentList "--startup" -PassThru
+              Start-Sleep -Seconds 2
+              $process.Refresh()
+              if ($process.HasExited) {
+                  throw "The tray companion exited before the MSI shutdown smoke could run."
+              }
+              return $process
+          }
+
+          function Assert-ArpVersion([string]$ExpectedVersion) {
+              $uninstallRoot = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+              $entries = @(Get-ChildItem -LiteralPath $uninstallRoot | Get-ItemProperty |
+                  Where-Object DisplayName -eq "UnionC Agent")
+              if ($entries.Count -ne 1 -or $entries[0].DisplayVersion -ne $ExpectedVersion) {
+                  throw "Apps & Features does not contain exactly UnionC Agent $ExpectedVersion."
+              }
+          }
+
+          function Assert-AgentCompletelyAbsent {
+              if ((Test-Path -LiteralPath $installedRoot) -or
+                  (Test-Path -LiteralPath $stateRoot) -or
+                  (Test-Path -LiteralPath $installJournal) -or
+                  (Test-Path -LiteralPath $uninstallJournal) -or
+                  (Test-Path -LiteralPath $purgeQuarantine) -or
+                  (Test-Path -LiteralPath $trayShortcut) -or
+                  (Get-ItemProperty -LiteralPath $trayRunKey -Name $trayRunName `
+                      -ErrorAction SilentlyContinue) -or
+                  (Get-Service -Name "UnionCAgent" -ErrorAction SilentlyContinue)) {
+                  throw "Agent installation or a protected transaction artifact survived purge."
+              }
+              $uninstallRoot = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+              $entries = @(Get-ChildItem -LiteralPath $uninstallRoot | Get-ItemProperty |
+                  Where-Object DisplayName -eq "UnionC Agent")
+              if ($entries.Count -ne 0) {
+                  throw "Apps & Features still contains UnionC Agent."
+              }
+          }
+
+          function Assert-PreservedStateAcl([string]$RetiredServiceSid) {
+              $protectedPaths = @($stateRoot)
+              foreach ($child in @(
+                  $stateMarker, "config.json", "release-lifecycle-marker"
+              )) {
+                  $candidate = Join-Path $stateRoot $child
+                  if (Test-Path -LiteralPath $candidate) { $protectedPaths += $candidate }
+              }
+              foreach ($protectedPath in $protectedPaths) {
+                  $acl = Get-Acl -LiteralPath $protectedPath
+                  $ownerSid = $acl.GetOwner(
+                      [System.Security.Principal.SecurityIdentifier]
+                  ).Value
+                  if ($ownerSid -ne "S-1-5-18" -or -not $acl.AreAccessRulesProtected) {
+                      throw "$protectedPath does not have SYSTEM ownership and a protected DACL."
+                  }
+
+                  $rules = @($acl.Access)
+                  $expectedRights = @{
+                      "S-1-5-18" = 0x1f01ff
+                      "S-1-5-32-544" = 0x1f01ff
+                      "S-1-3-4" = 0x00020000
+                  }
+                  $expectedInheritance = `
+                      [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor `
+                      [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+                  if ($rules.Count -ne $expectedRights.Count) {
+                      throw "$protectedPath has an unexpected preserved-state ACE count."
+                  }
+                  foreach ($rule in $rules) {
+                      $sid = $rule.IdentityReference.Translate(
+                          [System.Security.Principal.SecurityIdentifier]
+                      ).Value
+                      if (-not $expectedRights.ContainsKey($sid) -or
+                          $sid -eq $RetiredServiceSid -or $sid -eq "S-1-5-19" -or
+                          $rule.AccessControlType -ne `
+                              [System.Security.AccessControl.AccessControlType]::Allow -or
+                          [int]$rule.FileSystemRights -ne $expectedRights[$sid] -or
+                          $rule.InheritanceFlags -ne $expectedInheritance -or
+                          $rule.PropagationFlags -ne `
+                              [System.Security.AccessControl.PropagationFlags]::None -or
+                          $rule.IsInherited) {
+                          throw "$protectedPath has an unexpected preserved-state ACE for $sid."
+                      }
+                      $expectedRights.Remove($sid) | Out-Null
+                  }
+                  if ($expectedRights.Count -ne 0) {
+                      throw "$protectedPath is missing a required preserved-state ACE."
+                  }
+              }
+          }
+
+          if ((Test-Path -LiteralPath $installedRoot) -or (Test-Path -LiteralPath $stateRoot) -or
+              (Test-Path -LiteralPath $trayShortcut) -or
+              (Get-ItemProperty -LiteralPath $trayRunKey -Name $trayRunName `
+                  -ErrorAction SilentlyContinue) -or
+              (Get-Service -Name "UnionCAgent" -ErrorAction SilentlyContinue)) {
+              throw "The disposable runner is not clean enough for the Windows MSI lifecycle test."
+          }
+
+          $currentPackages = @(Get-ChildItem -LiteralPath (Join-Path $env:GITHUB_WORKSPACE "dist") -Filter "*.msi")
+          if ($currentPackages.Count -ne 1) {
+              throw "Expected exactly one release MSI; found $($currentPackages.Count)."
+          }
+          $currentMsi = $currentPackages[0].FullName
+
+          # An unowned pre-existing state root must never be handed to LocalService.
+          New-Item -ItemType Directory -Path $stateRoot | Out-Null
+          $preseed = Join-Path $stateRoot "attacker-controlled.json"
+          Set-Content -LiteralPath $preseed -Value "must remain untrusted"
+          Invoke-Msi /i $currentMsi "reject-preseeded-state" -ExpectFailure
+          if (-not (Test-Path -LiteralPath $preseed -PathType Leaf)) {
+              throw "Rejected install modified the untrusted pre-existing state tree."
+          }
+          Remove-Item -LiteralPath $stateRoot -Recurse -Force
+
+          # A foreign same-name SCM service must likewise remain untouched.
+          New-Service -Name "UnionCAgent" -BinaryPathName "$env:SystemRoot\System32\cmd.exe /c exit 0" `
+              -StartupType Manual | Out-Null
+          $foreignPath = (Get-CimInstance Win32_Service -Filter "Name='UnionCAgent'").PathName
+          Invoke-Msi /i $currentMsi "reject-foreign-service" -ExpectFailure
+          $remainingForeignPath = (Get-CimInstance Win32_Service -Filter "Name='UnionCAgent'").PathName
+          if ($remainingForeignPath -ne $foreignPath) {
+              throw "Rejected install modified the foreign SCM service."
+          }
+          & sc.exe delete UnionCAgent | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "Could not remove the smoke-test foreign service." }
+          for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              if (-not (Get-Service -Name "UnionCAgent" -ErrorAction SilentlyContinue)) { break }
+              Start-Sleep -Milliseconds 500
+          }
+          if (Get-Service -Name "UnionCAgent" -ErrorAction SilentlyContinue) {
+              throw "Smoke-test foreign service was not deleted."
+          }
+
+          Invoke-Msi /i $currentMsi "fresh-install"
+          Assert-ServiceRunning
+          Assert-StateAcl
+          Assert-TrayIntegration
+          Assert-ArpVersion $env:PRODUCT_VERSION
+          $marker = Join-Path $stateRoot "release-lifecycle-marker"
+          Set-Content -LiteralPath $marker -Value "must survive ordinary uninstall"
+
+          $installedServiceSid = (New-Object System.Security.Principal.NTAccount(
+              "NT SERVICE", "UnionCAgent"
+          )).Translate([System.Security.Principal.SecurityIdentifier]).Value
+          $trayBeforeUninstall = Start-TrayForRemovalSmoke
+          Invoke-Msi /x $currentMsi "preserve-uninstall"
+          if (-not $trayBeforeUninstall.WaitForExit(30000)) {
+              throw "MSI uninstall did not gracefully close the running tray before file removal."
+          }
+          if (Get-Service -Name "UnionCAgent" -ErrorAction SilentlyContinue) {
+              throw "Agent service survived ordinary uninstall."
+          }
+          if (Test-Path -LiteralPath $installedRoot) {
+              throw "Program directory survived ordinary uninstall."
+          }
+          if ((Test-Path -LiteralPath $trayShortcut) -or
+              (Get-ItemProperty -LiteralPath $trayRunKey -Name $trayRunName `
+                  -ErrorAction SilentlyContinue)) {
+              throw "Tray startup integration survived ordinary uninstall."
+          }
+          if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) {
+              throw "Ordinary uninstall removed Agent state."
+          }
+          if ((Test-Path -LiteralPath $installJournal) -or
+              (Test-Path -LiteralPath $uninstallJournal) -or
+              (Test-Path -LiteralPath $purgeQuarantine)) {
+              throw "Ordinary uninstall left a transaction journal or purge quarantine."
+          }
+          Assert-PreservedStateAcl $installedServiceSid
+
+          Invoke-Msi /i $currentMsi "reinstall"
+          Assert-ServiceRunning
+          Assert-StateAcl
+          Assert-TrayIntegration
+          Assert-ArpVersion $env:PRODUCT_VERSION
+          Invoke-Msi /x $currentMsi "purge-uninstall" "PURGE=1"
+          Assert-AgentCompletelyAbsent
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unionc-agent-windows
+          path: dist/*.msi
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Resolve and verify Agent version
+        id: agent_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_version="$(
+            cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.name == "unionc-agent") | .version'
+          )"
+          if [[ ! "$cargo_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Agent Cargo version is not strict MAJOR.MINOR.PATCH: $cargo_version" >&2
+            exit 1
+          fi
+          version="$cargo_version"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            if [[ "$version" != "$cargo_version" ]]; then
+              echo "Tag version $version must match Agent Cargo version $cargo_version" >&2
+              exit 1
+            fi
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Build universal Agent binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release -p unionc-agent --no-default-features --features otlp \
+            --target aarch64-apple-darwin
+          cargo build --release -p unionc-agent --no-default-features --features otlp \
+            --target x86_64-apple-darwin
+          lipo -create \
+            target/aarch64-apple-darwin/release/unionc-agent \
+            target/x86_64-apple-darwin/release/unionc-agent \
+            -output target/unionc-agent-universal
+      - name: Validate macOS packaging files
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh -n agent/packaging/macos/build-pkg.sh
+          sh -n agent/packaging/macos/scripts/preinstall
+          sh -n agent/packaging/macos/scripts/postinstall
+          sh -n agent/packaging/macos/uninstall.sh
+          sh -n agent/packaging/macos/unionc-agent-logrotate
+          sh -n agent/packaging/macos/tests/account-safety-test.sh
+          plutil -lint agent/packaging/macos/com.unionc.agent.plist
+          plutil -lint agent/packaging/macos/com.unionc.agent.logrotate.plist
+          sh agent/packaging/macos/tests/account-safety-test.sh
+      - name: Build unsigned development pkg
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        shell: bash
+        env:
+          AGENT_VERSION: ${{ steps.agent_version.outputs.version }}
+        run: |
+          set -euo pipefail
+          version="$AGENT_VERSION"
+          mkdir -p dist
+          BINARY="$GITHUB_WORKSPACE/target/unionc-agent-universal" \
+            VERSION="$version" \
+            OUTPUT="$GITHUB_WORKSPACE/dist/unionc-agent-$version.pkg" \
+            agent/packaging/macos/build-pkg.sh
+      - name: Build, sign, notarize, and staple tagged pkg
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          AGENT_VERSION: ${{ steps.agent_version.outputs.version }}
+          MACOS_SIGNING_P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
+          MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+          MACOS_APPLICATION_IDENTITY: ${{ secrets.MACOS_APPLICATION_IDENTITY }}
+          MACOS_INSTALLER_IDENTITY: ${{ secrets.MACOS_INSTALLER_IDENTITY }}
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          for variable_name in \
+            MACOS_SIGNING_P12_BASE64 MACOS_SIGNING_P12_PASSWORD \
+            MACOS_APPLICATION_IDENTITY MACOS_INSTALLER_IDENTITY \
+            APPLE_NOTARY_KEY_P8_BASE64 APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID
+          do
+            if [[ -z "${!variable_name:-}" ]]; then
+              echo "Tagged releases require secret $variable_name" >&2
+              exit 1
+            fi
+          done
+
+          keychain="$RUNNER_TEMP/unionc-signing.keychain-db"
+          certificate="$RUNNER_TEMP/unionc-signing.p12"
+          notary_key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+          keychain_password="$(uuidgen)$(uuidgen)"
+          cleanup() {
+            security delete-keychain "$keychain" >/dev/null 2>&1 || true
+            rm -f "$certificate" "$notary_key"
+          }
+          trap cleanup EXIT
+
+          printf '%s' "$MACOS_SIGNING_P12_BASE64" | /usr/bin/base64 -D > "$certificate"
+          printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | /usr/bin/base64 -D > "$notary_key"
+          chmod 0600 "$certificate" "$notary_key"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" \
+            -P "$MACOS_SIGNING_P12_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/pkgbuild -T /usr/bin/productsign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain" \
+            "$HOME/Library/Keychains/login.keychain-db"
+
+          codesign --force --options runtime --timestamp \
+            --sign "$MACOS_APPLICATION_IDENTITY" target/unionc-agent-universal
+          codesign --verify --deep --strict --verbose=2 target/unionc-agent-universal
+
+          version="$AGENT_VERSION"
+          package="$GITHUB_WORKSPACE/dist/unionc-agent-$version.pkg"
+          mkdir -p dist
+          BINARY="$GITHUB_WORKSPACE/target/unionc-agent-universal" \
+            VERSION="$version" OUTPUT="$package" \
+            INSTALLER_IDENTITY="$MACOS_INSTALLER_IDENTITY" \
+            agent/packaging/macos/build-pkg.sh
+
+          xcrun notarytool submit "$package" \
+            --key "$notary_key" \
+            --key-id "$APPLE_NOTARY_KEY_ID" \
+            --issuer "$APPLE_NOTARY_ISSUER_ID" \
+            --wait
+          xcrun stapler staple "$package"
+          xcrun stapler validate "$package"
+          pkgutil --check-signature "$package"
+          spctl --assess --type install --verbose=4 "$package"
+      - name: Smoke test macOS fresh install, same-version reinstall, preserve uninstall, and purge
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="$(find dist -maxdepth 1 -name 'unionc-agent-*.pkg' -print -quit)"
+          test -n "$package"
+          sudo installer -pkg "$package" -target /
+          sudo launchctl print system/com.unionc.agent >/dev/null
+          sudo touch '/Library/Application Support/UnionC Agent/release-lifecycle-marker'
+
+          sudo installer -pkg "$package" -target /
+          sudo launchctl print system/com.unionc.agent >/dev/null
+          sudo /usr/local/share/unionc-agent/uninstall.sh
+          test ! -e /usr/local/libexec/unionc-agent
+          test -e '/Library/Application Support/UnionC Agent/release-lifecycle-marker'
+
+          sudo installer -pkg "$package" -target /
+          sudo /usr/local/share/unionc-agent/uninstall.sh --purge --yes
+          test ! -e '/Library/Application Support/UnionC Agent'
+          ! dscl . -read /Users/_unioncagent >/dev/null 2>&1
+          ! dscl . -read /Groups/_unioncagent >/dev/null 2>&1
+          ! pkgutil --pkg-info com.unionc.agent >/dev/null 2>&1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unionc-agent-macos
+          path: dist/*.pkg
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [server-linux, linux, windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS*' -printf '%f\0' \
+            | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS
+      - name: Sign release manifest
+        working-directory: dist
+        shell: bash
+        env:
+          LINUX_SIGNING_KEY_BASE64: ${{ secrets.LINUX_SIGNING_KEY_BASE64 }}
+          LINUX_SIGNING_KEY_PASSPHRASE: ${{ secrets.LINUX_SIGNING_KEY_PASSPHRASE }}
+          LINUX_SIGNING_KEY_FINGERPRINT: ${{ secrets.LINUX_SIGNING_KEY_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          for variable_name in \
+            LINUX_SIGNING_KEY_BASE64 LINUX_SIGNING_KEY_PASSPHRASE \
+            LINUX_SIGNING_KEY_FINGERPRINT
+          do
+            if [[ -z "${!variable_name:-}" ]]; then
+              echo "Tagged releases require secret $variable_name" >&2
+              exit 1
+            fi
+          done
+
+          signing_home="$(mktemp -d)"
+          signing_key="$signing_home/release-key.gpg"
+          cleanup() { rm -rf "$signing_home"; }
+          trap cleanup EXIT
+          chmod 0700 "$signing_home"
+          export GNUPGHOME="$signing_home"
+          printf '%s' "$LINUX_SIGNING_KEY_BASE64" | base64 --decode > "$signing_key"
+          chmod 0600 "$signing_key"
+          gpg --batch --import "$signing_key"
+
+          actual_fingerprint="$(
+            gpg --batch --with-colons --fingerprint --list-secret-keys \
+              | awk -F: '$1 == "fpr" { print toupper($10); exit }'
+          )"
+          expected_fingerprint="$(
+            printf '%s' "$LINUX_SIGNING_KEY_FINGERPRINT" \
+              | tr -d '[:space:]' \
+              | tr '[:lower:]' '[:upper:]'
+          )"
+          if [[ -z "$actual_fingerprint" || "$actual_fingerprint" != "$expected_fingerprint" ]]; then
+            echo "Imported release key fingerprint does not match LINUX_SIGNING_KEY_FINGERPRINT" >&2
+            exit 1
+          fi
+
+          printf '%s' "$LINUX_SIGNING_KEY_PASSPHRASE" \
+            | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
+                --local-user "$actual_fingerprint" \
+                --armor --detach-sign --output SHA256SUMS.asc SHA256SUMS
+          gpg --batch --armor --export "$actual_fingerprint" > RELEASE-PUBLIC-KEY.asc
+          gpg --batch --verify SHA256SUMS.asc SHA256SUMS
+      - name: Attest release artifact provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/*
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

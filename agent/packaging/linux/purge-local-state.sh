@@ -1,0 +1,308 @@
+#!/bin/sh
+set -eu
+
+service_name=unionc-agent.service
+package_version=0.3.2
+account_state_dir=/var/lib/unionc-agent-package
+rpm_config_backup="$account_state_dir/config.json.remove-backup"
+managed_user_marker="$account_state_dir/managed-user"
+managed_group_marker="$account_state_dir/managed-group"
+purge_incomplete=0
+recorded_user_uid=
+recorded_user_primary_gid=
+recorded_group_gid=
+
+usage() {
+  cat <<'EOF'
+Usage: sudo unionc-agent-purge --yes
+
+Permanently removes this machine's local UnionC Agent config, credential,
+pairing state, spool, systemd drop-ins, and package-managed service account.
+It does NOT contact the UnionC Server or revoke the server-side instance.
+EOF
+}
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "unionc-agent-purge must run as root" >&2
+  exit 1
+fi
+if [ "${1:-}" != --yes ] || [ "$#" -ne 1 ]; then
+  usage >&2
+  exit 2
+fi
+
+if [ -d /run/systemd/system ]; then
+  command -v systemctl >/dev/null 2>&1 || {
+    echo "systemd is running but systemctl is unavailable" >&2
+    exit 1
+  }
+  load_state=$(systemctl show "$service_name" --property=LoadState --value 2>/dev/null || true)
+  if [ -n "$load_state" ] && [ "$load_state" != not-found ]; then
+    systemctl disable --now "$service_name"
+  fi
+fi
+
+load_user_marker() {
+  marker_format_seen=0
+  marker_uid_seen=0
+  marker_primary_gid_seen=0
+  recorded_user_uid=
+  recorded_user_primary_gid=
+  while IFS= read -r marker_line || [ -n "$marker_line" ]; do
+    case "$marker_line" in
+      format="$package_version")
+        [ "$marker_format_seen" -eq 0 ] || return 1
+        marker_format_seen=1
+        ;;
+      uid=*)
+        [ "$marker_uid_seen" -eq 0 ] || return 1
+        recorded_user_uid=${marker_line#uid=}
+        marker_uid_seen=1
+        ;;
+      primary_gid=*)
+        [ "$marker_primary_gid_seen" -eq 0 ] || return 1
+        recorded_user_primary_gid=${marker_line#primary_gid=}
+        marker_primary_gid_seen=1
+        ;;
+      *) return 1 ;;
+    esac
+  done <"$managed_user_marker"
+  [ "$marker_format_seen" -eq 1 ] && [ "$marker_uid_seen" -eq 1 ] &&
+    [ "$marker_primary_gid_seen" -eq 1 ] || return 1
+  case "$recorded_user_uid:$recorded_user_primary_gid" in
+    *[!0-9:]*) return 1 ;;
+    :*|*:) return 1 ;;
+  esac
+}
+
+load_group_marker() {
+  marker_format_seen=0
+  marker_gid_seen=0
+  recorded_group_gid=
+  while IFS= read -r marker_line || [ -n "$marker_line" ]; do
+    case "$marker_line" in
+      format="$package_version")
+        [ "$marker_format_seen" -eq 0 ] || return 1
+        marker_format_seen=1
+        ;;
+      gid=*)
+        [ "$marker_gid_seen" -eq 0 ] || return 1
+        recorded_group_gid=${marker_line#gid=}
+        marker_gid_seen=1
+        ;;
+      *) return 1 ;;
+    esac
+  done <"$managed_group_marker"
+  [ "$marker_format_seen" -eq 1 ] && [ "$marker_gid_seen" -eq 1 ] || return 1
+  case "$recorded_group_gid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+}
+
+lookup_user_entry() {
+  passwd_listing=$(getent passwd 2>/dev/null) || return 2
+  user_entry=
+  user_match_count=0
+  while IFS= read -r directory_entry || [ -n "$directory_entry" ]; do
+    case "$directory_entry" in
+      unionc-agent:*)
+        user_match_count=$((user_match_count + 1))
+        user_entry=$directory_entry
+        ;;
+    esac
+  done <<EOF
+$passwd_listing
+EOF
+  case "$user_match_count" in
+    0) return 1 ;;
+    1) return 0 ;;
+    *) return 2 ;;
+  esac
+}
+
+lookup_group_entry() {
+  group_listing=$(getent group 2>/dev/null) || return 2
+  group_entry=
+  group_match_count=0
+  while IFS= read -r directory_entry || [ -n "$directory_entry" ]; do
+    case "$directory_entry" in
+      unionc-agent:*)
+        group_match_count=$((group_match_count + 1))
+        group_entry=$directory_entry
+        ;;
+    esac
+  done <<EOF
+$group_listing
+EOF
+  case "$group_match_count" in
+    0) return 1 ;;
+    1) return 0 ;;
+    *) return 2 ;;
+  esac
+}
+
+managed_user_is_still_expected() {
+  group_gid=$(printf '%s\n' "$group_entry" | cut -d: -f3)
+  user_uid=$(printf '%s\n' "$user_entry" | cut -d: -f3)
+  user_gid=$(printf '%s\n' "$user_entry" | cut -d: -f4)
+  user_home=$(printf '%s\n' "$user_entry" | cut -d: -f6)
+  user_shell=$(printf '%s\n' "$user_entry" | cut -d: -f7)
+
+  [ "$user_uid" = "$recorded_user_uid" ] &&
+    [ "$user_gid" = "$recorded_user_primary_gid" ] &&
+    [ "$user_gid" = "$group_gid" ] &&
+    [ "$user_home" = /var/lib/unionc-agent ] &&
+    { [ "$user_shell" = /usr/sbin/nologin ] || [ "$user_shell" = /sbin/nologin ]; }
+}
+
+group_id_is_in_use() {
+  sought_gid=$1
+  current_group_gid=$(printf '%s\n' "$group_entry" | cut -d: -f3)
+  group_members=$(printf '%s\n' "$group_entry" | cut -d: -f4-)
+  [ "$current_group_gid" = "$sought_gid" ] || return 2
+  case "$group_members" in
+    *:*) return 2 ;;
+    '') ;;
+    *) return 0 ;;
+  esac
+
+  current_passwd_listing=$(getent passwd 2>/dev/null) || return 2
+  while IFS=: read -r account_name _password _uid primary_gid _gecos _home _shell; do
+    [ -n "$account_name" ] || continue
+    if [ "$primary_gid" = "$sought_gid" ]; then
+      return 0
+    fi
+  done <<EOF
+$current_passwd_listing
+EOF
+  return 1
+}
+
+# Keep these destructive targets literal. Do not replace them with environment
+# variables or globs: this helper runs as root and is intentionally local-only.
+rm -rf -- /var/lib/unionc-agent
+rm -rf -- /etc/unionc-agent
+rm -rf -- /etc/systemd/system/unionc-agent.service.d
+rm -f -- "$rpm_config_backup"
+
+if [ -e "$managed_user_marker" ] || [ -L "$managed_user_marker" ]; then
+  if [ ! -f "$managed_user_marker" ] || [ -L "$managed_user_marker" ]; then
+    echo "unsafe managed-user marker; preserving the account" >&2
+    purge_incomplete=1
+  elif ! load_user_marker; then
+    echo "invalid managed-user marker; preserving the account" >&2
+    purge_incomplete=1
+  else
+    user_lookup_status=0
+    if lookup_user_entry; then
+      group_lookup_status=0
+      if lookup_group_entry; then
+        if managed_user_is_still_expected; then
+          if userdel unionc-agent; then
+            rm -f -- "$managed_user_marker"
+          else
+            echo "could not remove the dedicated unionc-agent user" >&2
+            purge_incomplete=1
+          fi
+        else
+          echo "the unionc-agent user identity changed; leaving it for safety" >&2
+          purge_incomplete=1
+        fi
+      else
+        group_lookup_status=$?
+        echo "the dedicated group is absent or could not be enumerated; preserving the user" >&2
+        purge_incomplete=1
+      fi
+    else
+      user_lookup_status=$?
+      if [ "$user_lookup_status" -eq 1 ]; then
+        rm -f -- "$managed_user_marker"
+      else
+        echo "could not enumerate users; preserving the dedicated user" >&2
+        purge_incomplete=1
+      fi
+    fi
+  fi
+fi
+
+if [ -e "$managed_group_marker" ] || [ -L "$managed_group_marker" ]; then
+  if [ ! -f "$managed_group_marker" ] || [ -L "$managed_group_marker" ]; then
+    echo "unsafe managed-group marker; preserving the group" >&2
+    purge_incomplete=1
+  elif ! load_group_marker; then
+    echo "invalid managed-group marker; preserving the group" >&2
+    purge_incomplete=1
+  else
+    user_lookup_status=0
+    if lookup_user_entry; then
+      echo "the unionc-agent user remains; leaving its group" >&2
+      purge_incomplete=1
+    else
+      user_lookup_status=$?
+      if [ "$user_lookup_status" -eq 2 ]; then
+        echo "could not enumerate users; preserving the dedicated group" >&2
+        purge_incomplete=1
+      else
+        group_lookup_status=0
+        if lookup_group_entry; then
+          current_group_gid=$(printf '%s\n' "$group_entry" | cut -d: -f3)
+          if [ "$current_group_gid" != "$recorded_group_gid" ]; then
+            echo "the unionc-agent group gid changed; leaving it for safety" >&2
+            purge_incomplete=1
+          else
+            group_usage_status=0
+            if group_id_is_in_use "$recorded_group_gid"; then
+              group_usage_status=0
+            else
+              group_usage_status=$?
+            fi
+            case "$group_usage_status" in
+              0)
+                echo "the unionc-agent group is still in use; preserving it" >&2
+                purge_incomplete=1
+                ;;
+              1)
+                if groupdel unionc-agent; then
+                  rm -f -- "$managed_group_marker"
+                else
+                  echo "could not remove the dedicated unionc-agent group" >&2
+                  purge_incomplete=1
+                fi
+                ;;
+              *)
+                echo "could not verify group usage; preserving the group" >&2
+                purge_incomplete=1
+                ;;
+            esac
+          fi
+        else
+          group_lookup_status=$?
+          if [ "$group_lookup_status" -eq 1 ]; then
+            rm -f -- "$managed_group_marker"
+          else
+            echo "could not enumerate groups; preserving the dedicated group" >&2
+            purge_incomplete=1
+          fi
+        fi
+      fi
+    fi
+  fi
+fi
+
+rmdir "$account_state_dir" >/dev/null 2>&1 || true
+
+if [ -d /run/systemd/system ]; then
+  systemctl daemon-reload
+  systemctl reset-failed "$service_name" >/dev/null 2>&1 || true
+fi
+
+if [ "$purge_incomplete" -ne 0 ]; then
+  echo "local purge is incomplete; resolve the account conflict and retry" >&2
+  exit 1
+fi
+
+cat <<'EOF'
+UnionC Agent local state was permanently removed.
+No request was sent to the UnionC Server. Revoke the instance in the Web console
+before decommissioning this host.
+EOF
