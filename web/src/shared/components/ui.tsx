@@ -137,10 +137,15 @@ export function Sparkline({
   const W = 200;
   const H = 56;
   const verticalPad = 2;
-  const max = Math.max(maxValue ?? Math.max(...validValues), 0.001);
+  // Most metrics are non-negative, but temperature is allowed to drop below
+  // zero. Keep zero in the automatic domain while expanding the lower bound
+  // for negative samples, otherwise those points are projected below the SVG.
+  const min = Math.min(0, ...validValues);
+  const max = Math.max(maxValue ?? Math.max(...validValues), 0, min + 0.001);
+  const range = max - min;
   // 横向端点贴齐 SVG 边界；纵向仍留出空间，避免峰值线被裁切。
   const tx = (i: number) => (i / (data.length - 1)) * W;
-  const ty = (v: number) => H - verticalPad - (v / max) * (H - verticalPad * 2);
+  const ty = (v: number) => H - verticalPad - ((v - min) / range) * (H - verticalPad * 2);
 
   const segments: Array<Array<{ index: number; value: number }>> = [];
   for (const [index, value] of data.entries()) {
