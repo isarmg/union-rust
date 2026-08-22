@@ -1,8 +1,12 @@
 #!/bin/sh
 set -eu
 
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
 service_name=unionc-agent.service
 package_version=0.3.2
+agent_binary=/usr/bin/unionc-agent
 account_state_dir=/var/lib/unionc-agent-package
 state_dir=/var/lib/unionc-agent
 config_dir=/etc/unionc-agent
@@ -28,12 +32,13 @@ die() {
   exit 1
 }
 
-for command_name in unionc-agent getent groupadd groupdel useradd userdel install cut chown chmod cp rm mv stat awk; do
+for command_name in getent groupadd groupdel useradd userdel install cut chown chmod cp rm mv stat awk; do
   command -v "$command_name" >/dev/null 2>&1 ||
     die "required command is unavailable: $command_name"
 done
+[ -x "$agent_binary" ] || die "installed Agent binary is missing or not executable"
 
-[ "$(unionc-agent --version)" = "unionc-agent $package_version" ] ||
+[ "$("$agent_binary" --version)" = "unionc-agent $package_version" ] ||
   die "installed binary version does not match package lifecycle version $package_version"
 
 read_path_metadata() {

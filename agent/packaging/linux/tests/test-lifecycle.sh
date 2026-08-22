@@ -49,11 +49,15 @@ rewrite_for_test_root() {
     -e 's#/etc/systemd/system/unionc-agent.service.d#__DROPIN_DIR__#g' \
     -e 's#/etc/unionc-agent#__CONFIG_DIR__#g' \
     -e 's#/run/systemd/system#__SYSTEMD_RUNTIME__#g' \
+    -e 's#/usr/bin/unionc-agent#__TEST_AGENT_BINARY__#g' \
+    -e 's#^PATH=/usr/sbin:/usr/bin:/sbin:/bin$#PATH=__TEST_BIN__:/usr/sbin:/usr/bin:/sbin:/bin#' \
     -e "s#__PACKAGE_STATE__#$test_root/var/lib/unionc-agent-package#g" \
     -e "s#__AGENT_STATE__#$test_root/var/lib/unionc-agent#g" \
     -e "s#__DROPIN_DIR__#$test_root/etc/systemd/system/unionc-agent.service.d#g" \
     -e "s#__CONFIG_DIR__#$test_root/etc/unionc-agent#g" \
     -e "s#__SYSTEMD_RUNTIME__#$test_root/run/systemd/system#g" \
+    -e "s#__TEST_AGENT_BINARY__#$test_root/bin/unionc-agent#g" \
+    -e "s#__TEST_BIN__#$test_root/bin#g" \
     "$source_file" >"$destination_file"
   chmod 0755 "$destination_file"
 }
@@ -65,6 +69,8 @@ for source_script in \
   "$packaging_dir/purge-local-state.sh"
 do
   sh -n "$source_script"
+  grep -Fx 'PATH=/usr/sbin:/usr/bin:/sbin:/bin' "$source_script" >/dev/null ||
+    fail "root lifecycle script does not replace the caller PATH: $source_script"
   rewrite_for_test_root "$source_script" "$test_root/$(basename "$source_script")"
 done
 
@@ -350,6 +356,24 @@ reset_fresh_install_state() {
     "$test_root/current-group-gid"
   write_package_config
 }
+
+# Package managers invoke these scripts as root, but their inherited PATH is
+# not an authority boundary. A same-name executable supplied by the caller
+# must never replace the packaged Agent or account/system utilities.
+reset_safe_reinstall_state
+mkdir -p "$test_root/attacker-bin"
+for attacker_command in unionc-agent getent systemctl stat; do
+  cat >"$test_root/attacker-bin/$attacker_command" <<'EOF'
+#!/bin/sh
+: >"$test_root/attacker-command-ran"
+exit 99
+EOF
+  chmod 0755 "$test_root/attacker-bin/$attacker_command"
+done
+rm -f "$test_root/attacker-command-ran"
+PATH="$test_root/attacker-bin" "$test_root/postinstall.sh" \
+  >"$test_root/safe-path.log" 2>&1 || fail 'postinstall failed with an untrusted caller PATH'
+assert_absent "$test_root/attacker-command-ran"
 
 # Debian exposes same-version reinstall through its `upgrade` script ABI. The
 # current package is accepted, while a different package version fails closed.
