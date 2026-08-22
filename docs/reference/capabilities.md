@@ -271,7 +271,8 @@ Sunshine 是独立增强模块，不是只读 Agent 监控的依赖。功能包�
 - 按主机代理读取 Sunshine API 日志。
 
 Sunshine 密码由 Server 加密存储，浏览器不保存。上游主机被视为不可信，响应有体积上限、
-图片 MIME 白名单和 TLS 校验策略。
+图片 MIME 白名单和 TLS 校验策略；HTTP 3xx 不自动跟随，避免把固定 API 请求转发或重放
+到未经配置的新目标。
 
 当前 Web 对 Sunshine 的实际操作面如下：
 
@@ -799,7 +800,7 @@ Windows release 制品包含 NVIDIA 支持而不含 OTLP；当前 macOS release 
 | 数据保留 | 遥测默认 30 天，审计默认 90 天；每天清理 | 每台主机最新报告有保留例外 |
 | Server 后台采样 | 本机资源 2 秒；Sunshine TCP 5 秒、API 30 秒 | HTTP 只读快照，不按访客数重复探测 |
 | SSE | ticket 60 秒且单次消费 | 无持久重放，断线后 Web 回退轮询 |
-| Sunshine 上游体积 | JSON 4 MiB、封面 8 MiB；封面 MIME 白名单 | 上游主机按不可信输入处理 |
+| Sunshine 上游边界 | JSON 4 MiB、封面 8 MiB；封面 MIME 白名单；HTTP 3xx 不跟随 | 上游主机按不可信输入处理，重定向目标不会被自动请求 |
 
 ## 19. 代码证据、测试与维护索引
 
