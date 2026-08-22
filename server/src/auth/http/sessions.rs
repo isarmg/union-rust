@@ -166,7 +166,7 @@ pub(crate) async fn change_password(
         &state,
         payload.current_password,
         payload.new_password,
-        &token,
+        token,
         persist_local_config_blocking,
     )
     .await?;

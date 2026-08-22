@@ -24,7 +24,7 @@ mod tests {
             &state,
             "old-password-value".to_string(),
             "replacement-password-value".to_string(),
-            "",
+            "".to_string(),
             |_config| async { Err(anyhow::anyhow!("simulated fsync failure")) },
         )
         .await;
@@ -51,7 +51,7 @@ mod tests {
                     &state,
                     "old-password-value".to_string(),
                     new_password.to_string(),
-                    "",
+                    "".to_string(),
                     move |config| async move {
                         commits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         tokio::task::yield_now().await;
@@ -99,7 +99,7 @@ mod tests {
             &state,
             "old-password-value".to_string(),
             "replacement-password-value".to_string(),
-            "",
+            "".to_string(),
             |config| async move { Ok(config) },
         )
         .await
@@ -113,6 +113,64 @@ mod tests {
             state.auth.sessions.read().await.is_empty(),
             "a login authenticated against the superseded hash must not create a session"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancelling_the_request_cannot_split_persisted_and_live_password_state() {
+        let old_hash = bcrypt::hash("old-password-value", 4).unwrap();
+        let state = password_state(old_hash.clone());
+        let read_guard = state.auth.local_config.read().await;
+        let (persisted_tx, persisted_rx) = tokio::sync::oneshot::channel();
+
+        let request_state = state.clone();
+        let request = tokio::spawn(async move {
+            replace_password_with(
+                &request_state,
+                "old-password-value".to_string(),
+                "replacement-password-value".to_string(),
+                "".to_string(),
+                move |config| async move {
+                    let persisted_snapshot = config.clone();
+                    let _ = persisted_tx.send(persisted_snapshot);
+                    Ok(config)
+                },
+            )
+            .await
+        });
+
+        let persisted = persisted_rx
+            .await
+            .expect("the replacement snapshot should reach durable persistence");
+        assert!(bcrypt::verify(
+            "replacement-password-value",
+            &persisted.admin_password_hash
+        )
+        .unwrap());
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            read_guard.admin_password_hash, old_hash,
+            "the held read lock should still expose the pre-transaction snapshot"
+        );
+        drop(read_guard);
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let current_hash = state
+                    .auth
+                    .local_config
+                    .read()
+                    .await
+                    .admin_password_hash
+                    .clone();
+                if bcrypt::verify("replacement-password-value", &current_hash).unwrap() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the detached transaction must publish after the request is cancelled");
     }
 
     #[tokio::test]

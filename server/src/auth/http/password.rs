@@ -103,6 +103,35 @@ async fn replace_password_with<P, Fut>(
     state: &AppState,
     current_password: String,
     new_password: String,
+    retained_session: String,
+    persist: P,
+) -> AppResult<()>
+where
+    P: FnOnce(crate::config::LocalConfig) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = anyhow::Result<crate::config::LocalConfig>> + Send + 'static,
+{
+    // Dropping an HTTP handler aborts its future, but dropping a JoinHandle detaches the spawned
+    // task. Once accepted, the password transaction must therefore finish publishing the same
+    // snapshot that its blocking persistence step may already have committed to disk.
+    let state = state.clone();
+    tokio::spawn(async move {
+        replace_password_transaction_with(
+            &state,
+            current_password,
+            new_password,
+            &retained_session,
+            persist,
+        )
+        .await
+    })
+    .await
+    .map_err(|error| AppError::Anyhow(anyhow::anyhow!("password transaction task failed: {error}")))?
+}
+
+async fn replace_password_transaction_with<P, Fut>(
+    state: &AppState,
+    current_password: String,
+    new_password: String,
     retained_session: &str,
     persist: P,
 ) -> AppResult<()>
