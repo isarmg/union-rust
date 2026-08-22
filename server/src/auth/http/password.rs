@@ -103,7 +103,6 @@ async fn replace_password_with<P, Fut>(
     state: &AppState,
     current_password: String,
     new_password: String,
-    retained_session: String,
     persist: P,
 ) -> AppResult<()>
 where
@@ -119,7 +118,6 @@ where
             &state,
             current_password,
             new_password,
-            &retained_session,
             persist,
         )
         .await
@@ -132,7 +130,6 @@ async fn replace_password_transaction_with<P, Fut>(
     state: &AppState,
     current_password: String,
     new_password: String,
-    retained_session: &str,
     persist: P,
 ) -> AppResult<()>
 where
@@ -171,7 +168,7 @@ where
     // hash and is rejected before inserting. Disk I/O stays outside this short critical section.
     let _transition = state.auth.password_session_transition.lock().await;
     *state.auth.local_config.write().await = persisted_config;
-    revoke_user_sessions_except(state, &username, retained_session).await;
+    revoke_user_sessions(state, &username).await;
     Ok(())
 }
 

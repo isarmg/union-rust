@@ -24,7 +24,6 @@ mod tests {
             &state,
             "old-password-value".to_string(),
             "replacement-password-value".to_string(),
-            "".to_string(),
             |_config| async { Err(anyhow::anyhow!("simulated fsync failure")) },
         )
         .await;
@@ -51,7 +50,6 @@ mod tests {
                     &state,
                     "old-password-value".to_string(),
                     new_password.to_string(),
-                    "".to_string(),
                     move |config| async move {
                         commits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         tokio::task::yield_now().await;
@@ -99,7 +97,6 @@ mod tests {
             &state,
             "old-password-value".to_string(),
             "replacement-password-value".to_string(),
-            "".to_string(),
             |config| async move { Ok(config) },
         )
         .await
@@ -128,7 +125,6 @@ mod tests {
                 &request_state,
                 "old-password-value".to_string(),
                 "replacement-password-value".to_string(),
-                "".to_string(),
                 move |config| async move {
                     let persisted_snapshot = config.clone();
                     let _ = persisted_tx.send(persisted_snapshot);
@@ -196,7 +192,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn password_change_revokes_other_session_streams_but_keeps_the_caller() {
+    async fn password_change_revokes_every_session_stream_including_the_caller() {
         let state = password_state(bcrypt::hash("old-password-value", 4).unwrap());
         let expires_at = chrono::Utc::now() + chrono::Duration::minutes(5);
         for token in ["current-session", "other-session"] {
@@ -216,19 +212,17 @@ mod tests {
             .await
             .unwrap();
 
-        revoke_user_sessions_except(&state, "admin", "current-session").await;
+        revoke_user_sessions(&state, "admin").await;
 
         tokio::time::timeout(std::time::Duration::from_secs(1), other.cancelled())
             .await
             .expect("revoked device SSE must close promptly");
         assert!(other.is_cancelled());
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(25), current.cancelled())
-                .await
-                .is_err(),
-            "the session performing the password change should remain connected"
-        );
-        assert!(!current.is_cancelled());
+        tokio::time::timeout(std::time::Duration::from_secs(1), current.cancelled())
+            .await
+            .expect("the session performing the password change must also close");
+        assert!(current.is_cancelled());
+        assert!(state.auth.sessions.read().await.is_empty());
     }
 
     fn headers(forwarded_for: &[&str]) -> HeaderMap {

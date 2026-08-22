@@ -48,6 +48,16 @@ function seedPrivateCache(queryClient: QueryClient) {
   });
 }
 
+async function submitPasswordChange() {
+  fireEvent.click(await screen.findByRole("button", { name: "设置" }));
+  fireEvent.click(await screen.findByRole("button", { name: "修改密码" }));
+  const form = await screen.findByRole("form", { name: "修改管理员密码" });
+  fireEvent.change(screen.getByLabelText("当前密码"), { target: { value: "current-password" } });
+  fireEvent.change(screen.getByLabelText("新密码"), { target: { value: "replacement-password" } });
+  fireEvent.change(screen.getByLabelText("确认新密码"), { target: { value: "replacement-password" } });
+  fireEvent.submit(form);
+}
+
 describe("session verification", () => {
   afterEach(() => {
     cleanup();
@@ -176,5 +186,56 @@ describe("session verification", () => {
     expect(oldQueryClient.getQueryData(overviewQueryKeys.services)).toEqual([staleService]);
     expect(newQueryClient.getQueryData(overviewQueryKeys.services)).toBeUndefined();
     expect(screen.queryByText("stale-private-service")).toBeNull();
+  });
+
+  it("uses the server-side password revocation without a second logout request", async () => {
+    mockAuthenticatedApp();
+    const logout = vi.spyOn(api, "logout").mockResolvedValue();
+    const changePassword = vi.spyOn(api, "changePassword").mockResolvedValue();
+    renderApp();
+
+    expect(await screen.findByRole("button", { name: "退出登录" })).toBeTruthy();
+    await submitPasswordChange();
+
+    expect(await screen.findByRole("form", { name: "登录 UnionC 管理中心" })).toBeTruthy();
+    expect(changePassword).toHaveBeenCalledWith("current-password", "replacement-password");
+    expect(logout).not.toHaveBeenCalled();
+  });
+
+  it("ignores a password-change callback from a replaced browser session", async () => {
+    mockAuthenticatedApp();
+    let finishChange!: () => void;
+    const changePassword = vi.spyOn(api, "changePassword").mockReturnValue(
+      new Promise<void>((resolve) => { finishChange = resolve; }),
+    );
+    let finishLogout!: () => void;
+    const logout = vi.spyOn(api, "logout").mockReturnValue(
+      new Promise<void>((resolve) => { finishLogout = resolve; }),
+    );
+    vi.spyOn(api, "login").mockResolvedValue({ username: "admin" });
+    renderApp();
+
+    expect(await screen.findByRole("button", { name: "退出登录" })).toBeTruthy();
+    await submitPasswordChange();
+    await waitFor(() => expect(changePassword).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: "退出登录" }));
+    const loginForm = await screen.findByRole("form", { name: "登录 UnionC 管理中心" });
+    act(() => finishLogout());
+    fireEvent.change(screen.getByLabelText("密码"), { target: { value: "new-session-password" } });
+    await waitFor(() => {
+      expect((screen.getByRole("button", { name: "登录" }) as HTMLButtonElement).disabled).toBe(false);
+    });
+    fireEvent.submit(loginForm);
+    expect(await screen.findByRole("button", { name: "退出登录" })).toBeTruthy();
+
+    await act(async () => {
+      finishChange();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("button", { name: "退出登录" })).toBeTruthy();
+    expect(screen.queryByRole("form", { name: "登录 UnionC 管理中心" })).toBeNull();
+    expect(logout).toHaveBeenCalledTimes(1);
   });
 });

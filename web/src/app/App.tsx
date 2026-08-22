@@ -41,7 +41,13 @@ function getInitialTheme(): Theme {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
-function AuthedApp({ onLogout }: { onLogout: () => Promise<void> }) {
+function AuthedApp({
+  onLogout,
+  onPasswordChanged,
+}: {
+  onLogout: () => Promise<void>;
+  onPasswordChanged: () => void;
+}) {
   const [view, setView] = useState<ViewKey>("overview");
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const [addTrigger, setAddTrigger] = useState(0);
@@ -127,7 +133,7 @@ function AuthedApp({ onLogout }: { onLogout: () => Promise<void> }) {
           {view === "monitoring" && <MonitoringView />}
           {view === "sunshine" && <SunshineView addTrigger={addTrigger} />}
           {view === "logs" && <LogsView />}
-          {view === "settings" && <SettingsView />}
+          {view === "settings" && <SettingsView onPasswordChanged={onPasswordChanged} />}
         </Suspense>
       </main>
     </div>
@@ -176,9 +182,11 @@ function LoginScreen({
 function SessionBoundary({
   onLogin,
   onLogout,
+  onPasswordChanged,
 }: {
   onLogin: (username: string, password: string) => Promise<void>;
   onLogout: () => Promise<void>;
+  onPasswordChanged: () => void;
 }) {
   const meQuery = useQuery({ queryKey: authQueryKeys.me, queryFn: authApi.authenticate, retry: false });
   if (meQuery.isPending) return <main className="app-shell login-screen"><LoadingBlock label="正在验证会话" /></main>;
@@ -198,7 +206,7 @@ function SessionBoundary({
       </main>
     );
   }
-  return <AuthedApp onLogout={onLogout} />;
+  return <AuthedApp onLogout={onLogout} onPasswordChanged={onPasswordChanged} />;
 }
 
 function AuthenticatedAppRoot() {
@@ -207,12 +215,14 @@ function AuthenticatedAppRoot() {
     defaultOptions: parentQueryClient.getDefaultOptions(),
   }));
   const sessionQueryClientRef = useRef(sessionQueryClient);
+  const sessionGenerationRef = useRef(0);
   const [signedOut, setSignedOut] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
   const logoutPendingRef = useRef(false);
 
   const replaceSessionQueryClient = useCallback(() => {
     const previousQueryClient = sessionQueryClientRef.current;
+    sessionGenerationRef.current += 1;
     previousQueryClient.clear();
     const nextQueryClient = new QueryClient({
       defaultOptions: previousQueryClient.getDefaultOptions(),
@@ -253,12 +263,26 @@ function AuthenticatedAppRoot() {
     loginQueryClient.setQueryData(authQueryKeys.me, { username: result.username });
     setSignedOut(false);
   };
+  const renderedSessionGeneration = sessionGenerationRef.current;
+  const handlePasswordChanged = useCallback(() => {
+    // A completed mutation can outlive the QueryClient and component that started it. Ignore its
+    // callback after logout/login has already advanced to another browser session generation.
+    if (sessionGenerationRef.current !== renderedSessionGeneration) return;
+    replaceSessionQueryClient();
+    setSignedOut(true);
+  }, [renderedSessionGeneration, replaceSessionQueryClient]);
 
   return (
     <QueryClientProvider client={sessionQueryClient}>
       {signedOut
         ? <LoginScreen onLogin={handleLogin} loginBlocked={logoutPending} />
-        : <SessionBoundary onLogin={handleLogin} onLogout={handleLogout} />}
+        : (
+          <SessionBoundary
+            onLogin={handleLogin}
+            onLogout={handleLogout}
+            onPasswordChanged={handlePasswordChanged}
+          />
+        )}
     </QueryClientProvider>
   );
 }

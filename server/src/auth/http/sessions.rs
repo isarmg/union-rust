@@ -44,12 +44,12 @@ async fn revoke_session(state: &AppState, token: &str) {
     cancel_session_streams(state, &[token.to_string()]).await;
 }
 
-async fn revoke_user_sessions_except(state: &AppState, username: &str, retained_token: &str) {
+async fn revoke_user_sessions(state: &AppState, username: &str) {
     let revoked = {
         let mut sessions = state.auth.sessions.write().await;
         let mut revoked = Vec::new();
         sessions.retain(|token, session| {
-            let remove = token != retained_token && session.username == username;
+            let remove = session.username == username;
             if remove {
                 revoked.push(token.clone());
             }
@@ -140,7 +140,7 @@ pub(crate) async fn me(
     Ok(Json(UserInfoResponse { username: user }))
 }
 
-/// POST /api/auth/change-password — 修改密码，使其他设备会话失效。
+/// POST /api/auth/change-password — 修改密码，并使该账号的全部会话失效。
 pub(crate) async fn change_password(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -166,7 +166,6 @@ pub(crate) async fn change_password(
         &state,
         payload.current_password,
         payload.new_password,
-        token,
         persist_local_config_blocking,
     )
     .await?;

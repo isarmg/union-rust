@@ -7,23 +7,26 @@ import { CardActions, CardInner, CardRow, InlineNotice, MutationError, SectionHe
 
 // ─── 修改密码侧面板 ───────────────────────────────────────────────────────────
 
-function ChangePasswordPanel({ onClose }: { onClose: () => void }) {
+function ChangePasswordPanel({
+  onClose,
+  onPasswordChanged,
+}: {
+  onClose: () => void;
+  onPasswordChanged: () => void;
+}) {
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw] = useState("");
   const [confirmPw, setConfirmPw] = useState("");
 
   const changeMutation = useMutation({
     mutationFn: () => api.changePassword(currentPw, newPw),
-    onSuccess: async () => {
+    onSuccess: () => {
       setCurrentPw("");
       setNewPw("");
       setConfirmPw("");
-      try {
-        await api.logout();
-      } catch {
-        // ignore
-      }
-      window.dispatchEvent(new Event("unionc:auth-expired"));
+      // The server revoked this session in the same password transaction. Do not issue a second
+      // logout request: a delayed mutation callback could otherwise send it with a newer cookie.
+      onPasswordChanged();
     }
   });
 
@@ -39,6 +42,7 @@ function ChangePasswordPanel({ onClose }: { onClose: () => void }) {
       </div>
       <form
         className="account-form"
+        aria-label="修改管理员密码"
         onSubmit={(e) => { e.preventDefault(); if (newPw !== confirmPw) return; changeMutation.mutate(); }}
       >
         <label className="inline-field">
@@ -75,7 +79,7 @@ function ChangePasswordPanel({ onClose }: { onClose: () => void }) {
 
 // ─── 账号管理区域 ─────────────────────────────────────────────────────────────
 
-function AccountSection() {
+function AccountSection({ onPasswordChanged }: { onPasswordChanged: () => void }) {
   const meQuery = useQuery({ queryKey: queryKeys.me, queryFn: api.authenticate });
   const [panelOpen, setPanelOpen] = useState(false);
 
@@ -101,15 +105,20 @@ function AccountSection() {
           </CardInner>
         </div>
       </div>
-      {panelOpen && <ChangePasswordPanel onClose={() => setPanelOpen(false)} />}
+      {panelOpen && (
+        <ChangePasswordPanel
+          onClose={() => setPanelOpen(false)}
+          onPasswordChanged={onPasswordChanged}
+        />
+      )}
     </section>
   );
 }
 
-export function SettingsView() {
+export function SettingsView({ onPasswordChanged }: { onPasswordChanged: () => void }) {
   return (
     <section className="view-stack">
-      <AccountSection />
+      <AccountSection onPasswordChanged={onPasswordChanged} />
     </section>
   );
 }
