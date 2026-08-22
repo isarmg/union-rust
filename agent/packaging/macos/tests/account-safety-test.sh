@@ -17,7 +17,19 @@ grep -F 's/@UNIONC_AGENT_PACKAGE_VERSION@/$VERSION/g' "$build_script" >/dev/null
   exit 1
 }
 grep -F '"state_dir": "/Library/Application Support/UnionC Agent"' "$build_script" >/dev/null || {
-  echo "package build does not bind config.json to the macOS state directory" >&2
+  echo "package build does not bind the config template to the macOS state directory" >&2
+  exit 1
+}
+grep -F '$root/usr/local/share/unionc-agent/config.example.json' "$build_script" >/dev/null || {
+  echo "package build does not stage config.example.json in root-owned shared data" >&2
+  exit 1
+}
+if grep -F '$root/Library/Application Support/UnionC Agent' "$build_script" >/dev/null; then
+  echo "package build still places mutable Agent state in the package payload" >&2
+  exit 1
+fi
+grep -F 'package_config="$share_dir/config.example.json"' "$postinstall" >/dev/null || {
+  echo "postinstall does not consume the root-owned package config template" >&2
   exit 1
 }
 
@@ -149,6 +161,7 @@ next_free_id /Groups PrimaryGroupID")"
 }
 
 binding_functions="$(
+  extract_function is_reserved_service_id "$postinstall"
   extract_function existing_group_matches_marker "$postinstall"
   extract_function existing_user_matches_marker "$postinstall"
 )"
@@ -208,6 +221,8 @@ run_group_binding_case exact 0 1 450 450 'UnionC Agent'
 run_group_binding_case replaced_gid 1 1 450 451 'UnionC Agent'
 run_group_binding_case unowned_preexisting 1 0 - 451 'UnionC Agent'
 run_group_binding_case wrong_name 1 1 450 450 'Different Account'
+run_group_binding_case root_gid 1 1 0 0 'UnionC Agent'
+run_group_binding_case above_reserved_gid 1 1 451 451 'UnionC Agent'
 
 run_user_binding_case exact 0 1 450 450 450 450 450
 run_user_binding_case replaced_uid 1 1 450 450 451 450 450
@@ -215,20 +230,58 @@ run_user_binding_case replaced_primary_gid 1 1 450 450 450 451 451
 run_user_binding_case wrong_service_group 1 1 450 450 450 450 451
 run_user_binding_case unowned_preexisting 1 0 - - 451 451 451
 run_user_binding_case malformed_numeric_id 1 1 450 450 450:451 450 450
+run_user_binding_case root_uid 1 1 0 450 0 450 450
+run_user_binding_case above_reserved_uid 1 1 451 450 451 450 450
 
 group_check_line="$(awk '/if ! existing_group_matches_marker / { print NR; exit }' "$postinstall")"
 user_check_line="$(awk '/if ! existing_user_matches_marker / { print NR; exit }' "$postinstall")"
-first_state_chown_line="$(awk '/^chown .*"\$state"$/ { print NR; exit }' "$postinstall")"
-case "$group_check_line:$user_check_line:$first_state_chown_line" in
+state_lock_line="$(awk '/^chown 0:0 "\$state"/ { print NR; exit }' "$postinstall")"
+case "$group_check_line:$user_check_line:$state_lock_line" in
   *[!0-9:]*)
     echo "Could not locate identity checks and state ownership change in postinstall" >&2
     exit 1
     ;;
 esac
-[ "$group_check_line" -lt "$first_state_chown_line" ] &&
-  [ "$user_check_line" -lt "$first_state_chown_line" ] || {
+[ "$group_check_line" -lt "$state_lock_line" ] &&
+  [ "$user_check_line" -lt "$state_lock_line" ] || {
   echo "postinstall changes state ownership before verifying account identity bindings" >&2
   exit 1
 }
+
+agent_bootout_line="$(awk '/^[[:space:]]*launchctl bootout system\/com\.unionc\.agent([[:space:]]|$)/ { line=NR } END { print line }' "$postinstall")"
+lingering_process_line="$(awk '/pgrep "\$pgrep_selector" "\$uid" \./ { line=NR } END { print line }' "$postinstall")"
+grep -F 'for pgrep_selector in -u -U; do' "$postinstall" >/dev/null || {
+  echo "postinstall does not check both effective and real service UIDs" >&2
+  exit 1
+}
+state_acl_clear_line="$(awk '/^chmod -N "\$state"/ { print NR; exit }' "$postinstall")"
+retained_config_check_line="$(awk '/require_current_config "\$config"/ { line=NR } END { print line }' "$postinstall")"
+state_contents_safe_line="$(awk '/^state_contents_safe=1$/ { print NR; exit }' "$postinstall")"
+state_release_line="$(awk '/^release_verified_state_to_service / { print NR; exit }' "$postinstall")"
+launchd_disable_line="$(awk '/^launchctl disable system\/com\.unionc\.agent$/ { print NR; exit }' "$postinstall")"
+launchd_enable_line="$(awk '/^launchctl enable system\/com\.unionc\.agent$/ { line=NR } END { print line }' "$postinstall")"
+case "$agent_bootout_line:$launchd_disable_line:$lingering_process_line:$state_lock_line:$state_acl_clear_line:$retained_config_check_line:$state_contents_safe_line:$state_release_line:$launchd_enable_line" in
+  *[!0-9:]*|*::*|:*|*:)
+    echo "Could not locate the complete post-bootout state lock transaction" >&2
+    exit 1
+    ;;
+esac
+[ "$agent_bootout_line" -lt "$lingering_process_line" ] &&
+  [ "$agent_bootout_line" -lt "$launchd_disable_line" ] &&
+  [ "$launchd_disable_line" -lt "$lingering_process_line" ] &&
+  [ "$lingering_process_line" -lt "$state_lock_line" ] &&
+  [ "$state_lock_line" -le "$state_acl_clear_line" ] &&
+  [ "$state_acl_clear_line" -lt "$retained_config_check_line" ] &&
+  [ "$retained_config_check_line" -lt "$state_contents_safe_line" ] &&
+  [ "$state_contents_safe_line" -lt "$state_release_line" ] &&
+  [ "$state_release_line" -lt "$launchd_enable_line" ] || {
+  echo "postinstall does not contain mutable state between bootout and ownership release" >&2
+  exit 1
+}
+
+if grep -E '^chown .*"\$package_config"' "$postinstall" >/dev/null; then
+  echo "postinstall hands the immutable package config to the service account" >&2
+  exit 1
+fi
 
 echo "macOS account safety tests: ok"

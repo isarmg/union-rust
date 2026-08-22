@@ -84,8 +84,7 @@ for installer_script in preinstall postinstall; do
   chmod 0755 "$package_scripts/$installer_script"
 done
 install -d "$root/usr/local/libexec" "$root/usr/local/bin" \
-  "$root/usr/local/share/unionc-agent" "$root/Library/LaunchDaemons" \
-  "$root/Library/Application Support/UnionC Agent"
+  "$root/usr/local/share/unionc-agent" "$root/Library/LaunchDaemons"
 install -m 0755 "$BINARY" "$root/usr/local/libexec/unionc-agent"
 ln -s ../libexec/unionc-agent "$root/usr/local/bin/unionc-agent"
 install -m 0755 "$script_dir/unionc-agent-logrotate" \
@@ -101,11 +100,11 @@ install -m 0644 "$script_dir/com.unionc.agent.logrotate.plist" \
   "$root/Library/LaunchDaemons/com.unionc.agent.logrotate.plist"
 sed 's#"state_dir": "/var/lib/unionc-agent"#"state_dir": "/Library/Application Support/UnionC Agent"#' \
   "$agent_dir/config.example.json" \
-  >"$root/Library/Application Support/UnionC Agent/config.example.json"
+  >"$root/usr/local/share/unionc-agent/config.example.json"
 grep -F '"state_dir": "/Library/Application Support/UnionC Agent"' \
-  "$root/Library/Application Support/UnionC Agent/config.example.json" >/dev/null ||
+  "$root/usr/local/share/unionc-agent/config.example.json" >/dev/null ||
   die "could not bind the packaged configuration to the macOS Agent state directory"
-chmod 0600 "$root/Library/Application Support/UnionC Agent/config.example.json"
+chmod 0644 "$root/usr/local/share/unionc-agent/config.example.json"
 
 component="$packages/unionc-agent-component.pkg"
 pkgbuild --root "$root" --scripts "$package_scripts" --ownership recommended \

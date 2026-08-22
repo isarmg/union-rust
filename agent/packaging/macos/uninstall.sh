@@ -270,6 +270,7 @@ rm -f /Library/LaunchDaemons/com.unionc.agent.plist
 rm -f /usr/local/libexec/unionc-agent-logrotate
 rm -f /usr/local/libexec/unionc-agent
 rm -f "$share/newsyslog.conf"
+rm -f "$share/config.example.json"
 
 command_link="/usr/local/bin/unionc-agent"
 if [ -L "$command_link" ]; then

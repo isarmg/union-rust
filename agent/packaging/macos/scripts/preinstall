@@ -4,6 +4,7 @@ set -eu
 PATH=/bin:/usr/bin:/sbin:/usr/sbin
 export PATH
 package_version="@UNIONC_AGENT_PACKAGE_VERSION@"
+state_parent="/Library/Application Support"
 agent_binary="/usr/local/libexec/unionc-agent"
 agent_command="/usr/local/bin/unionc-agent"
 logrotate_helper="/usr/local/libexec/unionc-agent-logrotate"
@@ -16,6 +17,7 @@ local_prefix="${libexec_dir%/*}"
 system_usr="${local_prefix%/*}"
 share_parent="$local_prefix/share"
 share_dir="$share_parent/unionc-agent"
+package_config="$share_dir/config.example.json"
 newsyslog_config="$share_dir/newsyslog.conf"
 uninstall_helper="$share_dir/uninstall.sh"
 launch_daemon_dir="${agent_plist%/*}"
@@ -182,6 +184,28 @@ validate_existing_exact_directory() {
   fi
 }
 
+validate_existing_root_controlled_directory() {
+  directory_path="$1"
+  directory_description="$2"
+  [ -d "$directory_path" ] && [ ! -L "$directory_path" ] || {
+    echo "Unsafe or missing UnionC Agent $directory_description: $directory_path" >&2
+    exit 1
+  }
+  read_path_metadata "$directory_path"
+  [ "$path_uid" = 0 ] || {
+    echo "UnionC Agent $directory_description must be owned by root" >&2
+    exit 1
+  }
+  case "$path_mode" in
+    7[0145][15]) ;;
+    *)
+      echo "UnionC Agent $directory_description must be root-writable, service-traversable, and not group/other-writable" >&2
+      exit 1
+      ;;
+  esac
+  require_no_permissive_acl "$directory_path" "$directory_description"
+}
+
 validate_existing_regular_payload() {
   payload_path="$1"
   payload_description="$2"
@@ -243,6 +267,7 @@ validate_existing_shared_directory "$command_dir" "command directory"
 validate_existing_shared_directory "$share_parent" "shared-data directory"
 validate_existing_exact_directory "$share_dir" "package shared-data directory" 755
 validate_existing_exact_directory "$library_root" "system Library directory" 755 deny-only
+validate_existing_root_controlled_directory "$state_parent" "Application Support directory"
 validate_existing_exact_directory "$launch_daemon_dir" "LaunchDaemon directory" 755
 validate_existing_exact_directory "$log_dir" "log directory" 755
 validate_existing_regular_payload "$agent_binary" "executable" 755
@@ -250,6 +275,7 @@ validate_existing_regular_payload "$logrotate_helper" "log-rotation helper" 755
 validate_existing_regular_payload "$agent_plist" "LaunchDaemon plist" 644
 validate_existing_regular_payload "$logrotate_plist" "log-rotation LaunchDaemon plist" 644
 validate_existing_regular_payload "$newsyslog_config" "newsyslog configuration" 644
+validate_existing_regular_payload "$package_config" "package config" 644
 validate_existing_regular_payload "$uninstall_helper" "uninstall helper" 755
 validate_existing_command_link
 

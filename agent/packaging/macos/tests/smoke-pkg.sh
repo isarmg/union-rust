@@ -88,6 +88,29 @@ assert_secure_shared_directory() {
   }
 }
 
+assert_secure_root_directory_any_group() {
+  local path=$1
+  local metadata uid special mode remainder
+  [[ -d $path && ! -L $path ]] || {
+    echo "expected a real root-owned directory at $path" >&2
+    exit 1
+  }
+  metadata=$(sudo stat -f '%u:%g:%Mp:%Lp' "$path")
+  uid=${metadata%%:*}
+  remainder=${metadata#*:}
+  remainder=${remainder#*:}
+  special=${remainder%%:*}
+  mode=${remainder#*:}
+  [[ $uid == 0 && $special == 0 && $mode =~ ^7[0145][15]$ ]] || {
+    echo "unsafe root-owned directory metadata on $path: $metadata" >&2
+    exit 1
+  }
+  path_has_no_permissive_acl "$path" || {
+    echo "unexpected permissive ACL on root-owned directory $path" >&2
+    exit 1
+  }
+}
+
 assert_path_metadata() {
   local expected=$1
   local path=$2
@@ -161,13 +184,41 @@ assert_install_trust() {
   assert_trusted_directory 0:0:0:755 /usr/local/share/unionc-agent
   assert_trusted_directory 0:0:0:755 /Library/LaunchDaemons
   assert_trusted_directory 0:0:0:755 /var/log
+  assert_secure_root_directory_any_group '/Library/Application Support'
   assert_trusted_regular_file 0:0:0:755 /usr/local/libexec/unionc-agent
   assert_trusted_regular_file 0:0:0:755 /usr/local/libexec/unionc-agent-logrotate
   assert_trusted_regular_file 0:0:0:755 /usr/local/share/unionc-agent/uninstall.sh
   assert_trusted_regular_file 0:0:0:644 /usr/local/share/unionc-agent/newsyslog.conf
+  assert_trusted_regular_file 0:0:0:644 \
+    /usr/local/share/unionc-agent/config.example.json
   assert_trusted_regular_file 0:0:0:644 /Library/LaunchDaemons/com.unionc.agent.plist
   assert_trusted_regular_file 0:0:0:644 /Library/LaunchDaemons/com.unionc.agent.logrotate.plist
   assert_command_link
+}
+
+assert_runtime_state_trust() {
+  local expect_package_template=${1:-1}
+  local service_uid service_gid
+  service_uid=$(id -u _unioncagent)
+  service_gid=$(id -g _unioncagent)
+  assert_trusted_directory "$service_uid:$service_gid:0:700" \
+    '/Library/Application Support/UnionC Agent'
+  assert_trusted_regular_file "$service_uid:$service_gid:0:600" \
+    '/Library/Application Support/UnionC Agent/config.json'
+  assert_trusted_regular_file "$service_uid:$service_gid:0:600" \
+    /var/log/unionc-agent.log
+  [[ ! -e '/Library/Application Support/UnionC Agent/config.example.json' &&
+    ! -L '/Library/Application Support/UnionC Agent/config.example.json' ]] || {
+    echo 'package config template leaked into service-writable state' >&2
+    exit 1
+  }
+  if [[ $expect_package_template == 1 ]]; then
+    grep -F '"state_dir": "/Library/Application Support/UnionC Agent"' \
+      /usr/local/share/unionc-agent/config.example.json >/dev/null || {
+      echo 'installed package config template has the wrong state directory' >&2
+      exit 1
+    }
+  fi
 }
 
 assert_preserved_uninstall_trust() {
@@ -231,24 +282,41 @@ if [[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_OS:-} == macOS ]]; then
   done
 fi
 
+package_payload=$(pkgutil --payload-files "$package")
+if grep -E '(^|/)Library/Application Support/UnionC Agent(/|$)' \
+  <<<"$package_payload" >/dev/null; then
+  echo 'package payload contains service-writable Agent state' >&2
+  exit 1
+fi
+grep -E '(^|/)usr/local/share/unionc-agent/config\.example\.json$' \
+  <<<"$package_payload" >/dev/null || {
+  echo 'package payload is missing the root-owned config template' >&2
+  exit 1
+}
+
 sudo installer -pkg "$package" -target /
 sudo launchctl print system/com.unionc.agent >/dev/null
 assert_install_trust
+assert_runtime_state_trust
 assert_ownership_proof
 sudo touch '/Library/Application Support/UnionC Agent/release-lifecycle-marker'
 
 sudo installer -pkg "$package" -target /
 sudo launchctl print system/com.unionc.agent >/dev/null
 assert_install_trust
+assert_runtime_state_trust
 assert_ownership_proof
 sudo /usr/local/share/unionc-agent/uninstall.sh
 [[ ! -e /usr/local/libexec/unionc-agent ]]
 [[ -e '/Library/Application Support/UnionC Agent/release-lifecycle-marker' ]]
+[[ ! -e /usr/local/share/unionc-agent/config.example.json ]]
 assert_preserved_uninstall_trust
+assert_runtime_state_trust 0
 assert_ownership_proof
 
 sudo installer -pkg "$package" -target /
 assert_install_trust
+assert_runtime_state_trust
 assert_ownership_proof
 sudo /usr/local/share/unionc-agent/uninstall.sh --purge --yes
 [[ ! -e '/Library/Application Support/UnionC Agent' ]]

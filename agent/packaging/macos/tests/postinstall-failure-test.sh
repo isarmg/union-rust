@@ -17,9 +17,30 @@ fail() {
   exit 1
 }
 
+assert_calls_in_order_after() {
+  calls_file="$1"
+  anchor_call="$2"
+  shift 2
+  previous_line="$(
+    awk -v expected="$anchor_call" '$0 == expected { found = NR } END { if (found) print found }' \
+      "$calls_file"
+  )"
+  [ -n "$previous_line" ] || fail "missing launchctl call anchor: $anchor_call"
+  for expected_call in "$@"; do
+    next_line="$(
+      awk -v expected="$expected_call" -v after="$previous_line" \
+        'NR > after && $0 == expected { print NR; exit }' "$calls_file"
+    )"
+    [ -n "$next_line" ] ||
+      fail "missing ordered launchctl call after line $previous_line: $expected_call"
+    previous_line="$next_line"
+  done
+}
+
 make_case() {
   case_dir="$1"
   case_bin="$case_dir/bin"
+  case_state_parent="$case_dir/Library/Application Support"
   case_state="$case_dir/Library/Application Support/UnionC Agent"
   case_ownership="$case_dir/var/db/unionc-agent"
   case_log="$case_dir/var/log/unionc-agent.log"
@@ -29,9 +50,10 @@ make_case() {
   case_agent_plist="$case_dir/Library/LaunchDaemons/com.unionc.agent.plist"
   case_logrotate_plist="$case_dir/Library/LaunchDaemons/com.unionc.agent.logrotate.plist"
   case_share="$case_dir/usr/local/share/unionc-agent"
+  case_package_config="$case_share/config.example.json"
   case_newsyslog_config="$case_share/newsyslog.conf"
   case_uninstall_helper="$case_share/uninstall.sh"
-  mkdir -p "$case_bin" "$case_state" "$case_dir/dscl/Groups" "$case_dir/dscl/Users" \
+  mkdir -p "$case_bin" "$case_state_parent" "$case_dir/dscl/Groups" "$case_dir/dscl/Users" \
     "$case_dir/launch" "$(dirname -- "$case_log")" "$(dirname -- "$case_agent_plist")" \
     "$(dirname -- "$case_agent_binary")" "$(dirname -- "$case_agent_command")" "$case_share"
   {
@@ -39,7 +61,7 @@ make_case() {
     printf '  "application_version": "@UNIONC_AGENT_PACKAGE_VERSION@",\n'
     printf '  "server_url": null\n'
     printf '}\n'
-  } >"$case_state/config.example.json"
+  } >"$case_package_config"
   cat >"$case_agent_binary" <<'EOF'
 #!/bin/sh
 [ "${1:-}" = --version ] || exit 64
@@ -67,6 +89,7 @@ EOF
   sed \
     -e "s|^PATH=.*|PATH=\"$case_bin:/bin:/usr/bin:/sbin:/usr/sbin\"|" \
     -e "s|^state=.*|state=\"$case_state\"|" \
+    -e "s|^state_parent=.*|state_parent=\"$case_state_parent\"|" \
     -e "s|^log=.*|log=\"$case_log\"|" \
     -e "s|^agent_binary=.*|agent_binary=\"$case_agent_binary\"|" \
     -e "s|^agent_command=.*|agent_command=\"$case_agent_command\"|" \
@@ -85,6 +108,7 @@ EOF
     -e "s|^agent_plist=.*|agent_plist=\"$case_agent_plist\"|" \
     -e "s|^logrotate_plist=.*|logrotate_plist=\"$case_logrotate_plist\"|" \
     -e "s|^log_dir=.*|log_dir=\"${case_log%/*}\"|" \
+    -e "s|^state_parent=.*|state_parent=\"$case_state_parent\"|" \
     "$preinstall" >"$case_dir/preinstall"
   chmod +x "$case_dir/preinstall"
 
@@ -105,6 +129,9 @@ for argument do
 done
 [ -n "$destination" ] || exit 64
 mkdir -p "$destination"
+if [ "$destination" = "$CASE_ROOT/Library/Application Support/UnionC Agent" ]; then
+  printf '0:0:700\n' >"$FILE_STATE/metadata.state-dir"
+fi
 EOF
 
   cat >"$case_bin/stat" <<'EOF'
@@ -147,6 +174,9 @@ case "$path" in
   "$CASE_ROOT/Library")
     metadata="${STAT_LIBRARY_ROOT:-0:0:755}"
     ;;
+  "$CASE_ROOT/Library/Application Support")
+    metadata="${STAT_STATE_PARENT:-0:80:755}"
+    ;;
   "$CASE_ROOT/usr/local/libexec/unionc-agent")
     metadata="${STAT_AGENT_BINARY:-0:0:755}"
     ;;
@@ -165,6 +195,9 @@ case "$path" in
   "$CASE_ROOT/usr/local/share/unionc-agent/newsyslog.conf")
     metadata="${STAT_NEWSYSLOG_CONFIG:-0:0:644}"
     ;;
+  "$CASE_ROOT/usr/local/share/unionc-agent/config.example.json")
+    metadata="${STAT_PACKAGE_CONFIG:-0:0:644}"
+    ;;
   "$CASE_ROOT/usr/local/share/unionc-agent/uninstall.sh")
     metadata="${STAT_UNINSTALL_HELPER:-0:0:755}"
     ;;
@@ -176,34 +209,49 @@ case "$path" in
     metadata="${STAT_OWNERSHIP_MARKER:-0:0:600}"
     ;;
   "$CASE_ROOT/Library/Application Support/UnionC Agent")
-    if grep -Fx 'user_created=1' "$CASE_ROOT/var/db/unionc-agent/account-ownership" >/dev/null 2>&1; then
-      metadata="${STAT_STATE_ROOT:-450:450:700}"
+    if [ -n "${STAT_STATE_ROOT:-}" ]; then
+      metadata="$STAT_STATE_ROOT"
+    elif [ -f "$FILE_STATE/metadata.state-dir" ]; then
+      IFS= read -r metadata <"$FILE_STATE/metadata.state-dir"
     else
-      metadata="${STAT_STATE_ROOT:-0:0:755}"
-    fi
-    ;;
-  "$CASE_ROOT/Library/Application Support/UnionC Agent/config.example.json")
-    if grep -Fx 'user_created=1' "$CASE_ROOT/var/db/unionc-agent/account-ownership" >/dev/null 2>&1; then
-      metadata="${STAT_CONFIG_EXAMPLE:-450:450:600}"
-    else
-      metadata="${STAT_CONFIG_EXAMPLE:-0:0:600}"
+      metadata="0:0:755"
     fi
     ;;
   "$CASE_ROOT/Library/Application Support/UnionC Agent/config.json")
-    if grep -Fx 'user_created=1' "$CASE_ROOT/var/db/unionc-agent/account-ownership" >/dev/null 2>&1; then
-      metadata="${STAT_CONFIG:-450:450:600}"
+    if [ -n "${STAT_CONFIG:-}" ]; then
+      metadata="$STAT_CONFIG"
+    elif [ -f "$FILE_STATE/metadata.retained-config" ]; then
+      IFS= read -r metadata <"$FILE_STATE/metadata.retained-config"
+    elif [ -f "$FILE_STATE/metadata.config-temp" ]; then
+      # Fresh config is published as a hard link to the already-secured temp
+      # inode, so the final path inherits the same metadata.
+      IFS= read -r metadata <"$FILE_STATE/metadata.config-temp"
     else
-      metadata="${STAT_CONFIG:-0:0:600}"
+      metadata="0:0:600"
+    fi
+    ;;
+  "$CASE_ROOT/Library/Application Support/UnionC Agent/config.example.json")
+    metadata="${STAT_LEGACY_PACKAGE_CONFIG:-450:450:600}"
+    ;;
+  "$CASE_ROOT/Library/Application Support/UnionC Agent"/.config.json.*)
+    if [ -n "${STAT_CONFIG_TEMP:-}" ]; then
+      metadata="$STAT_CONFIG_TEMP"
+    elif [ -f "$FILE_STATE/metadata.config-temp" ]; then
+      IFS= read -r metadata <"$FILE_STATE/metadata.config-temp"
+    else
+      metadata="0:0:600"
     fi
     ;;
   "$CASE_ROOT/var/log")
     metadata="${STAT_LOG_DIR:-0:0:755}"
     ;;
   "$CASE_ROOT/var/log/unionc-agent.log")
-    if grep -Fx 'user_created=1' "$CASE_ROOT/var/db/unionc-agent/account-ownership" >/dev/null 2>&1; then
-      metadata="${STAT_LOG_FILE:-450:450:600}"
+    if [ -n "${STAT_LOG_FILE:-}" ]; then
+      metadata="$STAT_LOG_FILE"
+    elif [ -f "$FILE_STATE/metadata.log-file" ]; then
+      IFS= read -r metadata <"$FILE_STATE/metadata.log-file"
     else
-      metadata="${STAT_LOG_FILE:-0:0:600}"
+      metadata="0:0:600"
     fi
     ;;
   *) exit 65 ;;
@@ -265,6 +313,10 @@ case "$path" in
     acl_key=library-root
     permissions=drwxr-xr-x
     ;;
+  "$CASE_ROOT/Library/Application Support")
+    acl_key=state-parent
+    permissions=drwxr-xr-x
+    ;;
   "$CASE_ROOT/usr/local/libexec/unionc-agent") acl_key=agent-binary ;;
   "$CASE_ROOT/usr/local/bin/unionc-agent")
     acl_key=agent-command
@@ -276,10 +328,27 @@ case "$path" in
     acl_key=logrotate-plist
     ;;
   "$CASE_ROOT/usr/local/share/unionc-agent/newsyslog.conf") acl_key=newsyslog-config ;;
+  "$CASE_ROOT/usr/local/share/unionc-agent/config.example.json") acl_key=package-config ;;
   "$CASE_ROOT/usr/local/share/unionc-agent/uninstall.sh") acl_key=uninstall-helper ;;
   "$CASE_ROOT/var/log")
     acl_key=log-dir
     permissions=drwxr-xr-x
+    ;;
+  "$CASE_ROOT/Library/Application Support/UnionC Agent")
+    acl_key=state-dir
+    permissions=drwx------
+    ;;
+  "$CASE_ROOT/Library/Application Support/UnionC Agent/config.json")
+    acl_key=retained-config
+    ;;
+  "$CASE_ROOT/Library/Application Support/UnionC Agent/config.example.json")
+    acl_key=legacy-package-config
+    ;;
+  "$CASE_ROOT/Library/Application Support/UnionC Agent"/.config.json.*)
+    acl_key=config-temp
+    ;;
+  "$CASE_ROOT/var/log/unionc-agent.log")
+    acl_key=log-file
     ;;
   "$CASE_ROOT/var/db/unionc-agent")
     acl_key=ownership-dir
@@ -303,6 +372,10 @@ esac
 [ "${DENY_ACL_PATH:-}" = "$acl_key" ] && deny_acl_requested=1
 [ "${TRICKY_ALLOW_ACL_PATH:-}" = "$acl_key" ] && tricky_allow_acl_requested=1
 [ "${FAIL_LS_PATH:-}" = "$acl_key" ] && ls_failure=1
+if [ -e "$FILE_STATE/mutable-checks-active" ]; then
+  [ "${POST_BOOTOUT_ACL_PATH:-}" = "$acl_key" ] && acl_requested=1
+  [ "${POST_BOOTOUT_FAIL_LS_PATH:-}" = "$acl_key" ] && ls_failure=1
+fi
 [ "$ls_failure" -eq 0 ] || exit 71
 if [ "$acl_requested" -eq 1 ] && [ ! -e "$FILE_STATE/acl-cleared.$acl_key" ]; then
   printf '%s+ 1 root wheel 0 Jan 1 00:00 %s\n' "$permissions" "$path"
@@ -323,7 +396,40 @@ EOF
   cat >"$case_bin/chmod" <<'EOF'
 #!/bin/sh
 if [ "${1:-}" != -N ]; then
-  exec /bin/chmod "$@"
+  requested_mode="$1"
+  shift
+  /bin/chmod "$requested_mode" "$@" || exit $?
+  normalized_mode="${requested_mode#0}"
+  for path do
+    metadata_key=
+    default_owner=
+    case "$path" in
+      "$CASE_ROOT/Library/Application Support/UnionC Agent")
+        metadata_key=state-dir
+        default_owner=0:0
+        ;;
+      "$CASE_ROOT/Library/Application Support/UnionC Agent/config.json")
+        metadata_key=retained-config
+        default_owner=0:0
+        ;;
+      "$CASE_ROOT/Library/Application Support/UnionC Agent"/.config.json.*)
+        metadata_key=config-temp
+        default_owner=0:0
+        ;;
+      "$CASE_ROOT/var/log/unionc-agent.log")
+        metadata_key=log-file
+        default_owner=0:0
+        ;;
+    esac
+    [ -n "$metadata_key" ] || continue
+    current_owner="$default_owner"
+    if [ -f "$FILE_STATE/metadata.$metadata_key" ]; then
+      IFS= read -r current_metadata <"$FILE_STATE/metadata.$metadata_key"
+      current_owner="${current_metadata%:*}"
+    fi
+    printf '%s:%s\n' "$current_owner" "$normalized_mode" >"$FILE_STATE/metadata.$metadata_key"
+  done
+  exit 0
 fi
 count=0
 if [ -f "$FILE_STATE/chmod-n-count" ]; then
@@ -338,6 +444,10 @@ case "$2" in
   "$CASE_ROOT/var/db/unionc-agent") acl_key=ownership-dir ;;
   "$CASE_ROOT/var/db/unionc-agent/account-ownership") acl_key=ownership-marker ;;
   "$CASE_ROOT/var/db/unionc-agent"/.account-ownership.*) acl_key=ownership-temp ;;
+  "$CASE_ROOT/Library/Application Support/UnionC Agent") acl_key=state-dir ;;
+  "$CASE_ROOT/Library/Application Support/UnionC Agent/config.json") acl_key=retained-config ;;
+  "$CASE_ROOT/Library/Application Support/UnionC Agent"/.config.json.*) acl_key=config-temp ;;
+  "$CASE_ROOT/var/log/unionc-agent.log") acl_key=log-file ;;
   *) exit 65 ;;
 esac
 : >"$FILE_STATE/acl-cleared.$acl_key"
@@ -361,6 +471,74 @@ printf '%s\n' "$*" >>"$FILE_STATE/chown-calls"
 if [ -n "${FAIL_CHOWN_AT:-}" ] && [ "$count" -eq "$FAIL_CHOWN_AT" ]; then
   exit 71
 fi
+owner="$1"
+shift
+case "$owner" in
+  root:wheel|0:0) numeric_owner=0:0 ;;
+  _unioncagent:_unioncagent|450:450) numeric_owner=450:450 ;;
+  *:*) numeric_owner="$owner" ;;
+  *) exit 64 ;;
+esac
+for path do
+  metadata_key=
+  default_mode=
+  case "$path" in
+    "$CASE_ROOT/Library/Application Support/UnionC Agent")
+      metadata_key=state-dir
+      default_mode=700
+      ;;
+    "$CASE_ROOT/Library/Application Support/UnionC Agent/config.json")
+      metadata_key=retained-config
+      default_mode=600
+      ;;
+    "$CASE_ROOT/Library/Application Support/UnionC Agent"/.config.json.*)
+      metadata_key=config-temp
+      default_mode=600
+      ;;
+    "$CASE_ROOT/var/log/unionc-agent.log")
+      metadata_key=log-file
+      default_mode=600
+      ;;
+  esac
+  [ -n "$metadata_key" ] || continue
+  current_mode="$default_mode"
+  if [ -f "$FILE_STATE/metadata.$metadata_key" ]; then
+    IFS= read -r current_metadata <"$FILE_STATE/metadata.$metadata_key"
+    current_mode="${current_metadata##*:}"
+  fi
+  printf '%s:%s\n' "$numeric_owner" "$current_mode" >"$FILE_STATE/metadata.$metadata_key"
+done
+exit 0
+EOF
+
+  cat >"$case_bin/pgrep" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"$FILE_STATE/pgrep-calls"
+[ "$#" -eq 3 ] && { [ "$1" = -u ] || [ "$1" = -U ]; } &&
+  [ "$3" = . ] || exit 64
+process_marker="$LAUNCH_STATE/process-${1#-}.com.unionc.agent"
+if [ "${PGREP_HAS_PROCESS:-0}" -eq 1 ] || [ -e "$process_marker" ]; then
+  printf '4242\n'
+  exit 0
+fi
+exit 1
+EOF
+
+  cat >"$case_bin/pkill" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"$FILE_STATE/pkill-calls"
+[ "$#" -eq 4 ] && [ "$1" = -KILL ] &&
+  { [ "$2" = -u ] || [ "$2" = -U ]; } && [ "$4" = . ] || exit 64
+process_marker="$LAUNCH_STATE/process-${2#-}.com.unionc.agent"
+[ -e "$process_marker" ] || exit 1
+if [ "${PKILL_LEAVES_PROCESS:-0}" -ne 1 ]; then
+  rm -f "$process_marker"
+fi
+exit 0
+EOF
+
+  cat >"$case_bin/sleep" <<'EOF'
+#!/bin/sh
 exit 0
 EOF
 
@@ -447,7 +625,26 @@ EOF
 set -eu
 printf '%s\n' "$*" >>"$LAUNCH_STATE/calls"
 case "${1:-}" in
-  enable) ;;
+  enable|disable)
+    count_file="$LAUNCH_STATE/$1-count"
+    count=0
+    if [ -f "$count_file" ]; then
+      IFS= read -r count <"$count_file"
+    fi
+    count=$((count + 1))
+    printf '%s\n' "$count" >"$count_file"
+    if [ "$1" = disable ] && [ -n "${FAIL_DISABLE_FROM:-}" ] &&
+      [ "$count" -ge "$FAIL_DISABLE_FROM" ]; then
+      exit 78
+    fi
+    target="$2"
+    label="${target#system/}"
+    if [ "$1" = enable ]; then
+      rm -f "$LAUNCH_STATE/disabled.$label"
+    else
+      : >"$LAUNCH_STATE/disabled.$label"
+    fi
+    ;;
   bootstrap)
     count=0
     if [ -f "$LAUNCH_STATE/bootstrap-count" ]; then
@@ -461,7 +658,12 @@ case "${1:-}" in
     plist="$3"
     label="${plist##*/}"
     label="${label%.plist}"
+    [ ! -e "$LAUNCH_STATE/disabled.$label" ] || exit 77
     : >"$LAUNCH_STATE/loaded.$label"
+    if [ "$label" = com.unionc.agent ]; then
+      : >"$LAUNCH_STATE/process-u.$label"
+      : >"$LAUNCH_STATE/process-U.$label"
+    fi
     ;;
   bootout)
     count=0
@@ -476,11 +678,63 @@ case "${1:-}" in
     target="$2"
     label="${target#system/}"
     rm -f "$LAUNCH_STATE/loaded.$label"
+    if [ "$label" = com.unionc.agent ] &&
+      [ "${BOOTOUT_LEAVES_AGENT_PROCESS:-0}" -ne 1 ]; then
+      rm -f "$LAUNCH_STATE/process-u.$label" "$LAUNCH_STATE/process-U.$label"
+    fi
+    if [ "$label" = com.unionc.agent.logrotate ] &&
+      [ "${HELPER_RESTORES_AGENT_ON_EXIT:-0}" -eq 1 ]; then
+      : >"$LAUNCH_STATE/loaded.com.unionc.agent"
+      : >"$LAUNCH_STATE/process-u.com.unionc.agent"
+      : >"$LAUNCH_STATE/process-U.com.unionc.agent"
+    fi
+    if [ "$label" = com.unionc.agent ]; then
+      : >"$FILE_STATE/mutable-checks-active"
+      : >"$LAUNCH_STATE/agent-bootout-completed"
+    fi
+    if [ "$label" = com.unionc.agent ] &&
+      [ "${RACE_CONFIG_SYMLINK_AFTER_AGENT_BOOTOUT:-0}" -eq 1 ] &&
+      [ ! -e "$FILE_STATE/race-config-injected" ]; then
+      config="$CASE_ROOT/Library/Application Support/UnionC Agent/config.json"
+      foreign="$CASE_ROOT/raced-config-target.json"
+      [ -f "$config" ] && [ ! -L "$config" ] || exit 76
+      mv "$config" "$foreign"
+      ln -s "$foreign" "$config"
+      : >"$FILE_STATE/race-config-injected"
+    fi
+    ;;
+  kill)
+    [ "$2" = SIGKILL ] || exit 64
+    target="$3"
+    label="${target#system/}"
+    if [ "$label" = com.unionc.agent ] &&
+      [ "${LAUNCHCTL_KILL_LEAVES_AGENT_PROCESS:-0}" -ne 1 ]; then
+      rm -f "$LAUNCH_STATE/process-u.$label" "$LAUNCH_STATE/process-U.$label"
+    fi
     ;;
   print)
+    count=0
+    if [ -f "$LAUNCH_STATE/print-count" ]; then
+      IFS= read -r count <"$LAUNCH_STATE/print-count"
+    fi
+    count=$((count + 1))
+    printf '%s\n' "$count" >"$LAUNCH_STATE/print-count"
+    if [ -n "${FAIL_PRINT_AT:-}" ] && [ "$count" -eq "$FAIL_PRINT_AT" ]; then
+      exit 79
+    fi
+    if [ "${FAIL_PRINT_AFTER_AGENT_BOOTOUT:-0}" -eq 1 ] &&
+      [ -e "$LAUNCH_STATE/agent-bootout-completed" ] &&
+      [ ! -e "$LAUNCH_STATE/post-bootout-print-failed" ]; then
+      : >"$LAUNCH_STATE/post-bootout-print-failed"
+      exit 79
+    fi
     target="$2"
     label="${target#system/}"
-    [ -f "$LAUNCH_STATE/loaded.$label" ]
+    if [ -f "$LAUNCH_STATE/loaded.$label" ]; then
+      exit 0
+    fi
+    printf 'Could not find service "%s" in domain for system\n' "$label" >&2
+    exit 113
     ;;
   *) exit 64 ;;
 esac
@@ -488,7 +742,9 @@ EOF
 
   chmod +x "$case_bin/id" "$case_bin/install" "$case_bin/stat" "$case_bin/ls" \
     "$case_bin/chmod" "$case_bin/chown" \
-    "$case_bin/dscl" "$case_bin/launchctl" "$case_bin/pkgutil" "$case_bin/plutil"
+    "$case_bin/dscl" "$case_bin/launchctl" "$case_bin/pgrep" \
+    "$case_bin/pkill" "$case_bin/sleep" \
+    "$case_bin/pkgutil" "$case_bin/plutil"
 }
 
 run_postinstall() {
@@ -519,20 +775,61 @@ reset_fault_counters() {
   rm -f "$reset_case/dscl/create-count" "$reset_case/dscl/read-count" \
     "$reset_case/chown-count" "$reset_case/chown-calls" \
     "$reset_case/chmod-n-count" "$reset_case"/acl-cleared.* \
-    "$reset_case/launch/bootstrap-count" "$reset_case/launch/bootout-count"
+    "$reset_case/pgrep-calls" "$reset_case/pkill-calls" \
+    "$reset_case/race-config-injected" \
+    "$reset_case/mutable-checks-active" \
+    "$reset_case/launch/bootstrap-count" "$reset_case/launch/bootout-count" \
+    "$reset_case/launch/enable-count" "$reset_case/launch/disable-count" \
+    "$reset_case/launch/print-count" \
+    "$reset_case/launch/agent-bootout-completed" \
+    "$reset_case/launch/post-bootout-print-failed"
 }
 
-write_valid_ownership_marker() {
+assert_mock_metadata() {
+  metadata_case="$1"
+  expected_metadata="$2"
+  metadata_path="$3"
+  actual_metadata="$(
+    env CASE_ROOT="$metadata_case" FILE_STATE="$metadata_case" \
+      "$metadata_case/bin/stat" -f '%u:%g:%Mp:%Lp' "$metadata_path"
+  )"
+  [ "$actual_metadata" = "$expected_metadata" ] ||
+    fail "unexpected metadata on $metadata_path: expected $expected_metadata, got $actual_metadata"
+}
+
+assert_mock_no_acl() {
+  acl_case="$1"
+  acl_path="$2"
+  acl_listing="$(
+    env CASE_ROOT="$acl_case" FILE_STATE="$acl_case" \
+      "$acl_case/bin/ls" -lde "$acl_path"
+  )"
+  acl_line_count="$(printf '%s\n' "$acl_listing" | wc -l | tr -d '[:space:]')"
+  [ "$acl_line_count" = 1 ] || fail "unexpected extended ACL on $acl_path"
+  acl_permissions="${acl_listing%% *}"
+  case "$acl_permissions" in
+    ''|*+) fail "unexpected extended ACL marker on $acl_path" ;;
+  esac
+}
+
+write_ownership_marker_ids() {
   marker_case="$1"
+  marker_uid="$2"
+  marker_primary_gid="$3"
+  marker_group_gid="$4"
   mkdir -p "$marker_case/var/db/unionc-agent"
   {
     printf 'format=@UNIONC_AGENT_PACKAGE_VERSION@\n'
     printf 'user_created=1\n'
-    printf 'user_uid=450\n'
-    printf 'user_primary_gid=450\n'
+    printf 'user_uid=%s\n' "$marker_uid"
+    printf 'user_primary_gid=%s\n' "$marker_primary_gid"
     printf 'group_created=1\n'
-    printf 'group_gid=450\n'
+    printf 'group_gid=%s\n' "$marker_group_gid"
   } >"$marker_case/var/db/unionc-agent/account-ownership"
+}
+
+write_valid_ownership_marker() {
+  write_ownership_marker_ids "$1" 450 450 450
 }
 
 assert_payload_rejected_without_bootout() {
@@ -649,6 +946,27 @@ while [ -n "$payload_failure" ]; do
       ;;
     newsyslog-mode)
       payload_environment=STAT_NEWSYSLOG_CONFIG=0:0:666
+      next_payload_failure=missing-package-config
+      ;;
+    missing-package-config)
+      rm "$case_dir/usr/local/share/unionc-agent/config.example.json"
+      next_payload_failure=package-config-symlink
+      ;;
+    package-config-symlink)
+      rm "$case_dir/usr/local/share/unionc-agent/config.example.json"
+      ln -s /etc/hosts "$case_dir/usr/local/share/unionc-agent/config.example.json"
+      next_payload_failure=package-config-mode
+      ;;
+    package-config-mode)
+      payload_environment=STAT_PACKAGE_CONFIG=0:0:600
+      next_payload_failure=package-config-version
+      ;;
+    package-config-version)
+      sed 's/@UNIONC_AGENT_PACKAGE_VERSION@/0.0.0/' \
+        "$case_dir/usr/local/share/unionc-agent/config.example.json" \
+        >"$case_dir/config.example.invalid"
+      mv "$case_dir/config.example.invalid" \
+        "$case_dir/usr/local/share/unionc-agent/config.example.json"
       next_payload_failure=missing-uninstall-helper
       ;;
     missing-uninstall-helper)
@@ -713,6 +1031,10 @@ share-parent-acl|ACL_PATH=share-parent
 share-dir-acl|ACL_PATH=share-dir
 library-root-acl|ACL_PATH=library-root
 library-root-tricky-allow|TRICKY_ALLOW_ACL_PATH=library-root
+state-parent-owner|STAT_STATE_PARENT=501:80:755
+state-parent-mode|STAT_STATE_PARENT=0:80:777
+state-parent-acl|ACL_PATH=state-parent
+state-parent-tricky-allow|TRICKY_ALLOW_ACL_PATH=state-parent
 launch-daemon-dir-acl|ACL_PATH=launch-daemon-dir
 log-dir-acl|ACL_PATH=log-dir
 agent-binary-acl|ACL_PATH=agent-binary
@@ -722,6 +1044,7 @@ logrotate-helper-acl|ACL_PATH=logrotate-helper
 agent-plist-acl|ACL_PATH=agent-plist
 logrotate-plist-acl|ACL_PATH=logrotate-plist
 newsyslog-acl|ACL_PATH=newsyslog-config
+package-config-acl|ACL_PATH=package-config
 uninstall-helper-acl|ACL_PATH=uninstall-helper
 EOF
 
@@ -775,6 +1098,10 @@ share-parent-acl|ACL_PATH=share-parent
 share-dir-acl|ACL_PATH=share-dir
 library-root-acl|ACL_PATH=library-root
 library-root-tricky-allow|TRICKY_ALLOW_ACL_PATH=library-root
+state-parent-owner|STAT_STATE_PARENT=501:80:755
+state-parent-mode|STAT_STATE_PARENT=0:80:777
+state-parent-acl|ACL_PATH=state-parent
+state-parent-tricky-allow|TRICKY_ALLOW_ACL_PATH=state-parent
 launch-daemon-dir-acl|ACL_PATH=launch-daemon-dir
 log-dir-acl|ACL_PATH=log-dir
 agent-binary-acl|ACL_PATH=agent-binary
@@ -784,6 +1111,7 @@ logrotate-helper-acl|ACL_PATH=logrotate-helper
 agent-plist-acl|ACL_PATH=agent-plist
 logrotate-plist-acl|ACL_PATH=logrotate-plist
 newsyslog-acl|ACL_PATH=newsyslog-config
+package-config-acl|ACL_PATH=package-config
 uninstall-helper-acl|ACL_PATH=uninstall-helper
 EOF
 
@@ -798,6 +1126,51 @@ make_case "$case_dir"
 run_postinstall "$case_dir" DENY_ACL_PATH=library-root \
   >"$case_dir/postinstall.log" 2>&1 ||
   fail 'postinstall rejected a deny-only ACL on the system Library root'
+[ -f "$case_dir/usr/local/share/unionc-agent/config.example.json" ] ||
+  fail 'successful install lost the root-owned package config template'
+[ -f "$case_dir/Library/Application Support/UnionC Agent/config.json" ] ||
+  fail 'successful install did not initialize the retained config'
+[ ! -e "$case_dir/Library/Application Support/UnionC Agent/config.example.json" ] ||
+  fail 'successful install copied the package template into mutable service state'
+assert_mock_metadata "$case_dir" 0:0:0:644 \
+  "$case_dir/usr/local/share/unionc-agent/config.example.json"
+assert_mock_metadata "$case_dir" 450:450:0:700 \
+  "$case_dir/Library/Application Support/UnionC Agent"
+assert_mock_metadata "$case_dir" 450:450:0:600 \
+  "$case_dir/Library/Application Support/UnionC Agent/config.json"
+assert_mock_metadata "$case_dir" 450:450:0:600 \
+  "$case_dir/var/log/unionc-agent.log"
+assert_mock_no_acl "$case_dir" \
+  "$case_dir/usr/local/share/unionc-agent/config.example.json"
+assert_mock_no_acl "$case_dir" \
+  "$case_dir/Library/Application Support/UnionC Agent"
+assert_mock_no_acl "$case_dir" \
+  "$case_dir/Library/Application Support/UnionC Agent/config.json"
+assert_mock_no_acl "$case_dir" "$case_dir/var/log/unionc-agent.log"
+grep -Fx "0:0 $case_dir/Library/Application Support/UnionC Agent" \
+  "$case_dir/chown-calls" >/dev/null ||
+  fail 'successful install did not lock state as root before mutation'
+grep -Fx "450:450 $case_dir/Library/Application Support/UnionC Agent" \
+  "$case_dir/chown-calls" >/dev/null ||
+  fail 'successful install did not return state ownership to the service account'
+grep -Fx 'disable system/com.unionc.agent' "$case_dir/launch/calls" >/dev/null ||
+  fail 'successful install did not disable Agent autoload during mutable-state validation'
+grep -Fx 'enable system/com.unionc.agent' "$case_dir/launch/calls" >/dev/null ||
+  fail 'successful install did not re-enable Agent after mutable-state validation'
+
+case_dir="$test_root/legacy-state-template-upgrade"
+make_case "$case_dir"
+run_postinstall "$case_dir" >"$case_dir/initial.log" 2>&1 ||
+  fail 'could not establish state for the legacy-template upgrade case'
+cp "$case_dir/usr/local/share/unionc-agent/config.example.json" \
+  "$case_dir/Library/Application Support/UnionC Agent/config.example.json"
+reset_fault_counters "$case_dir"
+run_postinstall "$case_dir" >"$case_dir/reinstall.log" 2>&1 ||
+  fail 'same-version reinstall could not remove the legacy state template safely'
+[ ! -e "$case_dir/Library/Application Support/UnionC Agent/config.example.json" ] ||
+  fail 'same-version reinstall left the obsolete template in mutable state'
+[ -f "$case_dir/usr/local/share/unionc-agent/config.example.json" ] ||
+  fail 'legacy-template cleanup removed the immutable package template'
 
 assert_recoverable() {
   recovery_case="$1"
@@ -892,6 +1265,25 @@ if run_postinstall "$case_dir" >"$case_dir/failure.log" 2>&1; then
   fail 'symlinked ownership marker unexpectedly succeeded'
 fi
 
+for unsafe_marker_case in uid-zero uid-above-range gid-zero gid-above-range; do
+  case_dir="$test_root/unsafe-marker-$unsafe_marker_case"
+  make_case "$case_dir"
+  case "$unsafe_marker_case" in
+    uid-zero) write_ownership_marker_ids "$case_dir" 0 450 450 ;;
+    uid-above-range) write_ownership_marker_ids "$case_dir" 451 450 450 ;;
+    gid-zero) write_ownership_marker_ids "$case_dir" 450 0 0 ;;
+    gid-above-range) write_ownership_marker_ids "$case_dir" 450 451 451 ;;
+  esac
+  if run_postinstall "$case_dir" >"$case_dir/failure.log" 2>&1; then
+    fail "$unsafe_marker_case ownership marker unexpectedly succeeded"
+  fi
+  [ ! -e "$case_dir/pkill-calls" ] ||
+    fail "$unsafe_marker_case ownership marker reached broad process cleanup"
+  if grep -F 'bootout ' "$case_dir/launch/calls" >/dev/null 2>&1; then
+    fail "$unsafe_marker_case ownership marker reached the launchd transaction"
+  fi
+done
+
 case_dir="$test_root/unsafe-state-symlink"
 make_case "$case_dir"
 mkdir -p "$case_dir/foreign-state"
@@ -905,6 +1297,8 @@ fi
 
 case_dir="$test_root/unsafe-state-owner"
 make_case "$case_dir"
+mkdir -p "$case_dir/Library/Application Support/UnionC Agent"
+write_valid_ownership_marker "$case_dir"
 if run_postinstall "$case_dir" STAT_STATE_ROOT=501:20:755 \
   >"$case_dir/failure.log" 2>&1; then
   fail 'foreign state ownership unexpectedly succeeded'
@@ -913,23 +1307,41 @@ fi
   fail 'foreign state ownership was rejected only after creating an account'
 [ ! -s "$case_dir/chown-calls" ] || fail 'foreign state ownership reached chown'
 
-case_dir="$test_root/unsafe-config-symlink"
+case_dir="$test_root/unsafe-unbound-root-state"
 make_case "$case_dir"
-mv "$case_dir/Library/Application Support/UnionC Agent/config.example.json" \
+mkdir -p "$case_dir/Library/Application Support/UnionC Agent"
+if run_postinstall "$case_dir" >"$case_dir/failure.log" 2>&1; then
+  fail 'pre-existing root-owned state without an ownership proof unexpectedly succeeded'
+fi
+[ ! -d "$case_dir/dscl/Groups/_unioncagent" ] ||
+  fail 'unbound root-owned state was rejected only after creating an account'
+[ ! -s "$case_dir/chown-calls" ] || fail 'unbound root-owned state reached chown'
+[ ! -e "$case_dir/var/db/unionc-agent" ] ||
+  fail 'unbound root-owned state mutated ownership bookkeeping before rejection'
+
+case_dir="$test_root/mutable-retained-config-symlink"
+make_case "$case_dir"
+run_postinstall "$case_dir" >"$case_dir/initial.log" 2>&1 ||
+  fail 'could not establish state for the retained-config symlink case'
+reset_fault_counters "$case_dir"
+rm "$case_dir/Library/Application Support/UnionC Agent/config.json"
+cp "$case_dir/usr/local/share/unionc-agent/config.example.json" \
   "$case_dir/foreign-config.json"
 ln -s "$case_dir/foreign-config.json" \
-  "$case_dir/Library/Application Support/UnionC Agent/config.example.json"
+  "$case_dir/Library/Application Support/UnionC Agent/config.json"
 if run_postinstall "$case_dir" >"$case_dir/failure.log" 2>&1; then
-  fail 'symlinked package config unexpectedly succeeded'
+  fail 'symlinked retained config unexpectedly succeeded'
 fi
+[ -f "$case_dir/foreign-config.json" ] ||
+  fail 'symlinked retained config target was modified'
 
 case_dir="$test_root/stale-package-config"
 make_case "$case_dir"
 sed 's/@UNIONC_AGENT_PACKAGE_VERSION@/0.0.0/' \
-  "$case_dir/Library/Application Support/UnionC Agent/config.example.json" \
+  "$case_dir/usr/local/share/unionc-agent/config.example.json" \
   >"$case_dir/config.example.stale"
 mv "$case_dir/config.example.stale" \
-  "$case_dir/Library/Application Support/UnionC Agent/config.example.json"
+  "$case_dir/usr/local/share/unionc-agent/config.example.json"
 if run_postinstall "$case_dir" >"$case_dir/failure.log" 2>&1; then
   fail 'stale package config unexpectedly succeeded'
 fi
@@ -948,7 +1360,7 @@ if run_postinstall "$case_dir" ACL_PATH=log-dir \
   fail 'log directory with an extended ACL unexpectedly succeeded'
 fi
 
-case_dir="$test_root/unsafe-log-symlink"
+case_dir="$test_root/mutable-log-symlink"
 make_case "$case_dir"
 : >"$case_dir/foreign-log"
 ln -s "$case_dir/foreign-log" "$case_dir/var/log/unionc-agent.log"
@@ -956,7 +1368,9 @@ if run_postinstall "$case_dir" >"$case_dir/failure.log" 2>&1; then
   fail 'symlinked log file unexpectedly succeeded'
 fi
 
-# None of the root-validation failures above may have reached account creation.
+# None of the immutable-root validation failures above may have reached account creation.
+# Mutable retained config/log checks intentionally happen later, after the old
+# service has been stopped and its state directory has been locked.
 for unsafe_case in "$test_root"/unsafe-* "$test_root"/stale-package-config; do
   [ ! -d "$unsafe_case/dscl/Groups/_unioncagent" ] ||
     fail "unsafe root case created a service group: $unsafe_case"
@@ -1067,6 +1481,146 @@ run_postinstall "$case_dir" FAIL_LS_OWNERSHIP_MARKER=1 \
 grep -Fx 'user_created=1' "$case_dir/var/db/unionc-agent/account-ownership" >/dev/null ||
   fail 'marker rename commit test did not publish the completed proof'
 
+# A retained config or log is controlled by the service account between
+# installations. ACL checks therefore belong inside the root-owned state lock,
+# after both old jobs are stopped. Reject unexpected ACLs and fail closed when
+# ACL metadata cannot be inspected; never normalize an untrusted leaf in place.
+mutable_fault=state-acl
+while [ -n "$mutable_fault" ]; do
+  case_dir="$test_root/mutable-$mutable_fault"
+  make_case "$case_dir"
+  run_postinstall "$case_dir" >"$case_dir/initial.log" 2>&1 ||
+    fail "could not establish jobs for mutable $mutable_fault"
+  reset_fault_counters "$case_dir"
+  : >"$case_dir/launch/calls"
+  mutable_expect_lock=1
+  case "$mutable_fault" in
+    state-acl)
+      mutable_environment=POST_BOOTOUT_ACL_PATH=state-dir
+      mutable_acl_key=state-dir
+      mutable_expect_lock=0
+      next_mutable_fault=state-acl-inspection
+      ;;
+    state-acl-inspection)
+      mutable_environment=POST_BOOTOUT_FAIL_LS_PATH=state-dir
+      mutable_acl_key=
+      mutable_expect_lock=0
+      next_mutable_fault=config-acl
+      ;;
+    config-acl)
+      mutable_environment=POST_BOOTOUT_ACL_PATH=retained-config
+      mutable_acl_key=retained-config
+      next_mutable_fault=config-acl-inspection
+      ;;
+    config-acl-inspection)
+      mutable_environment=POST_BOOTOUT_FAIL_LS_PATH=retained-config
+      mutable_acl_key=
+      next_mutable_fault=log-acl
+      ;;
+    log-acl)
+      mutable_environment=POST_BOOTOUT_ACL_PATH=log-file
+      mutable_acl_key=log-file
+      next_mutable_fault=log-acl-inspection
+      ;;
+    log-acl-inspection)
+      mutable_environment=POST_BOOTOUT_FAIL_LS_PATH=log-file
+      mutable_acl_key=
+      next_mutable_fault=
+      ;;
+    *) fail "unknown mutable ACL fault: $mutable_fault" ;;
+  esac
+  if run_postinstall "$case_dir" "$mutable_environment" \
+    >"$case_dir/failure.log" 2>&1; then
+    fail "mutable $mutable_fault unexpectedly succeeded"
+  fi
+  grep -Fx 'bootout system/com.unionc.agent.logrotate' \
+    "$case_dir/launch/calls" >/dev/null ||
+    fail "mutable $mutable_fault was checked before stopping the helper"
+  grep -Fx 'bootout system/com.unionc.agent' \
+    "$case_dir/launch/calls" >/dev/null ||
+    fail "mutable $mutable_fault was checked before stopping the Agent"
+  grep -Fx 'disable system/com.unionc.agent' \
+    "$case_dir/launch/calls" >/dev/null ||
+    fail "mutable $mutable_fault did not persist the fail-closed Agent state"
+  if [ "$mutable_expect_lock" -eq 1 ]; then
+    grep -Fx "0:0 $case_dir/Library/Application Support/UnionC Agent" \
+      "$case_dir/chown-calls" >/dev/null ||
+      fail "mutable $mutable_fault was checked before locking state"
+  elif grep -Fx "0:0 $case_dir/Library/Application Support/UnionC Agent" \
+    "$case_dir/chown-calls" >/dev/null 2>&1; then
+    fail "mutable $mutable_fault reached chown before state ACL validation"
+  fi
+  if [ -n "$mutable_acl_key" ] &&
+    [ -e "$case_dir/acl-cleared.$mutable_acl_key" ]; then
+    fail "mutable $mutable_fault normalized an untrusted leaf ACL"
+  fi
+  mutable_fault="$next_mutable_fault"
+done
+
+# Simulate the old Agent replacing config.json immediately after its bootout.
+# The root lock must contain the state directory and reject the new symlink
+# without following it through any privileged config operation.
+case_dir="$test_root/mutable-config-race"
+make_case "$case_dir"
+run_postinstall "$case_dir" >"$case_dir/initial.log" 2>&1 ||
+  fail 'could not establish jobs for the retained-config race case'
+config_path="$case_dir/Library/Application Support/UnionC Agent/config.json"
+config_checksum="$(cksum "$config_path" | awk '{ print $1 ":" $2 }')"
+reset_fault_counters "$case_dir"
+: >"$case_dir/launch/calls"
+if run_postinstall "$case_dir" RACE_CONFIG_SYMLINK_AFTER_AGENT_BOOTOUT=1 \
+  >"$case_dir/failure.log" 2>&1; then
+  fail 'post-bootout retained-config symlink race unexpectedly succeeded'
+fi
+[ -L "$config_path" ] || fail 'retained-config race injection did not occur'
+[ -f "$case_dir/raced-config-target.json" ] ||
+  fail 'retained-config race lost the original config inode'
+raced_checksum="$(cksum "$case_dir/raced-config-target.json" | awk '{ print $1 ":" $2 }')"
+[ "$raced_checksum" = "$config_checksum" ] ||
+  fail 'a privileged operation modified the raced config target'
+grep -Fx 'bootout system/com.unionc.agent' "$case_dir/launch/calls" >/dev/null ||
+  fail 'retained-config race was not injected after Agent bootout'
+grep -Fx -- '-u 450 .' "$case_dir/pgrep-calls" >/dev/null ||
+  fail 'postinstall did not check for lingering service processes after bootout'
+grep -Fx -- '-U 450 .' "$case_dir/pgrep-calls" >/dev/null ||
+  fail 'postinstall did not check the real service UID after bootout'
+grep -Fx "0:0 $case_dir/Library/Application Support/UnionC Agent" \
+  "$case_dir/chown-calls" >/dev/null ||
+  fail 'postinstall did not lock state before rejecting the raced config'
+if grep -F " $config_path" "$case_dir/chown-calls" >/dev/null 2>&1; then
+  fail 'postinstall ran privileged chown on the raced config leaf'
+fi
+
+# A detached old process under the service UID would still be able to mutate
+# state after launchd bootout. Refuse the lock transaction, then kill and verify
+# both effective-UID and real-UID views during the unsafe rollback.
+case_dir="$test_root/mutable-lingering-process"
+make_case "$case_dir"
+run_postinstall "$case_dir" >"$case_dir/initial.log" 2>&1 ||
+  fail 'could not establish jobs for the lingering-process case'
+reset_fault_counters "$case_dir"
+: >"$case_dir/launch/calls"
+if run_postinstall "$case_dir" BOOTOUT_LEAVES_AGENT_PROCESS=1 \
+  >"$case_dir/failure.log" 2>&1; then
+  fail 'postinstall accepted a lingering service process after bootout'
+fi
+grep -Fx -- '-u 450 .' "$case_dir/pgrep-calls" >/dev/null ||
+  fail 'lingering-process case did not inspect the service UID'
+grep -Fx -- '-KILL -u 450 .' "$case_dir/pkill-calls" >/dev/null ||
+  fail 'unsafe rollback did not kill the old effective-UID process'
+grep -Fx -- '-KILL -U 450 .' "$case_dir/pkill-calls" >/dev/null ||
+  fail 'unsafe rollback did not kill the old real-UID process'
+[ ! -e "$case_dir/launch/process-u.com.unionc.agent" ] &&
+  [ ! -e "$case_dir/launch/process-U.com.unionc.agent" ] ||
+  fail 'unsafe rollback left an old service-UID process alive'
+[ -e "$case_dir/launch/disabled.com.unionc.agent" ] &&
+  [ -e "$case_dir/launch/disabled.com.unionc.agent.logrotate" ] ||
+  fail 'unsafe rollback did not leave both labels disabled'
+if grep -Fx "0:0 $case_dir/Library/Application Support/UnionC Agent" \
+  "$case_dir/chown-calls" >/dev/null 2>&1; then
+  fail 'postinstall locked state while a service process could still mutate it'
+fi
+
 # If the helper cannot be registered, the Agent registered immediately before
 # it must not survive a failed package transaction.
 case_dir="$test_root/bootstrap-2"
@@ -1084,10 +1638,94 @@ grep -Fx 'bootout system/com.unionc.agent' "$case_dir/launch/calls" >/dev/null |
   fail "a launchd failure removed fully committed service accounts"
 assert_recoverable "$case_dir"
 
+# A bootstrap failure combined with a failed first rollback bootout must still
+# disable KeepAlive first, force-stop the Agent, retry bootout, and remove both
+# effective-UID and real-UID residual processes before returning failure.
+case_dir="$test_root/bootstrap-rollback-bootout-failure"
+make_case "$case_dir"
+if run_postinstall "$case_dir" FAIL_BOOTSTRAP_AT=2 FAIL_BOOTOUT_AT=1 \
+  BOOTOUT_LEAVES_AGENT_PROCESS=1 LAUNCHCTL_KILL_LEAVES_AGENT_PROCESS=1 \
+  >"$case_dir/failure.log" 2>&1; then
+  fail 'combined bootstrap/rollback-bootout failure unexpectedly succeeded'
+fi
+[ ! -e "$case_dir/launch/loaded.com.unionc.agent" ] ||
+  fail 'rollback bootout retry left the Agent label loaded'
+[ ! -e "$case_dir/launch/loaded.com.unionc.agent.logrotate" ] ||
+  fail 'combined rollback failure left the helper label loaded'
+[ ! -e "$case_dir/launch/process-u.com.unionc.agent" ] &&
+  [ ! -e "$case_dir/launch/process-U.com.unionc.agent" ] ||
+  fail 'combined rollback failure left a service-UID process running'
+[ -e "$case_dir/launch/disabled.com.unionc.agent" ] &&
+  [ -e "$case_dir/launch/disabled.com.unionc.agent.logrotate" ] ||
+  fail 'combined rollback failure did not persistently disable both labels'
+assert_calls_in_order_after "$case_dir/launch/calls" \
+  "bootstrap system $case_dir/Library/LaunchDaemons/com.unionc.agent.logrotate.plist" \
+  'disable system/com.unionc.agent.logrotate' \
+  'disable system/com.unionc.agent' \
+  'print system/com.unionc.agent.logrotate' \
+  'print system/com.unionc.agent' \
+  'bootout system/com.unionc.agent' \
+  'print system/com.unionc.agent' \
+  'kill SIGKILL system/com.unionc.agent' \
+  'bootout system/com.unionc.agent' \
+  'print system/com.unionc.agent'
+grep -Fx -- '-KILL -u 450 .' "$case_dir/pkill-calls" >/dev/null ||
+  fail 'rollback did not kill the effective-UID residual process'
+grep -Fx -- '-KILL -U 450 .' "$case_dir/pkill-calls" >/dev/null ||
+  fail 'rollback did not kill the real-UID residual process'
+
+# A nonzero print caused by launchd/RPC inspection failure is not proof that a
+# label is absent. Even if a later retry confirms absence, report the rollback
+# as incomplete rather than silently treating the failed inspection as success.
+case_dir="$test_root/bootstrap-rollback-print-failure"
+make_case "$case_dir"
+if run_postinstall "$case_dir" FAIL_BOOTSTRAP_AT=2 \
+  FAIL_PRINT_AFTER_AGENT_BOOTOUT=1 >"$case_dir/failure.log" 2>&1; then
+  fail 'rollback launchd inspection failure unexpectedly succeeded'
+fi
+grep -F 'Could not inspect system/com.unionc.agent (launchctl status 79)' \
+  "$case_dir/failure.log" >/dev/null ||
+  fail 'rollback launchd inspection failure was mistaken for an absent label'
+grep -F 'UnionC Agent rollback cleanup is incomplete' "$case_dir/failure.log" >/dev/null ||
+  fail 'rollback launchd inspection failure was not marked incomplete'
+[ ! -e "$case_dir/launch/loaded.com.unionc.agent" ] ||
+  fail 'inspection-failure retry left the Agent label loaded'
+[ -e "$case_dir/launch/disabled.com.unionc.agent" ] &&
+  [ -e "$case_dir/launch/disabled.com.unionc.agent.logrotate" ] ||
+  fail 'inspection-failure rollback did not leave both labels disabled'
+
+# If even repeated pkill cannot remove a residual process, rollback must say
+# that cleanup is incomplete instead of claiming the failed cutover is closed.
+case_dir="$test_root/bootstrap-rollback-residual-process"
+make_case "$case_dir"
+if run_postinstall "$case_dir" FAIL_BOOTSTRAP_AT=2 FAIL_BOOTOUT_AT=1 \
+  BOOTOUT_LEAVES_AGENT_PROCESS=1 LAUNCHCTL_KILL_LEAVES_AGENT_PROCESS=1 \
+  PKILL_LEAVES_PROCESS=1 >"$case_dir/failure.log" 2>&1; then
+  fail 'unkillable rollback process case unexpectedly succeeded'
+fi
+grep -F 'UnionC Agent rollback cleanup is incomplete' "$case_dir/failure.log" >/dev/null ||
+  fail 'unkillable rollback process was not reported as incomplete cleanup'
+[ -e "$case_dir/launch/process-u.com.unionc.agent" ] &&
+  [ -e "$case_dir/launch/process-U.com.unionc.agent" ] ||
+  fail 'unkillable rollback-process fixture did not retain both UID views'
+
+# Persistent disable errors are also incomplete cleanup even if forced bootout
+# removes the current process: reboot safety has not been established.
+case_dir="$test_root/bootstrap-rollback-disable-failure"
+make_case "$case_dir"
+if run_postinstall "$case_dir" FAIL_BOOTSTRAP_AT=2 FAIL_DISABLE_FROM=3 \
+  >"$case_dir/failure.log" 2>&1; then
+  fail 'rollback disable failure unexpectedly succeeded'
+fi
+grep -F 'UnionC Agent rollback cleanup is incomplete' "$case_dir/failure.log" >/dev/null ||
+  fail 'rollback disable failure was not reported as incomplete cleanup'
+[ ! -e "$case_dir/launch/loaded.com.unionc.agent" ] ||
+  fail 'rollback disable failure left the current Agent loaded'
+
 # preinstall deliberately leaves the previous jobs running. postinstall stops
-# them only after all validation succeeds; a later bootstrap failure removes
-# half-registered jobs and re-registers the validated replacement payload for
-# the labels that had been loaded before installation.
+# them only after immutable validation succeeds. Once the replacement Agent
+# has been allowed to access mutable state, a partial bootstrap failure is
+# fail-closed: half-registered jobs are removed and prior jobs stay stopped.
 case_dir="$test_root/reinstall-postinstall-failure"
 make_case "$case_dir"
 run_postinstall "$case_dir" >"$case_dir/initial.log" 2>&1 ||
@@ -1107,10 +1745,10 @@ fi
 # A replacement that fails payload validation must likewise leave both old
 # jobs untouched because postinstall has not reached its stop transaction.
 sed 's/@UNIONC_AGENT_PACKAGE_VERSION@/0.0.0/' \
-  "$case_dir/Library/Application Support/UnionC Agent/config.example.json" \
+  "$case_dir/usr/local/share/unionc-agent/config.example.json" \
   >"$case_dir/config.example.invalid"
 mv "$case_dir/config.example.invalid" \
-  "$case_dir/Library/Application Support/UnionC Agent/config.example.json"
+  "$case_dir/usr/local/share/unionc-agent/config.example.json"
 if run_postinstall "$case_dir" >"$case_dir/validation-failure.log" 2>&1; then
   fail 'replacement with an invalid package config unexpectedly succeeded'
 fi
@@ -1122,10 +1760,10 @@ if grep -F 'bootout ' "$case_dir/launch/calls" >/dev/null; then
   fail 'payload validation failure reached the launchd stop transaction'
 fi
 sed 's/0.0.0/@UNIONC_AGENT_PACKAGE_VERSION@/' \
-  "$case_dir/Library/Application Support/UnionC Agent/config.example.json" \
+  "$case_dir/usr/local/share/unionc-agent/config.example.json" \
   >"$case_dir/config.example.restored"
 mv "$case_dir/config.example.restored" \
-  "$case_dir/Library/Application Support/UnionC Agent/config.example.json"
+  "$case_dir/usr/local/share/unionc-agent/config.example.json"
 
 reset_fault_counters "$case_dir"
 : >"$case_dir/launch/calls"
@@ -1133,10 +1771,57 @@ if run_postinstall "$case_dir" FAIL_BOOTSTRAP_AT=2 \
   >"$case_dir/postinstall-failure.log" 2>&1; then
   fail 'replacement helper bootstrap failure unexpectedly succeeded'
 fi
-[ -e "$case_dir/launch/loaded.com.unionc.agent" ] ||
-  fail 'failed replacement did not re-register the Agent label'
-[ -e "$case_dir/launch/loaded.com.unionc.agent.logrotate" ] ||
-  fail 'failed replacement did not re-register the helper label'
+[ ! -e "$case_dir/launch/loaded.com.unionc.agent" ] ||
+  fail 'failed replacement restarted the Agent without revalidating mutable state'
+[ ! -e "$case_dir/launch/loaded.com.unionc.agent.logrotate" ] ||
+  fail 'failed replacement restarted the helper without revalidating mutable state'
+grep -Fx 'disable system/com.unionc.agent' "$case_dir/launch/calls" >/dev/null ||
+  fail 'failed replacement did not persistently disable the Agent label'
+
+# The rotation helper may have the Agent temporarily stopped and restore it
+# from its exit trap. postinstall must decide whether to stop Agent only after
+# helper bootout has completed, not from the stale pre-helper snapshot.
+case_dir="$test_root/reinstall-helper-restores-agent"
+make_case "$case_dir"
+run_postinstall "$case_dir" >"$case_dir/initial.log" 2>&1 ||
+  fail 'could not establish jobs for the helper restore race case'
+reset_fault_counters "$case_dir"
+: >"$case_dir/launch/calls"
+rm -f "$case_dir/launch/loaded.com.unionc.agent"
+run_postinstall "$case_dir" HELPER_RESTORES_AGENT_ON_EXIT=1 \
+  >"$case_dir/reinstall.log" 2>&1 ||
+  fail 'postinstall did not contain the helper Agent-restore race'
+grep -Fx 'bootout system/com.unionc.agent.logrotate' "$case_dir/launch/calls" >/dev/null ||
+  fail 'helper restore race did not stop the helper'
+grep -Fx 'bootout system/com.unionc.agent' "$case_dir/launch/calls" >/dev/null ||
+  fail 'helper restore race left the restored Agent running during state mutation'
+[ -e "$case_dir/launch/loaded.com.unionc.agent" ] &&
+  [ -e "$case_dir/launch/loaded.com.unionc.agent.logrotate" ] ||
+  fail 'helper restore race did not register the validated replacement jobs'
+
+# A launchd inspection error after normal bootout is not an absent-label
+# result. Fail before locking mutable state, then restore only from later
+# explicit absent results in the safe rollback path.
+case_dir="$test_root/reinstall-post-bootout-print-failure"
+make_case "$case_dir"
+run_postinstall "$case_dir" >"$case_dir/initial.log" 2>&1 ||
+  fail 'could not establish jobs for the normal print-failure case'
+reset_fault_counters "$case_dir"
+: >"$case_dir/launch/calls"
+if run_postinstall "$case_dir" FAIL_PRINT_AFTER_AGENT_BOOTOUT=1 \
+  >"$case_dir/failure.log" 2>&1; then
+  fail 'normal cutover launchd inspection failure unexpectedly succeeded'
+fi
+grep -F 'Could not inspect system/com.unionc.agent (launchctl status 79)' \
+  "$case_dir/failure.log" >/dev/null ||
+  fail 'normal cutover inspection error was mistaken for an absent Agent'
+if grep -Fx "0:0 $case_dir/Library/Application Support/UnionC Agent" \
+  "$case_dir/chown-calls" >/dev/null 2>&1; then
+  fail 'normal cutover inspection failure reached the mutable state lock'
+fi
+[ -e "$case_dir/launch/loaded.com.unionc.agent" ] &&
+  [ -e "$case_dir/launch/loaded.com.unionc.agent.logrotate" ] ||
+  fail 'safe rollback did not restore jobs after the cutover inspection failed'
 
 # The stop phase inside postinstall is also failure-atomic: if stopping the
 # second job fails, the validated helper stopped first is re-registered.

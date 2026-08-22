@@ -73,26 +73,34 @@ sudo tail -n 100 /var/log/unionc-agent.log
 `doctor` is read-only by default. Use `doctor --delivery` only when an explicit end-to-end
 delivery attempt (including processing queued reports) is intended.
 
-Reinstalling the current 0.3.2 package leaves the old jobs running while Installer replaces the
-payload. Before any `bootout`, `postinstall` verifies the new executable and helper types,
-root-owned modes and syntax, the executable version, both plists, and the exact command symlink,
-then validates configuration, identity and state. It briefly stops both jobs and transactionally
-registers the validated same-version replacement. A failure before that point leaves the old
-processes running on their already-open executable vnodes. If stopping or registering fails after
-the cutover begins, the trap removes half-registered jobs and re-registers only that already
-validated new payload for whichever jobs were loaded before installation; it cannot restore files
-that Installer has replaced. The reinstall preserves configuration/identity/spool. A different
-package version is not migrated: purge 0.3.2 state before installing another version.
+Reinstalling the current 0.3.2 package leaves the old jobs running while Installer replaces only
+the root-owned payload. The packaged template lives at
+`/usr/local/share/unionc-agent/config.example.json`; the pkg payload never extracts into the
+service-writable state directory. Before any `bootout`, `postinstall` verifies the immutable
+payload, ownership proof and preliminary state metadata. It then stops both jobs, rejects any
+remaining process with the service UID, temporarily locks the state directory to root, and repeats
+all config/log type, owner, mode, ACL and version checks before making pathname-based changes.
+Fresh config is published from a same-directory exclusive temporary file without replacing an
+existing path. State is returned to the service UID only after final verification, and only then
+are the validated jobs registered. A failure before cutover leaves the old processes running; a
+failure afterward restarts prior jobs only when mutable state has been restored and revalidated.
+Otherwise it deliberately leaves both launchd labels stopped and persistently disabled so a
+reboot cannot load untrusted state; a successful rerun re-enables them. Rollback verifies both
+the labels and effective/real service-UID processes after forced cleanup, and reports an explicit
+incomplete-cleanup error if macOS refuses either operation. Reinstall preserves
+configuration/identity/spool.
+A different package version is not migrated: purge 0.3.2 state before installing another version.
 
 Because launchd executes payloads below `/usr/local`, `preinstall` checks each listed component
 of the root payload path chain, including `/usr` and `/Library`, before Installer extracts the
 package. The shared `/usr/local`, `libexec`, `bin`, and `share` directories must be real
 `root:wheel` directories,
 root-writable and service-traversable, but not group- or other-writable. The package-private share,
-LaunchDaemon and log directories use their exact package modes. `/usr` and `/Library` may retain
-system deny-only ACLs; an ACL containing any grant is rejected. The remaining listed directories,
-the command link, and pre-existing root payload files may not have an extended ACL. `postinstall`
-repeats the checks on the extracted payload before stopping a running Agent.
+LaunchDaemon and log directories use their exact package modes. `/usr`, `/Library`, and the
+root-owned `/Library/Application Support` directory may retain system deny-only ACLs; an ACL
+containing any grant is rejected. The remaining listed directories, the command link, and
+pre-existing root payload files may not have an extended ACL. `postinstall` repeats the checks on
+the extracted payload before stopping a running Agent.
 
 This fail-closed rule deliberately rejects a user-owned `/usr/local`, including the traditional
 Intel Homebrew layout. Do not recursively change a working Homebrew tree merely to satisfy the
