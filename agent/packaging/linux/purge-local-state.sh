@@ -177,6 +177,7 @@ managed_user_is_still_expected() {
   [ "$user_uid" = "$recorded_user_uid" ] &&
     [ "$user_gid" = "$recorded_user_primary_gid" ] &&
     [ "$user_gid" = "$group_gid" ] &&
+    [ "$group_gid" = "$recorded_group_gid" ] &&
     [ "$user_home" = /var/lib/unionc-agent ] &&
     { [ "$user_shell" = /usr/sbin/nologin ] || [ "$user_shell" = /sbin/nologin ]; }
 }

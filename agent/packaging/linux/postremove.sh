@@ -197,13 +197,9 @@ managed_user_is_still_expected() {
   [ "$user_uid" = "$recorded_user_uid" ] &&
     [ "$user_gid" = "$recorded_user_primary_gid" ] &&
     [ "$user_gid" = "$group_gid" ] &&
+    [ "$group_gid" = "$recorded_group_gid" ] &&
     [ "$user_home" = /var/lib/unionc-agent ] &&
     { [ "$user_shell" = /usr/sbin/nologin ] || [ "$user_shell" = /sbin/nologin ]; }
-}
-
-managed_restore_identity_is_still_expected() {
-  managed_user_is_still_expected &&
-    [ "$(printf '%s\n' "$group_entry" | cut -d: -f3)" = "$recorded_group_gid" ]
 }
 
 # Return 0 when the package-created group is referenced, 1 when it is unused,
@@ -429,7 +425,7 @@ restore_rpm_config() {
     echo "unionc-agent postremove: refusing RPM config restore without a trusted managed-group marker" >&2
     return 1
   }
-  lookup_user_entry && lookup_group_entry && managed_restore_identity_is_still_expected || {
+  lookup_user_entry && lookup_group_entry && managed_user_is_still_expected || {
     echo "unionc-agent postremove: refusing RPM config restore for a changed service account identity" >&2
     return 1
   }

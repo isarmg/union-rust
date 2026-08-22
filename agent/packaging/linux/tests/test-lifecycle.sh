@@ -932,6 +932,30 @@ assert_exists "$test_root/var/lib/unionc-agent-package/managed-group"
 assert_absent "$test_root/user.deleted"
 assert_absent "$test_root/group.deleted"
 
+# Both ownership markers must bind the same live primary group before userdel.
+# A syntactically valid group marker with a different GID cannot authorize a
+# partial user deletion.
+reset_safe_reinstall_state
+write_account_markers 998 998 997
+if "$test_root/postremove.sh" purge >"$test_root/purge-mismatched-group-binding-postremove.log" 2>&1; then
+  fail 'postremove purge accepted ownership markers bound to different groups'
+fi
+assert_absent "$test_root/user.deleted"
+assert_absent "$test_root/group.deleted"
+assert_exists "$test_root/var/lib/unionc-agent-package/managed-user"
+assert_exists "$test_root/var/lib/unionc-agent-package/managed-group"
+
+reset_safe_reinstall_state
+write_account_markers 998 998 997
+if "$test_root/purge-local-state.sh" --yes \
+  >"$test_root/purge-mismatched-group-binding-helper.log" 2>&1; then
+  fail 'purge helper accepted ownership markers bound to different groups'
+fi
+assert_absent "$test_root/user.deleted"
+assert_absent "$test_root/group.deleted"
+assert_exists "$test_root/var/lib/unionc-agent-package/managed-user"
+assert_exists "$test_root/var/lib/unionc-agent-package/managed-group"
+
 # Marker absence is safe only after the corresponding account is known gone.
 # This permits partial cleanup retries and makes a completed purge idempotent.
 reset_safe_reinstall_state
