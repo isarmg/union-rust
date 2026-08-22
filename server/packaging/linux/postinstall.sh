@@ -8,7 +8,8 @@ service_name=unionc.service
 package_version=0.3.2
 server_binary=/usr/bin/unionc
 data_dir=/var/lib/unionc
-package_config=/etc/unionc/unionc.env
+config_dir=/etc/unionc
+package_config="$config_dir/unionc.env"
 account_state_dir=/var/lib/unionc-package
 managed_user_marker="$account_state_dir/managed-user"
 managed_group_marker="$account_state_dir/managed-group"
@@ -34,34 +35,58 @@ done
 
 read_path_metadata() {
   metadata_path=$1
-  path_metadata=$(stat -c '%u:%g:%a' -- "$metadata_path") ||
+  path_metadata=$(stat -c '%u:%g:%a:%h' -- "$metadata_path") ||
     die "cannot read ownership and permissions for $metadata_path"
   path_uid=${path_metadata%%:*}
   path_metadata_remainder=${path_metadata#*:}
   path_gid=${path_metadata_remainder%%:*}
-  path_mode=${path_metadata_remainder#*:}
-  case "$path_uid:$path_gid:$path_mode" in
+  path_metadata_remainder=${path_metadata_remainder#*:}
+  path_mode=${path_metadata_remainder%%:*}
+  path_nlink=${path_metadata_remainder#*:}
+  case "$path_uid:$path_gid:$path_mode:$path_nlink" in
     *[!0-9:]*) die "$metadata_path has invalid ownership or permission metadata" ;;
     :*|*::*|*:) die "$metadata_path has incomplete ownership or permission metadata" ;;
   esac
+  case "$path_mode" in
+    ''|*[!0-7]*) die "$metadata_path has an invalid permission mode" ;;
+  esac
 }
 
-# nFPM lays down this config before invoking postinstall. Its exact marker
-# distinguishes the current package payload from a retained or unrelated file
-# before this hook creates an account, marker directory, or data directory.
+require_current_package_config() {
+  package_config_marker=$(
+    awk -v expected="UNIONC_PACKAGE_VERSION=$package_version" '
+      /^[[:space:]]*(export[[:space:]]+)?UNIONC_PACKAGE_VERSION[[:space:]]*=/ {
+        seen += 1
+        if ($0 == expected) valid += 1
+      }
+      END { printf "%d:%d", seen, valid }
+    ' "$package_config"
+  ) || die "cannot inspect $package_config"
+  [ "$package_config_marker" = 1:1 ] ||
+    die "$package_config must contain exactly one current UNIONC_PACKAGE_VERSION=$package_version marker"
+}
+
+# nFPM lays down this config before invoking postinstall. Validate the protected
+# parent and file metadata before reading it or creating any account. A retained
+# config may still use the numeric group recorded by this exact package version;
+# that relationship is checked after the protected markers have been loaded.
+[ -d "$config_dir" ] && [ ! -L "$config_dir" ] ||
+  die "$config_dir is not a safe current-package config directory"
+read_path_metadata "$config_dir"
+[ "$path_uid:$path_gid" = 0:0 ] ||
+  die "$config_dir must be owned by root:root"
+[ "$((0$path_mode & 022))" -eq 0 ] ||
+  die "$config_dir must not be writable by group or other users"
+initial_config_dir_metadata="$path_uid:$path_gid:$path_mode"
+
 [ -f "$package_config" ] && [ ! -L "$package_config" ] ||
   die "$package_config is not a safe current-package config file"
-package_config_marker=$(
-  awk -v expected="UNIONC_PACKAGE_VERSION=$package_version" '
-    /^[[:space:]]*(export[[:space:]]+)?UNIONC_PACKAGE_VERSION[[:space:]]*=/ {
-      seen += 1
-      if ($0 == expected) valid += 1
-    }
-    END { printf "%d:%d", seen, valid }
-  ' "$package_config"
-)
-[ "$package_config_marker" = 1:1 ] ||
-  die "$package_config must contain exactly one current UNIONC_PACKAGE_VERSION=$package_version marker"
+read_path_metadata "$package_config"
+[ "$path_uid:$path_mode:$path_nlink" = 0:640:1 ] ||
+  die "$package_config must be root-owned with permissions 0640 and one hard link"
+initial_package_config_gid=$path_gid
+initial_package_config_metadata="$path_uid:$path_gid:$path_mode:$path_nlink"
+require_current_package_config
 
 load_group_marker() {
   marker_format_seen=0
@@ -199,6 +224,12 @@ read_path_metadata "$account_state_dir"
   die "package account state directory was not created as root:root with permissions 0700"
 inspect_existing_markers
 
+if [ "$initial_package_config_gid" != 0 ]; then
+  [ "$group_marker_state" = valid ] &&
+    [ "$initial_package_config_gid" = "$recorded_group_gid" ] ||
+    die "$package_config has no current package-managed group ownership"
+fi
+
 data_dir_preexisting=0
 if [ -e "$data_dir" ] || [ -L "$data_dir" ]; then
   [ -d "$data_dir" ] && [ ! -L "$data_dir" ] ||
@@ -279,8 +310,24 @@ else
   install -d -m 0700 -o unionc -g unionc "$data_dir"
 fi
 
-chown root:unionc "$package_config"
+# The trusted parent prevents an unprivileged replacement, but repeat every
+# path, marker, and metadata check before the root chown/chmod commit point.
+[ -d "$config_dir" ] && [ ! -L "$config_dir" ] ||
+  die "$config_dir was redirected during postinstall"
+read_path_metadata "$config_dir"
+[ "$path_uid:$path_gid:$path_mode" = "$initial_config_dir_metadata" ] ||
+  die "$config_dir metadata changed during postinstall"
+[ -f "$package_config" ] && [ ! -L "$package_config" ] ||
+  die "$package_config was redirected during postinstall"
+require_current_package_config
+read_path_metadata "$package_config"
+[ "$path_uid:$path_gid:$path_mode:$path_nlink" = "$initial_package_config_metadata" ] ||
+  die "$package_config metadata changed during postinstall"
+chown "root:$user_gid" "$package_config"
 chmod 0640 "$package_config"
+read_path_metadata "$package_config"
+[ "$path_uid:$path_gid:$path_mode:$path_nlink" = "0:$user_gid:640:1" ] ||
+  die "$package_config could not be secured for the recorded UnionC group"
 
 if [ -d /run/systemd/system ]; then
   command -v systemctl >/dev/null 2>&1 || die "systemd is running but systemctl is unavailable"

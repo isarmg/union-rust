@@ -36,6 +36,9 @@ getent passwd unionc >/dev/null
 getent group unionc >/dev/null
 test "$(stat -c '%a:%U:%G' /var/lib/unionc)" = "700:unionc:unionc"
 test "$(stat -c '%a:%U:%G' /var/lib/unionc-package)" = "700:root:root"
+test "$(stat -c '%a:%U:%G' /etc/unionc)" = "755:root:root"
+test "$(stat -c '%a:%U:%G:%h' /etc/unionc/unionc.env)" = \
+  "640:root:unionc:1"
 for marker in managed-user managed-group; do
   marker_path="/var/lib/unionc-package/$marker"
   test "$(stat -c '%a:%U:%G' "$marker_path")" = "600:root:root"

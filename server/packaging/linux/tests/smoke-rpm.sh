@@ -37,6 +37,9 @@ docker run --rm \
     getent passwd unionc >/dev/null
     test "$(stat -c "%a:%U:%G" /var/lib/unionc)" = "700:unionc:unionc"
     test "$(stat -c "%a:%U:%G" /var/lib/unionc-package)" = "700:root:root"
+    test "$(stat -c "%a:%U:%G" /etc/unionc)" = "755:root:root"
+    test "$(stat -c "%a:%U:%G:%h" /etc/unionc/unionc.env)" = \
+      "640:root:unionc:1"
     package_version="$(rpm -q --qf "%{VERSION}" unionc)"
     grep -Fx "UNIONC_PACKAGE_VERSION=$package_version" /etc/unionc/unionc.env
     test "$(sed -n "s/^format=//p" /var/lib/unionc-package/managed-user)" = \

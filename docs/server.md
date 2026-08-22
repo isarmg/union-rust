@@ -109,7 +109,9 @@ unit 已包含一组 systemd 硬化选项，并显式设置 `UNIONC_DATA_DIR` �
 时会 fail closed，不执行旧安装接管。marker 目录必须保持 `root:root/0700`，两个 marker
 文件必须保持 `root:root/0600`；安装钩子不会先修复不可信元数据再读取其中内容。root 生命周期
 脚本会覆盖调用者传入的 `PATH`，版本校验也固定调用包内 `/usr/bin/unionc`，不能由同名外部
-程序替换。普通卸载保留数据与 marker，仅支持同一 0.3.2 重装。
+程序替换。`/etc/unionc` 必须是不可由非 root 写入的真实目录；`unionc.env` 必须是 root 拥有、
+0640 且没有其他硬链接的真实文件，其组只能是 root 或当前 marker 记录的 `unionc` GID。普通
+卸载保留数据与 marker，仅支持同一 0.3.2 重装。
 
 ### 正式发布制品与门禁
 
