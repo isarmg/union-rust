@@ -1,9 +1,16 @@
+struct AuthenticatedPassword {
+    username: String,
+    password_hash: String,
+    rate_limit_key: String,
+    client: Option<std::net::IpAddr>,
+}
+
 async fn authenticate(
     state: &AppState,
     username: &str,
     password: String,
     client: Option<std::net::IpAddr>,
-) -> AppResult<String> {
+) -> AppResult<AuthenticatedPassword> {
     let username = validate_username(username)?;
     validate_bcrypt_input(&password, "密码")?;
     let key = username.to_ascii_lowercase();
@@ -30,26 +37,22 @@ async fn authenticate(
     // 选择放宽而不是收紧，是因为用户名在这里只是账号标识、不承担任何熵：口令强度
     // 完全由密码提供。让大小写敏感把一个纯粹的输入习惯问题变成认证失败，没有收益。
     let known_user = username.eq_ignore_ascii_case(&config.admin_username);
-    let hash = if known_user {
+    let password_hash = if known_user {
         config.admin_password_hash.clone()
     } else {
         (*state.auth.dummy_password_hash).clone()
     };
     let configured_username = config.admin_username.clone();
     drop(config);
-    let valid = verify_bcrypt(state, password, hash).await?;
+    let valid = verify_bcrypt(state, password, password_hash.clone()).await?;
 
     match (valid, known_user) {
-        (true, true) => {
-            // 成功登录释放该来源的配额，避免管理员多次手误后被自己的桶挡住。
-            // 只清与本次来源相关的两个桶——全局桶是资源兜底，不该被一次成功登录重置。
-            if let Some(address) = client {
-                let mut attempts = state.auth.login_attempts.lock().await;
-                attempts.by_ip.remove(&address);
-                attempts.by_ip_username.remove(&(address, key.clone()));
-            }
-            Ok(configured_username)
-        }
+        (true, true) => Ok(AuthenticatedPassword {
+            username: configured_username,
+            password_hash,
+            rate_limit_key: key,
+            client,
+        }),
         _ => Err(AppError::Unauthorized),
     }
 }

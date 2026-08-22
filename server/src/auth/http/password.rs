@@ -103,6 +103,7 @@ async fn replace_password_with<P, Fut>(
     state: &AppState,
     current_password: String,
     new_password: String,
+    retained_session: &str,
     persist: P,
 ) -> AppResult<()>
 where
@@ -134,7 +135,14 @@ where
     let mut updated_config = current_config;
     updated_config.admin_password_hash = hash_bcrypt(state, new_password).await?;
     let persisted_config = persist(updated_config).await.map_err(AppError::Anyhow)?;
+    let username = persisted_config.admin_username.clone();
+
+    // Publication and revocation form one transition with login finalization. A login that
+    // verified the old hash either inserts first and is then revoked here, or observes the new
+    // hash and is rejected before inserting. Disk I/O stays outside this short critical section.
+    let _transition = state.auth.password_session_transition.lock().await;
     *state.auth.local_config.write().await = persisted_config;
+    revoke_user_sessions_except(state, &username, retained_session).await;
     Ok(())
 }
 
@@ -147,8 +155,38 @@ pub(crate) async fn login(
     Json(payload): Json<LoginRequest>,
 ) -> AppResult<Response> {
     let client = require_reverse_proxy_contract(&state, &headers, "登录接口")?;
-    let user = authenticate(&state, &payload.username, payload.password, client).await?;
-    create_login_response(&state, user).await
+    let authenticated = authenticate(&state, &payload.username, payload.password, client).await?;
+    finalize_login(&state, authenticated).await
+}
+
+async fn finalize_login(
+    state: &AppState,
+    authenticated: AuthenticatedPassword,
+) -> AppResult<Response> {
+    // bcrypt intentionally ran outside this lock. Recheck the exact credential snapshot while
+    // holding the transition lock so a password change cannot publish/revoke between this check
+    // and insertion of the new session.
+    let transition = state.auth.password_session_transition.lock().await;
+    let config = state.auth.local_config.read().await;
+    let unchanged = config.admin_username == authenticated.username
+        && config.admin_password_hash == authenticated.password_hash;
+    drop(config);
+    if !unchanged {
+        return Err(AppError::Unauthorized);
+    }
+
+    let response = create_login_response(state, authenticated.username).await?;
+    drop(transition);
+    // 成功登录释放该来源的配额，避免管理员多次手误后被自己的桶挡住。
+    // 只清与本次来源相关的两个桶——全局桶是资源兜底，不该被一次成功登录重置。
+    if let Some(address) = authenticated.client {
+        let mut attempts = state.auth.login_attempts.lock().await;
+        attempts.by_ip.remove(&address);
+        attempts
+            .by_ip_username
+            .remove(&(address, authenticated.rate_limit_key));
+    }
+    Ok(response)
 }
 
 async fn create_login_response(state: &AppState, username: String) -> AppResult<Response> {

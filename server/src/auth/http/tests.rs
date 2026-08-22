@@ -24,6 +24,7 @@ mod tests {
             &state,
             "old-password-value".to_string(),
             "replacement-password-value".to_string(),
+            "",
             |_config| async { Err(anyhow::anyhow!("simulated fsync failure")) },
         )
         .await;
@@ -50,6 +51,7 @@ mod tests {
                     &state,
                     "old-password-value".to_string(),
                     new_password.to_string(),
+                    "",
                     move |config| async move {
                         commits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         tokio::task::yield_now().await;
@@ -79,6 +81,38 @@ mod tests {
         let first_won = bcrypt::verify("first-replacement-password", &final_hash).unwrap();
         let second_won = bcrypt::verify("second-replacement-password", &final_hash).unwrap();
         assert_ne!(first_won, second_won);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn login_verified_with_old_password_cannot_outlive_password_change() {
+        let state = password_state(bcrypt::hash("old-password-value", 4).unwrap());
+        let authenticated = authenticate(
+            &state,
+            "admin",
+            "old-password-value".to_string(),
+            None,
+        )
+        .await
+        .expect("the old password should verify before the change");
+
+        replace_password_with(
+            &state,
+            "old-password-value".to_string(),
+            "replacement-password-value".to_string(),
+            "",
+            |config| async move { Ok(config) },
+        )
+        .await
+        .expect("password replacement should succeed");
+
+        assert!(matches!(
+            finalize_login(&state, authenticated).await,
+            Err(AppError::Unauthorized)
+        ));
+        assert!(
+            state.auth.sessions.read().await.is_empty(),
+            "a login authenticated against the superseded hash must not create a session"
+        );
     }
 
     #[tokio::test]

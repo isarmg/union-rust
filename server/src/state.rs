@@ -218,6 +218,9 @@ pub struct AuthenticationState {
     pub bcrypt_limit: Arc<tokio::sync::Semaphore>,
     /// Serializes the complete verify -> hash -> persist -> publish password change.
     pub password_change_gate: Arc<tokio::sync::Semaphore>,
+    /// Linearizes password publication/session revocation with successful login insertion.
+    /// Expensive bcrypt and disk I/O deliberately happen outside this short critical section.
+    pub password_session_transition: Arc<Mutex<()>>,
     pub dummy_password_hash: Arc<String>,
     pub local_config: Arc<RwLock<LocalConfig>>,
     pub sessions: Arc<RwLock<HashMap<String, LocalSession>>>,
@@ -346,6 +349,7 @@ impl AppState {
                 login_attempts: Arc::new(Mutex::new(LoginAttemptState::default())),
                 bcrypt_limit: Arc::new(tokio::sync::Semaphore::new(4)),
                 password_change_gate: Arc::new(tokio::sync::Semaphore::new(1)),
+                password_session_transition: Arc::new(Mutex::new(())),
                 dummy_password_hash: Arc::new(dummy_password_hash),
                 local_config: Arc::new(RwLock::new(local_config)),
                 sessions: Arc::new(RwLock::new(HashMap::new())),

@@ -166,11 +166,10 @@ pub(crate) async fn change_password(
         &state,
         payload.current_password,
         payload.new_password,
+        &token,
         persist_local_config_blocking,
     )
     .await?;
-
-    revoke_user_sessions_except(&state, &username, &token).await;
     if let Err(error) = database::insert_audit(
         state.db().as_ref(),
         "auth.password.change",
