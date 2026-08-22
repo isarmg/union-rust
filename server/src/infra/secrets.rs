@@ -237,9 +237,6 @@ fn load_or_create_key() -> anyhow::Result<[u8; 32]> {
 
     let generated = Aes256Gcm::generate_key(&mut OsRng);
     let encoded = format!("{}\n", STANDARD.encode(generated.as_slice()));
-    if let Some(parent) = key_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
     match write_private_key_file(key_path, encoded.as_bytes()) {
         Ok(()) => decode_key(encoded.trim()),
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {

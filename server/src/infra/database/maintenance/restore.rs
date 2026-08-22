@@ -23,7 +23,6 @@ pub async fn restore_database(
         );
     }
     let parent = target.parent().context("database path has no parent")?;
-    fs::create_dir_all(parent)?;
     let staging = parent.join(format!(".unionc-restore-{}.db", uuid::Uuid::new_v4()));
     let _staging_guard = DatabaseFamilyGuard::new(staging.clone());
     copy_private_file(&input, &staging)?;

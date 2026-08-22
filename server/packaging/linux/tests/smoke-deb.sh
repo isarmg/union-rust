@@ -56,6 +56,7 @@ grep -Fx "UNIONC_PACKAGE_VERSION=$server_version" /etc/unionc/unionc.env
 ! systemctl is-enabled --quiet unionc.service
 ! systemctl is-active --quiet unionc.service
 test ! -e /var/lib/unionc/unionc.db
+test ! -e /var/lib/unionc/.unionc-data-directory
 
 sudo tee /etc/unionc/unionc.env >/dev/null <<EOF
 UNIONC_PACKAGE_VERSION=$server_version
@@ -92,6 +93,10 @@ sudo systemctl enable --now unionc.service
 systemctl is-enabled --quiet unionc.service
 wait_ready
 test "$(stat -c '%a:%U:%G' /var/lib/unionc/unionc.db)" = "600:unionc:unionc"
+data_marker=/var/lib/unionc/.unionc-data-directory
+test "$(stat -c '%a:%U:%G:%h' "$data_marker")" = "600:unionc:unionc:1"
+test "$(cat "$data_marker")" = "unionc-data-directory-v1"
+data_marker_identity=$(stat -c '%d:%i' "$data_marker")
 sudo sed -i \
   -e '/^UNIONC_ALLOW_BOOTSTRAP=/d' \
   -e '/^UNIONC_BOOTSTRAP_PASSWORD=/d' \
@@ -135,10 +140,12 @@ test "$(dpkg-query -W -f='${Version}' unionc)" = \
   "$(dpkg-deb --field "$package" Version)"
 systemctl is-enabled --quiet unionc.service
 wait_ready
+test "$(stat -c '%d:%i' "$data_marker")" = "$data_marker_identity"
 
 sudo dpkg --remove unionc
 test ! -e /usr/bin/unionc
 test -e /var/lib/unionc/unionc.db
+test "$(stat -c '%d:%i' "$data_marker")" = "$data_marker_identity"
 
 # A retained marker from any other version must fail closed. Restore
 # it only to let dpkg finish cleaning up this disposable runner.

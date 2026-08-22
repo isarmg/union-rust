@@ -110,9 +110,10 @@ impl Default for SunshineSettings {
     }
 }
 
+mod layout;
 mod runtime;
 
+pub(crate) use layout::{LayoutIntent, ensure_layout};
 pub use runtime::{
-    RetentionSettings, RuntimeEnvironment, RuntimeMode, ensure_layout, load_local_config,
-    save_local_config,
+    RetentionSettings, RuntimeEnvironment, RuntimeMode, load_local_config, save_local_config,
 };

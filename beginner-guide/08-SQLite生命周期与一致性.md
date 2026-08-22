@@ -8,6 +8,7 @@ UnionC 不依赖外部数据库服务。Server 二进制内嵌 SQLite，活动�
 
 ```text
 <data-dir>/
+├── .unionc-data-directory            0600 的数据目录布局归属 marker
 ├── unionc.db                         业务、遥测、审计
 ├── unionc.db-wal / unionc.db-shm     SQLite 运行期 sidecar，可能存在
 ├── unionc-config.json                管理员用户名、bcrypt hash、应用版本
@@ -16,6 +17,12 @@ UnionC 不依赖外部数据库服务。Server 二进制内嵌 SQLite，活动�
 ├── .unionc-maintenance.lock          维护命令串行锁，可能存在
 └── unionc.pre-restore-*              restore 产生的回退点或取证文件，可能存在
 ```
+
+“绝对路径”只解决工作目录漂移，不代表目标天然属于 UnionC。Server 从 `/` 开始逐级按目录
+描述符打开路径，不跟随任意一级符号链接；最终目录必须由当前服务 UID 所有且精确为 0700。
+程序不会自动 chmod 一个既有的 0755 目录，因为它可能是 `/srv`、共享仓库或另一个应用的
+目录。开发/显式 bootstrap 与 restore 可创建缺失目录；普通启动、backup、integrity-check、
+rekey 和密码重置只接受已认领目录。`.unionc-data-directory` 随运行数据保留，不要单独删除。
 
 生产主密钥来自环境，不应依赖开发密钥文件。
 开发模式首次生成 `unionc.secret` 时会先同步文件内容，再同步数据目录中的新目录项；两步都成功后才继续启动，避免掉电后只留下无法解密的 SQLite 密文。

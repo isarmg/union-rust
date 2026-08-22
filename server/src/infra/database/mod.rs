@@ -673,9 +673,6 @@ fn connect_options(
 
     let path = absolutize_database_path(options.get_filename())?;
     if path != Path::new(":memory:") {
-        if create_if_missing && let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         // Normalize relative sqlite: URLs before handing them to worker
         // threads whose current directory is an implementation detail.
         options = options.filename(&path);

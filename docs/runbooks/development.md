@@ -26,8 +26,10 @@
 ./tools/dev-server.sh
 ```
 
-脚本创建 `.runtime/server`，导出其绝对路径，切换到仓库根并通过根 `Cargo.toml` 执行
-`cargo run -p unionc`。传入的参数会原样交给 Server，例如：
+脚本以 `umask 077` 创建 `.runtime/server`，要求它精确为 0700，导出其绝对路径，切换到
+仓库根并通过根 `Cargo.toml` 执行 `cargo run -p unionc`。传入的参数会原样交给 Server。
+若旧版脚本已留下 0755 目录，脚本会先停止并提示；确认该路径确实只供本项目使用后，按提示
+执行一次 `chmod 0700 -- .runtime/server` 再重试。例如：
 
 ```bash
 ./tools/dev-server.sh integrity-check
@@ -50,6 +52,7 @@ Windows PowerShell 中执行 `cargo run -p unionc`，原生 Windows 只能直接
 
 ```powershell
 New-Item -ItemType Directory -Force .runtime/server | Out-Null
+chmod 700 -- .runtime/server
 $env:UNIONC_DATA_DIR = (Resolve-Path .runtime/server).Path
 cargo run -p unionc
 ```
@@ -61,6 +64,8 @@ Remove-Item Env:UNIONC_DATA_DIR
 ```
 
 不要把 `UNIONC_DATA_DIR` 永久设置成某个仓库路径；多个 checkout 或测试任务需要彼此隔离。
+Server 会拒绝路径中任意一级符号链接、非当前 UID 所有或非精确 0700 的最终目录，也不会自动
+修正既有目录权限。数据目录中的 `.unionc-data-directory` 是布局归属 marker，不要单独删除。
 
 ## 同时启动 Web
 

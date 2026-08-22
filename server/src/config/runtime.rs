@@ -260,18 +260,6 @@ fn replace_local_config_file(path: &Path, config: &LocalConfig) -> anyhow::Resul
     ensure_private_config_file(path)
 }
 
-/// 建立运行时目录布局。
-///
-/// 全部路径都来自 `paths` 模块派生的绝对路径。这里不创建任何**相对**目录——
-/// 那样换个工作目录启动就会在别处留下空壳目录。
-pub fn ensure_layout() -> std::io::Result<()> {
-    let data_dir = crate::infra::paths::data_dir();
-    fs::create_dir_all(data_dir)?;
-    // 数据目录含主密钥与管理员哈希，必须是 0700。
-    fs::set_permissions(data_dir, fs::Permissions::from_mode(LOCAL_CONFIG_DIR_MODE))?;
-    Ok(())
-}
-
 fn normalize_local_config(config: &LocalConfig) -> LocalConfigResult<LocalConfig> {
     if config.application_version != env!("CARGO_PKG_VERSION") {
         return Err(LocalConfigError::UnsupportedApplicationVersion);
@@ -296,12 +284,13 @@ fn normalize_local_config(config: &LocalConfig) -> LocalConfigResult<LocalConfig
 }
 
 fn ensure_private_config_directory(path: &Path) -> anyhow::Result<()> {
-    fs::create_dir_all(path)?;
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         bail!("local config directory is not a regular directory");
     }
-    fs::set_permissions(path, fs::Permissions::from_mode(LOCAL_CONFIG_DIR_MODE))?;
+    if metadata.mode() & 0o7777 != LOCAL_CONFIG_DIR_MODE {
+        bail!("local config directory must have exact permissions 0700");
+    }
     Ok(())
 }
 
@@ -391,6 +380,11 @@ mod tests {
     #[test]
     fn atomic_config_replace_preserves_owner_and_private_mode() {
         let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(
+            directory.path(),
+            fs::Permissions::from_mode(LOCAL_CONFIG_DIR_MODE),
+        )
+        .unwrap();
         let path = directory.path().join("unionc-config.json");
         let original = LocalConfig {
             application_version: env!("CARGO_PKG_VERSION").to_string(),

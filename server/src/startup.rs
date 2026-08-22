@@ -4,7 +4,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use crate::{
     config::{
-        LocalConfig, RetentionSettings, RuntimeEnvironment, Settings, ensure_layout,
+        LayoutIntent, LocalConfig, RetentionSettings, RuntimeEnvironment, Settings, ensure_layout,
         load_local_config, save_local_config,
     },
     infra::database,
@@ -33,7 +33,11 @@ pub async fn initialize() -> anyhow::Result<InitializedApp> {
         bootstrap_settings.production,
         std::env::var("UNIONC_ALLOW_BOOTSTRAP").ok().as_deref(),
     );
-    ensure_layout()?;
+    ensure_layout(if allow_bootstrap {
+        LayoutIntent::Bootstrap
+    } else {
+        LayoutIntent::ExistingOnly
+    })?;
     let database_path = database::database_path(&bootstrap_settings)?;
     database::hold_server_database_lock(&database_path)?;
     secrets::init(runtime.mode)?;
@@ -61,7 +65,7 @@ pub async fn rekey() -> anyhow::Result<()> {
     crate::infra::paths::init()?;
     let runtime = RuntimeEnvironment::from_environment()?;
     let settings = Settings::load(&runtime)?;
-    ensure_layout()?;
+    ensure_layout(LayoutIntent::ExistingOnly)?;
     let database_path = database::database_path(&settings)?;
     let _locks = database::acquire_offline_maintenance_locks(&database_path)?;
     secrets::init(runtime.mode)?;
@@ -85,7 +89,7 @@ pub async fn reset_admin_password() -> anyhow::Result<(String, String)> {
     crate::infra::paths::init()?;
     let runtime = RuntimeEnvironment::from_environment()?;
     let settings = Settings::load(&runtime)?;
-    ensure_layout()?;
+    ensure_layout(LayoutIntent::ExistingOnly)?;
     let database_path = database::database_path(&settings)?;
     let _database_lock = database::acquire_database_lock(&database_path)?;
     let (config, password) = config_with_reset_password(load_local_config()?).await?;
@@ -404,7 +408,7 @@ pub async fn backup_database(output: &std::path::Path) -> anyhow::Result<()> {
     crate::infra::paths::init()?;
     let runtime = RuntimeEnvironment::from_environment()?;
     let settings = Settings::load(&runtime)?;
-    ensure_layout()?;
+    ensure_layout(LayoutIntent::ExistingOnly)?;
     secrets::init(runtime.mode)?;
     let manifest = database::backup_database(&settings, output).await?;
     println!(
@@ -423,7 +427,7 @@ pub async fn restore_database(input: &std::path::Path, force: bool) -> anyhow::R
     crate::infra::paths::init()?;
     let runtime = RuntimeEnvironment::from_environment()?;
     let settings = Settings::load(&runtime)?;
-    ensure_layout()?;
+    ensure_layout(LayoutIntent::Restore)?;
     secrets::init(runtime.mode)?;
     let previous = database::restore_database(&settings, input, force).await?;
     match previous {
@@ -449,7 +453,7 @@ pub async fn integrity_check() -> anyhow::Result<()> {
     crate::infra::paths::init()?;
     let runtime = RuntimeEnvironment::from_environment()?;
     let settings = Settings::load(&runtime)?;
-    ensure_layout()?;
+    ensure_layout(LayoutIntent::ExistingOnly)?;
     secrets::init(runtime.mode)?;
     let version = database::integrity_check(&settings).await?;
     println!("SQLite 完整性检查通过；schema={version}");
@@ -492,6 +496,7 @@ mod password_reset_tests {
         assert!(!path.exists());
         assert!(!path.parent().unwrap().exists());
 
+        std::fs::create_dir(path.parent().unwrap()).unwrap();
         let (_, bootstrap_pool) = prepare_database(settings.clone(), true)
             .await
             .expect("explicit bootstrap creates the current database");

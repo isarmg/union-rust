@@ -202,6 +202,8 @@ server/src/
 │  └─ network.rs      地址规范化
 │
 └─ config/          运行配置模型与环境覆盖
+   ├─ layout.rs       数据目录安全认领、marker 与创建策略
+   └─ runtime.rs      环境快照与本地管理员配置
 ```
 
 体量较小的功能目录仍常用同一组文件名：`model.rs` 是类型与校验，
@@ -923,7 +925,8 @@ credential 与 body 中的 `host_id` 绑定失配；两者都要求人工纠正�
 
 ### 8.5 静态数据保护
 
-- 数据目录 0700，配置文件、密钥文件、`unionc.db` 与备份快照均按 0600 保护
+- 数据目录由逐级 `O_NOFOLLOW` 的目录 fd 校验为当前 UID/0700；既有路径不会被自动 chmod；
+  `.unionc-data-directory` marker、配置、密钥、`unionc.db` 与备份快照均按 0600 保护
 - Sunshine 密码用 AES-256-GCM 加密后入库；部署配置只来自环境，不在库内保存第二份副本
 - 所有激活码、polling secret 与 Agent credential 只存 SHA-256
 - 生产环境主密钥必须由 `UNIONC_SECRET_KEY` 提供，不允许落盘自动生成
@@ -1039,7 +1042,7 @@ GitHub Release；两者的构建与生命周期 job 相互独立。
 |---|---|---|
 | `UNIONC_PACKAGE_VERSION` | DEB/RPM 固定 | 包内必须精确为 `0.3.2`，仅供生命周期归属校验；不要修改，裸二进制部署不设置 |
 | `UNIONC_ENV` | 生产必填 | 设为 `production` 启用全部生产约束 |
-| `UNIONC_DATA_DIR` | 强烈建议 | 数据目录绝对路径；unit 已设为 `/var/lib/unionc` |
+| `UNIONC_DATA_DIR` | 强烈建议 | 数据目录绝对路径；各级不得为符号链接，最终目录须由服务 UID 所有且精确 0700；unit 已设为 `/var/lib/unionc` |
 | `UNIONC_SECRET_KEY` | 生产必填 | 32 字节主密钥的 Base64 |
 | `UNIONC_PROXY_SECRET` | 生产必填 | 64 位小写十六进制独立随机值；可信反代覆盖写入同值请求头，不能复用主密钥 |
 | `UNIONC_ALLOW_BOOTSTRAP` | 首次部署 | 设为 `1` 才允许创建管理员配置与当前 schema 的新数据库 |
@@ -1456,6 +1459,12 @@ agent job 的三次 feature `check` 不是冗余：默认 feature 是 `nvidia`�
 而"状态不存在"与"首次部署"在代码里无法区分；如果自动创建，就会让原账号和全部历史
 看上去凭空消失。生产环境因此额外要求显式的 `UNIONC_ALLOW_BOOTSTRAP=1`；未开启时，
 缺失或空数据库都会 fail closed。
+
+绝对路径仍不等于“属于本项目”。Server 会词法规范化路径，从 `/` 开始逐级用目录 fd 和
+`O_NOFOLLOW` 打开，拒绝系统根、符号链接、不安全的可写祖先、错误属主和非精确 0700 的
+既有最终目录；不会对未经认领的路径执行 chmod。bootstrap/restore 新建或兼容认领旧版私有
+目录后，会写入版本独立、0600 的 `.unionc-data-directory` marker。普通启动与维护命令只接受
+已认领目录，底层锁、密钥、配置和数据库代码也不再绕过前置策略重建父目录。
 
 **为什么采集不到的指标不填 0**
 0 和"读不到"在监控产品里是完全不同的两件事。用 `capabilities` 数组承载可用性与失败

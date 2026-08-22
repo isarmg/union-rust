@@ -85,7 +85,6 @@ fn open_fixed_lock_file(database: &Path, file_name: &str) -> anyhow::Result<File
     let parent = database
         .parent()
         .context("database path has no parent directory")?;
-    fs::create_dir_all(parent)?;
     let lock_path = parent.join(file_name);
 
     let file = match OpenOptions::new()

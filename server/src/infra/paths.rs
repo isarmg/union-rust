@@ -26,7 +26,7 @@
 //! 两种情况都会被规范化成绝对路径。
 
 use std::{
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::OnceLock,
 };
 
@@ -76,12 +76,35 @@ fn resolve() -> anyhow::Result<PathBuf> {
     Ok(absolutize(candidate)?)
 }
 
-/// 转成绝对路径。目录此时可能尚未创建，因此不能用 `canonicalize`。
-fn absolutize(path: PathBuf) -> std::io::Result<PathBuf> {
-    if path.is_absolute() {
-        return Ok(path);
+/// 转成词法规范化的绝对路径。目录此时可能尚未创建，因此不能用会跟随
+/// 符号链接的 `canonicalize`。
+pub(crate) fn normalize_absolute(path: PathBuf) -> std::io::Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut normalized = PathBuf::from("/");
+    for component in absolute.components() {
+        match component {
+            Component::RootDir | Component::CurDir => {}
+            Component::Normal(value) => normalized.push(value),
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Prefix(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "unsupported data-directory path prefix",
+                ));
+            }
+        }
     }
-    Ok(std::env::current_dir()?.join(path))
+    Ok(normalized)
+}
+
+fn absolutize(path: PathBuf) -> std::io::Result<PathBuf> {
+    normalize_absolute(path)
 }
 
 #[cfg(test)]
@@ -102,6 +125,18 @@ mod tests {
     fn absolute_input_is_preserved() {
         let resolved = absolutize(PathBuf::from("/var/lib/unionc")).expect("absolutize");
         assert_eq!(resolved, PathBuf::from("/var/lib/unionc"));
+    }
+
+    #[test]
+    fn dot_and_parent_components_are_normalized_without_following_links() {
+        assert_eq!(
+            absolutize(PathBuf::from("/tmp/example/../unionc/./data")).unwrap(),
+            PathBuf::from("/tmp/unionc/data")
+        );
+        assert_eq!(
+            absolutize(PathBuf::from("/tmp/..")).unwrap(),
+            PathBuf::from("/")
+        );
     }
 
     #[test]

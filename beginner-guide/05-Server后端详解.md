@@ -45,7 +45,7 @@ unionc integrity-check         校验数据库、schema、外键和密文
 2. `RuntimeEnvironment::from_environment()`：一次性快照环境变量；
 3. `Settings::load()`：建立基础运行设置；
 4. 生产模式检查独立 proxy secret；
-5. `ensure_layout()`：建立并校验私有目录；
+5. `ensure_layout()`：逐级拒绝符号链接，按命令意图认领或建立带 marker 的私有目录；
 6. 计算 `unionc.db`，取得单 Server 文件锁；
 7. 初始化 AES-GCM 密钥环；
 8. 读取管理员配置，开发首次启动可生成，生产必须显式 bootstrap；

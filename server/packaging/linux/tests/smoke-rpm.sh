@@ -52,6 +52,7 @@ docker run --rm \
       "600:root:root:1"
     test ! -e /var/lib/unionc-package/pending-group
     test ! -e /var/lib/unionc-package/pending-user
+    test ! -e /var/lib/unionc/.unionc-data-directory
 
     # Start the binary directly because the Fedora container does
     # not boot systemd; this validates SQLite creation and runtime.
@@ -77,6 +78,10 @@ docker run --rm \
     curl --fail --silent --show-error \
       http://127.0.0.1:8081/api/ready >/dev/null
     test "$(stat -c "%a:%U:%G" /var/lib/unionc/unionc.db)" = "600:unionc:unionc"
+    data_marker=/var/lib/unionc/.unionc-data-directory
+    test "$(stat -c "%a:%U:%G:%h" "$data_marker")" = "600:unionc:unionc:1"
+    test "$(cat "$data_marker")" = "unionc-data-directory-v1"
+    data_marker_identity=$(stat -c "%d:%i" "$data_marker")
     cleanup
     trap - EXIT
 
@@ -92,8 +97,10 @@ docker run --rm \
       env UNIONC_ENV=production UNIONC_DATA_DIR=/var/lib/unionc \
       UNIONC_SECRET_KEY=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY= \
       /usr/bin/unionc integrity-check
+    test "$(stat -c "%d:%i" "$data_marker")" = "$data_marker_identity"
 
     dnf remove -y unionc
     test ! -e /usr/bin/unionc
     test -e /var/lib/unionc/unionc.db
+    test "$(stat -c "%d:%i" "$data_marker")" = "$data_marker_identity"
   '

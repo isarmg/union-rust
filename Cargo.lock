@@ -2518,6 +2518,7 @@ dependencies = [
  "libsqlite3-sys",
  "mime",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
