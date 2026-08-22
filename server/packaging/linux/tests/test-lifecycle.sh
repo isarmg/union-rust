@@ -35,6 +35,15 @@ grep -Fx 'PATH=/usr/sbin:/usr/bin:/sbin:/bin' "$source_postinstall" >/dev/null |
   fail 'root postinstall does not replace the caller PATH'
 grep -Fx 'server_binary=/usr/bin/unionc' "$source_postinstall" >/dev/null ||
   fail 'postinstall does not bind version validation to the packaged Server binary'
+grep -Fx 'Type=notify' "$packaging_dir/unionc.service" >/dev/null ||
+  fail 'systemd unit does not wait for Server readiness'
+grep -Fx 'NotifyAccess=main' "$packaging_dir/unionc.service" >/dev/null ||
+  fail 'systemd unit accepts readiness from an unexpected process'
+grep -Fx 'TimeoutStartSec=60s' "$packaging_dir/unionc.service" >/dev/null ||
+  fail 'systemd unit has no bounded readiness timeout'
+if grep -Fx 'Type=simple' "$packaging_dir/unionc.service" >/dev/null; then
+  fail 'systemd unit can report startup before Server initialization'
+fi
 
 # Relocate every package-owned path into a disposable tree. The rewritten PATH
 # keeps the test doubles authoritative while preserving the production script's
@@ -482,7 +491,26 @@ fi
 exit 0
 EOF
 
-for attacker_command in unionc getent groupadd groupdel useradd userdel install cut chown chmod rm mv stat sync awk; do
+cat >"$test_root/trusted-bin/systemctl" <<'EOF'
+#!/bin/sh
+printf 'systemctl %s\n' "$*" >>"$TEST_LOG"
+case "${1:-}" in
+  is-enabled)
+    [ "${SERVICE_ENABLED:-0}" -eq 1 ]
+    ;;
+  restart)
+    [ "${FAIL_RESTART:-0}" -ne 1 ]
+    ;;
+  is-active)
+    [ "${FAIL_ACTIVE:-0}" -ne 1 ]
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+EOF
+
+for attacker_command in unionc getent groupadd groupdel useradd userdel install cut chown chmod rm mv stat sync awk systemctl; do
   cat >"$test_root/attacker-bin/$attacker_command" <<'EOF'
 #!/bin/sh
 : >"$test_root/attacker-command-ran"
@@ -522,6 +550,30 @@ grep -Fx "chown root:998 $test_root/etc/unionc/unionc.env" "$TEST_LOG" >/dev/nul
   fail 'postinstall did not bind config ownership to the recorded numeric group'
 grep -Fx "chmod 0640 $test_root/etc/unionc/unionc.env" "$TEST_LOG" >/dev/null ||
   fail 'postinstall did not secure the Server config mode'
+
+# An enabled reinstall must fail unless the notify-aware startup job reaches
+# readiness and the resulting service remains active.
+mkdir -p "$test_root/run/systemd/system"
+: >"$TEST_LOG"
+if SERVICE_ENABLED=1 FAIL_RESTART=1 "$test_root/postinstall.sh" \
+  >"$test_root/restart-failure.log" 2>&1; then
+  fail 'postinstall ignored an enabled service readiness failure'
+fi
+grep -Fx 'systemctl restart unionc.service' "$TEST_LOG" >/dev/null ||
+  fail 'postinstall did not restart the enabled service'
+grep -F 'did not reach readiness' "$test_root/restart-failure.log" >/dev/null ||
+  fail 'postinstall did not diagnose the readiness failure'
+
+: >"$TEST_LOG"
+if SERVICE_ENABLED=1 FAIL_ACTIVE=1 "$test_root/postinstall.sh" \
+  >"$test_root/inactive-service.log" 2>&1; then
+  fail 'postinstall ignored a service that did not remain active'
+fi
+grep -Fx 'systemctl is-active --quiet unionc.service' "$TEST_LOG" >/dev/null ||
+  fail 'postinstall did not verify the restarted service state'
+grep -F 'did not remain active' "$test_root/inactive-service.log" >/dev/null ||
+  fail 'postinstall did not diagnose the inactive service'
+rmdir "$test_root/run/systemd/system" "$test_root/run/systemd"
 
 # A root hook must reject foreign ownership proof before changing its metadata.
 # Otherwise install -d could turn attacker-controlled marker storage into a

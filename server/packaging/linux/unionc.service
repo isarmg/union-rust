@@ -5,7 +5,9 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=60s
 User=unionc
 Group=unionc
 ExecStart=/usr/bin/unionc

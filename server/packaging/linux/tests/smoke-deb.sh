@@ -117,8 +117,20 @@ run_maintenance integrity-check
 sudo systemctl start unionc.service
 wait_ready
 
-# Reinstall only the current package against its current schema.
-sudo dpkg -i "$package"
+# A notify-aware reinstall must fail before the package manager reports success
+# when the retained runtime configuration cannot initialize the Server.
+sudo sed -i \
+  -e 's/^UNIONC_PROXY_SECRET=.*/UNIONC_PROXY_SECRET=invalid/' \
+  /etc/unionc/unionc.env
+if sudo dpkg -i "$package"; then
+  echo "Server package accepted a reinstall whose service never became ready" >&2
+  exit 1
+fi
+systemctl is-enabled --quiet unionc.service
+sudo sed -i \
+  -e 's/^UNIONC_PROXY_SECRET=.*/UNIONC_PROXY_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/' \
+  /etc/unionc/unionc.env
+sudo dpkg --configure unionc
 test "$(dpkg-query -W -f='${Version}' unionc)" = \
   "$(dpkg-deb --field "$package" Version)"
 systemctl is-enabled --quiet unionc.service

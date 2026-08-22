@@ -102,6 +102,8 @@ NFPM_ARCH=amd64 server/packaging/linux/build-packages.sh
 包会安装二进制到 `/usr/bin/unionc`、unit 到 `/usr/lib/systemd/system/unionc.service`、
 环境配置模板到 `/etc/unionc/unionc.env`，并创建 `unionc` 系统用户与 `/var/lib/unionc`（0700）。
 unit 已包含一组 systemd 硬化选项，并显式设置 `UNIONC_DATA_DIR` 与 `WorkingDirectory`。
+`Type=notify` 只会在环境、密钥、SQLite、路由和监听端口全部初始化成功后报告就绪；已启用
+服务的同版本重装会等待这一就绪信号，并在启动失败或随后不再 active 时让包配置失败。
 
 包内环境文件的 `UNIONC_PACKAGE_VERSION=0.3.2` 是安装归属标记，不是可调运行参数，不能
 删除或修改。安装脚本还会把 `/var/lib/unionc-package` 中的版本化 marker 与实际 UID/GID、

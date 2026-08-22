@@ -976,9 +976,10 @@ fi
 # production secret. Reinstalling this exact package restarts an already
 # enabled service without enabling a previously disabled installation.
 if [ -d /run/systemd/system ] && systemctl is-enabled --quiet "$service_name"; then
-  if ! systemctl restart "$service_name"; then
-    echo "警告：UnionC 包已重新安装并保持 enabled，但服务重启失败；请检查 systemctl status unionc 与 journalctl -u unionc。" >&2
-  fi
+  systemctl restart "$service_name" ||
+    die "enabled service did not reach readiness after reinstall; inspect systemctl status unionc and journalctl -u unionc"
+  systemctl is-active --quiet "$service_name" ||
+    die "enabled service did not remain active after reinstall"
 elif [ ! -e "$data_dir/unionc.db" ]; then
   cat <<'EOF'
 

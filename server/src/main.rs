@@ -10,6 +10,8 @@
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use unionc::{http, startup};
 
+mod systemd;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Command {
     Serve,
@@ -101,8 +103,9 @@ async fn main() -> anyhow::Result<()> {
     let state = initialized.state;
     let app = http::router(state.clone());
 
-    tracing::info!("unionc listening on http://{}", initialized.addr);
     let listener = tokio::net::TcpListener::bind(initialized.addr).await?;
+    tracing::info!("unionc listening on http://{}", initialized.addr);
+    systemd::report_ready()?;
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(state))
         .await?;
