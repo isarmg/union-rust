@@ -127,8 +127,9 @@ pub struct AgentConfig {
     /// never accepted as an argument, environment variable, or config value.
     #[serde(skip)]
     pub tray_activation_stdin: bool,
-    /// Explicit user-confirmed replacement of an incomplete request targeting
-    /// another server. Ordinary CLI pairing remains resumable/fail-closed.
+    /// Explicit user-confirmed replacement of an incomplete saved request.
+    /// Ordinary pairing remains resumable/fail-closed so a lost activation
+    /// response cannot silently rotate secrets.
     #[serde(skip)]
     pub replace_pending_pairing: bool,
     /// Presentation is process-local and is never persisted.
@@ -314,17 +315,12 @@ impl AgentConfig {
             bail!("--delivery may be used only with doctor");
         }
         validate_windows_service_invocation(windows_service, command)?;
-        if tray_events && command != AgentCommand::Pair {
-            bail!("--tray-events may be used only with the pair command");
-        }
-        if (tray_cancel_event.is_some()
-            || tray_deadline_seconds.is_some()
-            || tray_activation_stdin
-            || replace_pending_pairing)
-            && (!tray_events || command != AgentCommand::Pair)
-        {
-            bail!("internal tray pairing controls require pair --tray-events");
-        }
+        validate_pairing_control_invocation(
+            command,
+            tray_events,
+            tray_cancel_event.is_some() || tray_deadline_seconds.is_some() || tray_activation_stdin,
+            replace_pending_pairing,
+        )?;
         if let Some(seconds) = tray_deadline_seconds
             && !(60..=3600).contains(&seconds)
         {
@@ -642,6 +638,24 @@ fn select_command(
     Ok(())
 }
 
+fn validate_pairing_control_invocation(
+    command: AgentCommand,
+    tray_events: bool,
+    has_internal_tray_control: bool,
+    replace_pending_pairing: bool,
+) -> anyhow::Result<()> {
+    if tray_events && command != AgentCommand::Pair {
+        bail!("--tray-events may be used only with the pair command");
+    }
+    if has_internal_tray_control && (!tray_events || command != AgentCommand::Pair) {
+        bail!("internal tray pairing controls require pair --tray-events");
+    }
+    if replace_pending_pairing && command != AgentCommand::Pair {
+        bail!("--replace-pending-pairing may be used only with the pair command");
+    }
+    Ok(())
+}
+
 fn validate_windows_service_invocation(
     requested: bool,
     command: AgentCommand,
@@ -797,6 +811,9 @@ fn print_help() {
          Common options: --config PATH [--endpoint REPORT_URL] [--output human|json]\n\
          Doctor delivery opt-in: --delivery (sends one report and may drain queued reports)\n\
          Pair options: [--server URL | --endpoint REPORT_URL] [--name NAME]\n\
+           [--replace-pending-pairing]\n\
+         --replace-pending-pairing explicitly abandons an incomplete saved request and\n\
+           creates a fresh request with new secrets; browser authorization is required again.\n\
          Remote plaintext HTTP is never accepted by browser pairing.\n\n\
          Browser pairing keeps the long-lived secret local and stores it in the private\n\
          state directory; the browser receives only the public activation status."
@@ -834,6 +851,22 @@ mod tests {
         assert!(validate_windows_service_position(1).is_ok());
         assert!(validate_windows_service_position(2).is_err());
         assert!(validate_windows_service_position(3).is_err());
+    }
+
+    #[test]
+    fn explicit_pairing_replacement_is_public_but_pair_only() {
+        assert!(
+            validate_pairing_control_invocation(AgentCommand::Pair, false, false, true).is_ok(),
+            "the recovery flag must not require the private tray event stream"
+        );
+        assert!(
+            validate_pairing_control_invocation(AgentCommand::Run, false, false, true).is_err()
+        );
+        assert!(
+            validate_pairing_control_invocation(AgentCommand::Pair, false, true, false).is_err(),
+            "the other tray controls must remain private"
+        );
+        assert!(validate_pairing_control_invocation(AgentCommand::Pair, true, true, true).is_ok());
     }
 
     #[test]

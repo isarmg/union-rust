@@ -692,6 +692,101 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    #[test]
+    fn explicit_replacement_rotates_same_origin_incomplete_state() {
+        for phase in ["creating", "expired_pending"] {
+            let directory = std::env::temp_dir().join(format!(
+                "unionc-same-origin-replace-{phase}-{}",
+                Uuid::new_v4()
+            ));
+            let mut config = test_config(directory.clone());
+            let old_generation = Uuid::new_v4();
+            let old_bearer = random_secret();
+            let old_polling = random_secret();
+            let state = if phase == "creating" {
+                StoredPairingState::Creating {
+                    version: PAIRING_STATE_VERSION,
+                    generation: old_generation,
+                    pairing_endpoint: config.pairing_endpoint(),
+                    report_endpoint: config.endpoint.clone(),
+                    host: test_host(),
+                    host_name: None,
+                    bearer_secret: old_bearer.clone(),
+                    polling_secret: old_polling.clone(),
+                }
+            } else {
+                let request_id = Uuid::new_v4();
+                StoredPairingState::Pending {
+                    version: PAIRING_STATE_VERSION,
+                    generation: old_generation,
+                    request_id,
+                    activation_url: format!(
+                        "https://unionc.example/agent/activate/{request_id}"
+                    ),
+                    expires_at: Utc::now() - TimeDelta::minutes(1),
+                    poll_interval: 5,
+                    pairing_endpoint: config.pairing_endpoint(),
+                    report_endpoint: config.endpoint.clone(),
+                    bearer_secret: old_bearer.clone(),
+                    host_name: None,
+                    polling_secret: old_polling.clone(),
+                }
+            };
+            persist_state(&config, &state).unwrap();
+
+            match (phase, prepare_start(&config, &test_host()).unwrap()) {
+                ("creating", PairingStart::Create(resumed)) => match *resumed {
+                    StoredPairingState::Creating {
+                        generation,
+                        bearer_secret,
+                        polling_secret,
+                        ..
+                    } => {
+                        assert_eq!(generation, old_generation);
+                        assert_eq!(bearer_secret, old_bearer);
+                        assert_eq!(polling_secret, old_polling);
+                    }
+                    _ => panic!("creating state was not resumed"),
+                },
+                ("expired_pending", PairingStart::Waiting(session)) => {
+                    assert_eq!(session.generation, old_generation);
+                }
+                _ => panic!("ordinary pairing did not conservatively resume saved state"),
+            }
+
+            config.replace_pending_pairing = true;
+            let PairingStart::Create(replacement) =
+                prepare_start(&config, &test_host()).unwrap()
+            else {
+                panic!("explicit replacement did not create a fresh generation");
+            };
+            let StoredPairingState::Creating {
+                generation: new_generation,
+                bearer_secret: new_bearer,
+                polling_secret: new_polling,
+                ..
+            } = *replacement
+            else {
+                panic!("explicit replacement did not persist a creating state");
+            };
+            assert_ne!(new_generation, old_generation);
+            assert_ne!(new_bearer, old_bearer);
+            assert_ne!(new_polling, old_polling);
+            assert!(matches!(
+                load_state(&config).unwrap(),
+                Some(StoredPairingState::Creating {
+                    generation,
+                    bearer_secret,
+                    polling_secret,
+                    ..
+                }) if generation == new_generation
+                    && bearer_secret == new_bearer
+                    && polling_secret == new_polling
+            ));
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn confirmed_tray_replacement_can_replace_mismatched_incomplete_states() {
         for old_state in ["creating", "pending"] {

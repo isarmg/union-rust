@@ -27,7 +27,9 @@ fn prepare_start(config: &AgentConfig, host: &HostIdentity) -> anyhow::Result<Pa
             pairing_endpoint,
             report_endpoint,
             ..
-        }) if pairing_endpoints_match(config, &pairing_endpoint, &report_endpoint) => {
+        }) if !config.replace_pending_pairing
+            && pairing_endpoints_match(config, &pairing_endpoint, &report_endpoint) =>
+        {
             return Ok(PairingStart::Waiting(PairingSession {
                 generation,
                 request_id,
@@ -53,7 +55,9 @@ fn prepare_start(config: &AgentConfig, host: &HostIdentity) -> anyhow::Result<Pa
                 } => (pairing_endpoint, report_endpoint),
                 _ => unreachable!(),
             };
-            if pairing_endpoints_match(config, pairing_endpoint, report_endpoint) {
+            if !config.replace_pending_pairing
+                && pairing_endpoints_match(config, pairing_endpoint, report_endpoint)
+            {
                 return Ok(PairingStart::Create(Box::new(state)));
             }
             if !config.replace_pending_pairing {

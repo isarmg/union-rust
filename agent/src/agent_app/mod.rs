@@ -404,13 +404,17 @@ async fn run_pairing(
                                 "resumable": false,
                                 "error": {
                                     "code": "pairing_expired",
-                                    "message": "the saved pairing request expired while the server was unreachable"
+                                    "message": concat!(
+                                        "the saved pairing request expired while the server was unreachable; ",
+                                        "use pair --replace-pending-pairing to explicitly create a fresh request"
+                                    )
                                 }
                             }))?
                         );
                     }
                     anyhow::bail!(
-                        "browser pairing request {} expired while the server was unreachable; run pair again",
+                        "browser pairing request {} expired while the server was unreachable; run \
+                         `unionc-agent pair --replace-pending-pairing` to explicitly create a fresh request",
                         session.request_id
                     );
                 }

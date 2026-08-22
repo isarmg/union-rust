@@ -247,6 +247,10 @@ Creating → Pending → Activating → Active
 - Active 最后写入，代表本地状态完全一致。
 
 网络中断后 `pair` 或 `run` 可以继续当前请求，不生成会让浏览器批准对象错位的新 secret。并发配对通过状态目录锁与 generation 防护。
+如果本地 Pending 已过期、Server 又已清理请求，普通 `pair` 仍会保守复用旧状态，因为 Server
+可能已激活而只是回应丢失。管理员确认放弃旧请求后，可显式执行
+`unionc-agent pair --server URL --replace-pending-pairing`；该命令会生成新 generation 和新的两个临时 secret，
+因此需要重新完成浏览器授权。
 
 `pairing/mod.rs` 组织状态机主流程，`state.rs` 放持久状态结构，`client.rs` 处理有界 HTTP
 响应，`activation.rs` 与 `commit.rs` 分离激活结果和本地提交步骤。阅读时仍应从 `mod.rs`
