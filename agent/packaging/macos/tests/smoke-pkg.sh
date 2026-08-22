@@ -28,42 +28,227 @@ fi
 
 assert_no_extended_acl() {
   local path=$1
-  local listing first_line permissions line_count
-  listing=$(sudo env LC_ALL=C ls -lde "$path")
-  first_line=${listing%%$'\n'*}
-  permissions=${first_line%% *}
-  [[ -n $permissions && $permissions != *+ ]] || {
+  path_has_no_extended_acl "$path" || {
     echo "unexpected extended ACL on $path" >&2
     exit 1
   }
+}
+
+path_has_no_extended_acl() {
+  local path=$1
+  local listing first_line permissions line_count
+  listing=$(sudo env LC_ALL=C ls -lde "$path") || return 1
+  first_line=${listing%%$'\n'*}
+  permissions=${first_line%% *}
+  [[ -n $permissions && $permissions != *+ ]] || return 1
   line_count=$(printf '%s\n' "$listing" | wc -l | tr -d '[:space:]')
-  [[ $line_count == 1 ]] || {
-    echo "unexpected ACL entries on $path" >&2
+  [[ $line_count == 1 ]]
+}
+
+path_has_no_permissive_acl() {
+  local path=$1
+  local listing first_line permissions line acl_entries=0
+  listing=$(sudo env LC_ALL=C ls -lde "$path") || return 1
+  first_line=${listing%%$'\n'*}
+  [[ -n $first_line ]] || return 1
+  while IFS= read -r line; do
+    [[ $line == "$first_line" ]] && continue
+    [[ $line != *" allow "* ]] || return 1
+    [[ $line =~ ^[[:space:]]*[0-9]+:.*[[:space:]]deny[[:space:]] ]] || return 1
+    (( acl_entries += 1 ))
+  done <<<"$listing"
+  permissions=${first_line%% *}
+  if [[ $permissions == *+ ]]; then
+    (( acl_entries > 0 ))
+  else
+    return 0
+  fi
+}
+
+shared_directory_is_secure() {
+  local path=$1
+  local metadata uid gid special mode remainder
+  [[ -d $path && ! -L $path ]] || return 1
+  metadata=$(sudo stat -f '%u:%g:%Mp:%Lp' "$path") || return 1
+  uid=${metadata%%:*}
+  remainder=${metadata#*:}
+  gid=${remainder%%:*}
+  remainder=${remainder#*:}
+  special=${remainder%%:*}
+  mode=${remainder#*:}
+  [[ $uid == 0 && $gid == 0 && $special == 0 && $mode =~ ^7[0145][15]$ ]] || return 1
+  path_has_no_extended_acl "$path"
+}
+
+assert_secure_shared_directory() {
+  local path=$1
+  shared_directory_is_secure "$path" || {
+    echo "unsafe shared directory metadata or ACL on $path" >&2
     exit 1
   }
 }
 
-assert_ownership_proof() {
-  [[ $(sudo stat -f '%u:%g:%Mp:%Lp' /var/db/unionc-agent) == 0:0:0:700 ]]
-  [[ $(sudo stat -f '%u:%g:%Mp:%Lp' /var/db/unionc-agent/account-ownership) == 0:0:0:600 ]]
-  assert_no_extended_acl /var/db/unionc-agent
-  assert_no_extended_acl /var/db/unionc-agent/account-ownership
+assert_path_metadata() {
+  local expected=$1
+  local path=$2
+  local actual
+  actual=$(sudo stat -f '%u:%g:%Mp:%Lp' "$path")
+  [[ $actual == "$expected" ]] || {
+    echo "unexpected metadata on $path: expected $expected, got $actual" >&2
+    exit 1
+  }
 }
+
+assert_trusted_path() {
+  local expected=$1
+  local path=$2
+  assert_path_metadata "$expected" "$path"
+  assert_no_extended_acl "$path"
+}
+
+assert_trusted_directory() {
+  local expected=$1
+  local path=$2
+  [[ -d $path && ! -L $path ]] || {
+    echo "expected a real directory at $path" >&2
+    exit 1
+  }
+  assert_trusted_path "$expected" "$path"
+}
+
+assert_trusted_regular_file() {
+  local expected=$1
+  local path=$2
+  [[ -f $path && ! -L $path ]] || {
+    echo "expected a real regular file at $path" >&2
+    exit 1
+  }
+  assert_trusted_path "$expected" "$path"
+}
+
+assert_system_root_directory() {
+  local expected=$1
+  local path=$2
+  [[ -d $path && ! -L $path ]] || {
+    echo "expected a real system directory at $path" >&2
+    exit 1
+  }
+  assert_path_metadata "$expected" "$path"
+  path_has_no_permissive_acl "$path" || {
+    echo "unexpected permissive ACL on system directory $path" >&2
+    exit 1
+  }
+}
+
+assert_command_link() {
+  [[ -L /usr/local/bin/unionc-agent ]]
+  [[ $(readlink /usr/local/bin/unionc-agent) == ../libexec/unionc-agent ]]
+  assert_trusted_path 0:0:0:755 /usr/local/bin/unionc-agent
+}
+
+assert_install_trust() {
+  local directory
+  assert_system_root_directory 0:0:0:755 /usr
+  assert_system_root_directory 0:0:0:755 /Library
+  for directory in \
+    /usr/local \
+    /usr/local/libexec \
+    /usr/local/bin \
+    /usr/local/share
+  do
+    assert_secure_shared_directory "$directory"
+  done
+  assert_trusted_directory 0:0:0:755 /usr/local/share/unionc-agent
+  assert_trusted_directory 0:0:0:755 /Library/LaunchDaemons
+  assert_trusted_directory 0:0:0:755 /var/log
+  assert_trusted_regular_file 0:0:0:755 /usr/local/libexec/unionc-agent
+  assert_trusted_regular_file 0:0:0:755 /usr/local/libexec/unionc-agent-logrotate
+  assert_trusted_regular_file 0:0:0:755 /usr/local/share/unionc-agent/uninstall.sh
+  assert_trusted_regular_file 0:0:0:644 /usr/local/share/unionc-agent/newsyslog.conf
+  assert_trusted_regular_file 0:0:0:644 /Library/LaunchDaemons/com.unionc.agent.plist
+  assert_trusted_regular_file 0:0:0:644 /Library/LaunchDaemons/com.unionc.agent.logrotate.plist
+  assert_command_link
+}
+
+assert_preserved_uninstall_trust() {
+  assert_secure_shared_directory /usr/local
+  assert_secure_shared_directory /usr/local/bin
+  assert_secure_shared_directory /usr/local/share
+  assert_trusted_directory 0:0:0:755 /usr/local/share/unionc-agent
+  assert_trusted_regular_file 0:0:0:755 /usr/local/share/unionc-agent/uninstall.sh
+}
+
+assert_ownership_proof() {
+  assert_trusted_directory 0:0:0:700 /var/db/unionc-agent
+  assert_trusted_regular_file 0:0:0:600 /var/db/unionc-agent/account-ownership
+}
+
+# GitHub's hosted macOS image deliberately makes parts of /usr/local runner-owned
+# and writable. First prove that preinstall rejects that state before extraction,
+# then harden only the path components used by this destructive package smoke.
+if [[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_OS:-} == macOS ]]; then
+  unsafe_host_path=0
+  for directory in \
+    /usr/local \
+    /usr/local/libexec \
+    /usr/local/bin \
+    /usr/local/share
+  do
+    if [[ -e $directory || -L $directory ]] && ! shared_directory_is_secure "$directory"; then
+      unsafe_host_path=1
+    fi
+  done
+  if (( unsafe_host_path == 1 )); then
+    for package_path in \
+      /usr/local/libexec/unionc-agent \
+      /usr/local/libexec/unionc-agent-logrotate \
+      /usr/local/bin/unionc-agent \
+      /usr/local/share/unionc-agent
+    do
+      [[ ! -e $package_path && ! -L $package_path ]]
+    done
+    if sudo installer -pkg "$package" -target /; then
+      echo 'preinstall accepted an unsafe GitHub runner path' >&2
+      exit 1
+    fi
+    ! pkgutil --pkg-info com.unionc.agent >/dev/null 2>&1
+  fi
+  for directory in \
+    /usr/local \
+    /usr/local/libexec \
+    /usr/local/bin \
+    /usr/local/share
+  do
+    if [[ -L $directory || ( -e $directory && ! -d $directory ) ]]; then
+      echo "refusing to harden redirected or non-directory CI path: $directory" >&2
+      exit 1
+    fi
+    sudo install -d -m 0755 -o root -g wheel "$directory"
+    sudo chmod -N "$directory"
+    sudo chown root:wheel "$directory"
+    sudo chmod 0755 "$directory"
+    assert_secure_shared_directory "$directory"
+  done
+fi
 
 sudo installer -pkg "$package" -target /
 sudo launchctl print system/com.unionc.agent >/dev/null
+assert_install_trust
 assert_ownership_proof
 sudo touch '/Library/Application Support/UnionC Agent/release-lifecycle-marker'
 
 sudo installer -pkg "$package" -target /
 sudo launchctl print system/com.unionc.agent >/dev/null
+assert_install_trust
 assert_ownership_proof
 sudo /usr/local/share/unionc-agent/uninstall.sh
 [[ ! -e /usr/local/libexec/unionc-agent ]]
 [[ -e '/Library/Application Support/UnionC Agent/release-lifecycle-marker' ]]
+assert_preserved_uninstall_trust
 assert_ownership_proof
 
 sudo installer -pkg "$package" -target /
+assert_install_trust
 assert_ownership_proof
 sudo /usr/local/share/unionc-agent/uninstall.sh --purge --yes
 [[ ! -e '/Library/Application Support/UnionC Agent' ]]

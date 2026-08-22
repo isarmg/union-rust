@@ -28,9 +28,12 @@ make_case() {
   case_logrotate_helper="$case_dir/usr/local/libexec/unionc-agent-logrotate"
   case_agent_plist="$case_dir/Library/LaunchDaemons/com.unionc.agent.plist"
   case_logrotate_plist="$case_dir/Library/LaunchDaemons/com.unionc.agent.logrotate.plist"
+  case_share="$case_dir/usr/local/share/unionc-agent"
+  case_newsyslog_config="$case_share/newsyslog.conf"
+  case_uninstall_helper="$case_share/uninstall.sh"
   mkdir -p "$case_bin" "$case_state" "$case_dir/dscl/Groups" "$case_dir/dscl/Users" \
     "$case_dir/launch" "$(dirname -- "$case_log")" "$(dirname -- "$case_agent_plist")" \
-    "$(dirname -- "$case_agent_binary")" "$(dirname -- "$case_agent_command")"
+    "$(dirname -- "$case_agent_binary")" "$(dirname -- "$case_agent_command")" "$case_share"
   {
     printf '{\n'
     printf '  "application_version": "@UNIONC_AGENT_PACKAGE_VERSION@",\n'
@@ -52,7 +55,13 @@ EOF
   cat >"$case_logrotate_plist" <<'EOF'
 <?xml version="1.0"?><plist version="1.0"><dict><key>Label</key><string>com.unionc.agent.logrotate</string></dict></plist>
 EOF
-  chmod 0755 "$case_agent_binary" "$case_logrotate_helper"
+  printf '/var/log/unionc-agent.log _unioncagent:_unioncagent 600 7 10240 * JN\n' \
+    >"$case_newsyslog_config"
+  cat >"$case_uninstall_helper" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+  chmod 0755 "$case_agent_binary" "$case_logrotate_helper" "$case_uninstall_helper"
   ln -s ../libexec/unionc-agent "$case_agent_command"
 
   sed \
@@ -70,9 +79,12 @@ EOF
 
   sed \
     -e "s|^PATH=.*|PATH=\"$case_bin:/bin:/usr/bin:/sbin:/usr/sbin\"|" \
+    -e "s|^agent_binary=.*|agent_binary=\"$case_agent_binary\"|" \
+    -e "s|^agent_command=.*|agent_command=\"$case_agent_command\"|" \
+    -e "s|^logrotate_helper=.*|logrotate_helper=\"$case_logrotate_helper\"|" \
     -e "s|^agent_plist=.*|agent_plist=\"$case_agent_plist\"|" \
     -e "s|^logrotate_plist=.*|logrotate_plist=\"$case_logrotate_plist\"|" \
-    -e "s|^ownership_dir=.*|ownership_dir=\"$case_ownership\"|" \
+    -e "s|^log_dir=.*|log_dir=\"${case_log%/*}\"|" \
     "$preinstall" >"$case_dir/preinstall"
   chmod +x "$case_dir/preinstall"
 
@@ -111,6 +123,30 @@ while [ "$#" -gt 0 ]; do
 done
 [ "$format" = '%u:%g:%Mp:%Lp' ] || exit 64
 case "$path" in
+  "$CASE_ROOT/usr")
+    metadata="${STAT_SYSTEM_USR:-0:0:755}"
+    ;;
+  "$CASE_ROOT/usr/local")
+    metadata="${STAT_LOCAL_PREFIX:-0:0:755}"
+    ;;
+  "$CASE_ROOT/usr/local/libexec")
+    metadata="${STAT_LIBEXEC_DIR:-0:0:755}"
+    ;;
+  "$CASE_ROOT/usr/local/bin")
+    metadata="${STAT_COMMAND_DIR:-0:0:755}"
+    ;;
+  "$CASE_ROOT/usr/local/share")
+    metadata="${STAT_SHARE_PARENT:-0:0:755}"
+    ;;
+  "$CASE_ROOT/usr/local/share/unionc-agent")
+    metadata="${STAT_SHARE_DIR:-0:0:755}"
+    ;;
+  "$CASE_ROOT/Library/LaunchDaemons")
+    metadata="${STAT_LAUNCH_DAEMON_DIR:-0:0:755}"
+    ;;
+  "$CASE_ROOT/Library")
+    metadata="${STAT_LIBRARY_ROOT:-0:0:755}"
+    ;;
   "$CASE_ROOT/usr/local/libexec/unionc-agent")
     metadata="${STAT_AGENT_BINARY:-0:0:755}"
     ;;
@@ -125,6 +161,12 @@ case "$path" in
     ;;
   "$CASE_ROOT/Library/LaunchDaemons/com.unionc.agent.logrotate.plist")
     metadata="${STAT_LOGROTATE_PLIST:-0:0:644}"
+    ;;
+  "$CASE_ROOT/usr/local/share/unionc-agent/newsyslog.conf")
+    metadata="${STAT_NEWSYSLOG_CONFIG:-0:0:644}"
+    ;;
+  "$CASE_ROOT/usr/local/share/unionc-agent/uninstall.sh")
+    metadata="${STAT_UNINSTALL_HELPER:-0:0:755}"
     ;;
   "$CASE_ROOT/var/db/unionc-agent")
     metadata="${STAT_OWNERSHIP_DIR:-0:0:700}"
@@ -186,7 +228,59 @@ fi
 path="$2"
 acl_key=
 permissions=-rw-------
+acl_requested=0
+deny_acl_requested=0
+tricky_allow_acl_requested=0
+ls_failure=0
 case "$path" in
+  "$CASE_ROOT/usr")
+    acl_key=system-usr
+    permissions=drwxr-xr-x
+    ;;
+  "$CASE_ROOT/usr/local")
+    acl_key=local-prefix
+    permissions=drwxr-xr-x
+    ;;
+  "$CASE_ROOT/usr/local/libexec")
+    acl_key=libexec-dir
+    permissions=drwxr-xr-x
+    ;;
+  "$CASE_ROOT/usr/local/bin")
+    acl_key=command-dir
+    permissions=drwxr-xr-x
+    ;;
+  "$CASE_ROOT/usr/local/share")
+    acl_key=share-parent
+    permissions=drwxr-xr-x
+    ;;
+  "$CASE_ROOT/usr/local/share/unionc-agent")
+    acl_key=share-dir
+    permissions=drwxr-xr-x
+    ;;
+  "$CASE_ROOT/Library/LaunchDaemons")
+    acl_key=launch-daemon-dir
+    permissions=drwxr-xr-x
+    ;;
+  "$CASE_ROOT/Library")
+    acl_key=library-root
+    permissions=drwxr-xr-x
+    ;;
+  "$CASE_ROOT/usr/local/libexec/unionc-agent") acl_key=agent-binary ;;
+  "$CASE_ROOT/usr/local/bin/unionc-agent")
+    acl_key=agent-command
+    permissions=lrwxr-xr-x
+    ;;
+  "$CASE_ROOT/usr/local/libexec/unionc-agent-logrotate") acl_key=logrotate-helper ;;
+  "$CASE_ROOT/Library/LaunchDaemons/com.unionc.agent.plist") acl_key=agent-plist ;;
+  "$CASE_ROOT/Library/LaunchDaemons/com.unionc.agent.logrotate.plist")
+    acl_key=logrotate-plist
+    ;;
+  "$CASE_ROOT/usr/local/share/unionc-agent/newsyslog.conf") acl_key=newsyslog-config ;;
+  "$CASE_ROOT/usr/local/share/unionc-agent/uninstall.sh") acl_key=uninstall-helper ;;
+  "$CASE_ROOT/var/log")
+    acl_key=log-dir
+    permissions=drwxr-xr-x
+    ;;
   "$CASE_ROOT/var/db/unionc-agent")
     acl_key=ownership-dir
     permissions=drwx------
@@ -205,10 +299,22 @@ case "$path" in
     ;;
   *) exit 65 ;;
 esac
+[ "${ACL_PATH:-}" = "$acl_key" ] && acl_requested=1
+[ "${DENY_ACL_PATH:-}" = "$acl_key" ] && deny_acl_requested=1
+[ "${TRICKY_ALLOW_ACL_PATH:-}" = "$acl_key" ] && tricky_allow_acl_requested=1
+[ "${FAIL_LS_PATH:-}" = "$acl_key" ] && ls_failure=1
 [ "$ls_failure" -eq 0 ] || exit 71
 if [ "$acl_requested" -eq 1 ] && [ ! -e "$FILE_STATE/acl-cleared.$acl_key" ]; then
   printf '%s+ 1 root wheel 0 Jan 1 00:00 %s\n' "$permissions" "$path"
   printf ' 0: user:untrusted allow read,write\n'
+elif [ "$deny_acl_requested" -eq 1 ]; then
+  # macOS displays @ instead of + when an object has both xattrs and an ACL;
+  # `ls -e` still emits the ACL entries below the first line.
+  printf '%s@ 1 root wheel 0 Jan 1 00:00 %s\n' "$permissions" "$path"
+  printf ' 0: group:everyone deny delete\n'
+elif [ "$tricky_allow_acl_requested" -eq 1 ]; then
+  printf '%s@ 1 root wheel 0 Jan 1 00:00 %s\n' "$permissions" "$path"
+  printf ' 0: User deny Name allow add_file,delete_child,writesecurity\n'
 else
   printf '%s 1 root wheel 0 Jan 1 00:00 %s\n' "$permissions" "$path"
 fi
@@ -452,6 +558,24 @@ assert_payload_rejected_without_bootout() {
     fail "$payload_case_name created a service user before rejecting the payload"
 }
 
+assert_preinstall_rejected_without_mutation() {
+  preinstall_case="$1"
+  preinstall_case_name="$2"
+  shift 2
+  : >"$preinstall_case/launch/calls"
+  if run_preinstall "$preinstall_case" "$@" >"$preinstall_case/preinstall-failure.log" 2>&1; then
+    fail "$preinstall_case_name preinstall unexpectedly succeeded"
+  fi
+  [ ! -s "$preinstall_case/launch/calls" ] ||
+    fail "$preinstall_case_name preinstall called launchd"
+  [ ! -e "$preinstall_case/var/db/unionc-agent" ] ||
+    fail "$preinstall_case_name preinstall mutated ownership bookkeeping"
+  [ ! -d "$preinstall_case/dscl/Groups/_unioncagent" ] ||
+    fail "$preinstall_case_name preinstall created a service group"
+  [ ! -d "$preinstall_case/dscl/Users/_unioncagent" ] ||
+    fail "$preinstall_case_name preinstall created a service user"
+}
+
 # Installer replaces files before postinstall. Every start-critical payload
 # check must therefore fail while the old jobs remain loaded; rollback cannot
 # recover the old files after they have already been replaced.
@@ -512,6 +636,37 @@ while [ -n "$payload_failure" ]; do
       ;;
     invalid-logrotate-plist)
       printf 'not a plist\n' >"$case_dir/Library/LaunchDaemons/com.unionc.agent.logrotate.plist"
+      next_payload_failure=missing-newsyslog
+      ;;
+    missing-newsyslog)
+      rm "$case_dir/usr/local/share/unionc-agent/newsyslog.conf"
+      next_payload_failure=newsyslog-symlink
+      ;;
+    newsyslog-symlink)
+      rm "$case_dir/usr/local/share/unionc-agent/newsyslog.conf"
+      ln -s /etc/hosts "$case_dir/usr/local/share/unionc-agent/newsyslog.conf"
+      next_payload_failure=newsyslog-mode
+      ;;
+    newsyslog-mode)
+      payload_environment=STAT_NEWSYSLOG_CONFIG=0:0:666
+      next_payload_failure=missing-uninstall-helper
+      ;;
+    missing-uninstall-helper)
+      rm "$case_dir/usr/local/share/unionc-agent/uninstall.sh"
+      next_payload_failure=uninstall-helper-symlink
+      ;;
+    uninstall-helper-symlink)
+      rm "$case_dir/usr/local/share/unionc-agent/uninstall.sh"
+      ln -s /bin/true "$case_dir/usr/local/share/unionc-agent/uninstall.sh"
+      next_payload_failure=uninstall-helper-mode
+      ;;
+    uninstall-helper-mode)
+      payload_environment=STAT_UNINSTALL_HELPER=0:0:700
+      next_payload_failure=uninstall-helper-syntax
+      ;;
+    uninstall-helper-syntax)
+      printf '#!/bin/sh\nif then\n' >"$case_dir/usr/local/share/unionc-agent/uninstall.sh"
+      chmod 0755 "$case_dir/usr/local/share/unionc-agent/uninstall.sh"
       next_payload_failure=command-not-link
       ;;
     command-not-link)
@@ -538,6 +693,111 @@ while [ -n "$payload_failure" ]; do
   fi
   payload_failure="$next_payload_failure"
 done
+
+# Reject an unsafe existing path in preinstall, before Installer can make the
+# same path appear safe by applying payload metadata.
+while IFS='|' read -r privileged_case privileged_environment; do
+  [ -n "$privileged_case" ] || continue
+  case_dir="$test_root/preinstall-$privileged_case"
+  make_case "$case_dir"
+  assert_preinstall_rejected_without_mutation "$case_dir" "$privileged_case" \
+    "$privileged_environment"
+done <<'EOF'
+local-prefix-owner|STAT_LOCAL_PREFIX=501:20:755
+system-usr-acl|ACL_PATH=system-usr
+local-prefix-acl|ACL_PATH=local-prefix
+libexec-mode|STAT_LIBEXEC_DIR=0:0:777
+libexec-acl|ACL_PATH=libexec-dir
+command-dir-acl|ACL_PATH=command-dir
+share-parent-acl|ACL_PATH=share-parent
+share-dir-acl|ACL_PATH=share-dir
+library-root-acl|ACL_PATH=library-root
+library-root-tricky-allow|TRICKY_ALLOW_ACL_PATH=library-root
+launch-daemon-dir-acl|ACL_PATH=launch-daemon-dir
+log-dir-acl|ACL_PATH=log-dir
+agent-binary-acl|ACL_PATH=agent-binary
+agent-binary-acl-inspection|FAIL_LS_PATH=agent-binary
+agent-command-acl|ACL_PATH=agent-command
+logrotate-helper-acl|ACL_PATH=logrotate-helper
+agent-plist-acl|ACL_PATH=agent-plist
+logrotate-plist-acl|ACL_PATH=logrotate-plist
+newsyslog-acl|ACL_PATH=newsyslog-config
+uninstall-helper-acl|ACL_PATH=uninstall-helper
+EOF
+
+case_dir="$test_root/preinstall-libexec-symlink"
+make_case "$case_dir"
+mv "$case_dir/usr/local/libexec" "$case_dir/foreign-libexec"
+ln -s "$case_dir/foreign-libexec" "$case_dir/usr/local/libexec"
+assert_preinstall_rejected_without_mutation "$case_dir" libexec-symlink
+
+case_dir="$test_root/preinstall-agent-symlink"
+make_case "$case_dir"
+rm "$case_dir/usr/local/libexec/unionc-agent"
+ln -s /bin/true "$case_dir/usr/local/libexec/unionc-agent"
+assert_preinstall_rejected_without_mutation "$case_dir" agent-symlink
+
+case_dir="$test_root/preinstall-safe-shared-modes"
+make_case "$case_dir"
+run_preinstall "$case_dir" \
+  STAT_LOCAL_PREFIX=0:0:751 \
+  STAT_LIBEXEC_DIR=0:0:711 \
+  STAT_COMMAND_DIR=0:0:705 \
+  STAT_SHARE_PARENT=0:0:745 \
+  DENY_ACL_PATH=library-root \
+  >"$case_dir/preinstall.log" 2>&1 ||
+  fail 'preinstall rejected safe shared modes or a deny-only system ACL'
+
+case_dir="$test_root/preinstall-missing-private-share"
+make_case "$case_dir"
+rm -rf "$case_dir/usr/local/share/unionc-agent"
+run_preinstall "$case_dir" >"$case_dir/preinstall.log" 2>&1 ||
+  fail 'preinstall rejected a missing package-private descendant'
+
+# Postinstall independently verifies the extracted root-owned payload and its
+# complete replaceable path chain before account creation or launchd cutover.
+while IFS='|' read -r privileged_case privileged_environment; do
+  [ -n "$privileged_case" ] || continue
+  case_dir="$test_root/privileged-$privileged_case"
+  make_case "$case_dir"
+  assert_payload_rejected_without_bootout "$case_dir" "$privileged_case" \
+    "$privileged_environment"
+  [ ! -e "$case_dir/var/db/unionc-agent" ] ||
+    fail "$privileged_case mutated ownership bookkeeping before rejecting the path"
+done <<'EOF'
+local-prefix-owner|STAT_LOCAL_PREFIX=501:20:755
+system-usr-acl|ACL_PATH=system-usr
+local-prefix-acl|ACL_PATH=local-prefix
+libexec-mode|STAT_LIBEXEC_DIR=0:0:777
+libexec-acl|ACL_PATH=libexec-dir
+command-dir-acl|ACL_PATH=command-dir
+share-parent-acl|ACL_PATH=share-parent
+share-dir-acl|ACL_PATH=share-dir
+library-root-acl|ACL_PATH=library-root
+library-root-tricky-allow|TRICKY_ALLOW_ACL_PATH=library-root
+launch-daemon-dir-acl|ACL_PATH=launch-daemon-dir
+log-dir-acl|ACL_PATH=log-dir
+agent-binary-acl|ACL_PATH=agent-binary
+agent-binary-acl-inspection|FAIL_LS_PATH=agent-binary
+agent-command-acl|ACL_PATH=agent-command
+logrotate-helper-acl|ACL_PATH=logrotate-helper
+agent-plist-acl|ACL_PATH=agent-plist
+logrotate-plist-acl|ACL_PATH=logrotate-plist
+newsyslog-acl|ACL_PATH=newsyslog-config
+uninstall-helper-acl|ACL_PATH=uninstall-helper
+EOF
+
+case_dir="$test_root/privileged-libexec-symlink"
+make_case "$case_dir"
+mv "$case_dir/usr/local/libexec" "$case_dir/foreign-libexec"
+ln -s "$case_dir/foreign-libexec" "$case_dir/usr/local/libexec"
+assert_payload_rejected_without_bootout "$case_dir" libexec-symlink
+
+case_dir="$test_root/privileged-deny-only-system-acl"
+make_case "$case_dir"
+run_postinstall "$case_dir" DENY_ACL_PATH=library-root \
+  >"$case_dir/postinstall.log" 2>&1 ||
+  fail 'postinstall rejected a deny-only ACL on the system Library root'
 
 assert_recoverable() {
   recovery_case="$1"
@@ -681,6 +941,13 @@ if run_postinstall "$case_dir" STAT_LOG_DIR=0:0:777 \
   fail 'world-writable log directory unexpectedly succeeded'
 fi
 
+case_dir="$test_root/unsafe-log-dir-acl"
+make_case "$case_dir"
+if run_postinstall "$case_dir" ACL_PATH=log-dir \
+  >"$case_dir/failure.log" 2>&1; then
+  fail 'log directory with an extended ACL unexpectedly succeeded'
+fi
+
 case_dir="$test_root/unsafe-log-symlink"
 make_case "$case_dir"
 : >"$case_dir/foreign-log"
@@ -695,6 +962,8 @@ for unsafe_case in "$test_root"/unsafe-* "$test_root"/stale-package-config; do
     fail "unsafe root case created a service group: $unsafe_case"
   [ ! -d "$unsafe_case/dscl/Users/_unioncagent" ] ||
     fail "unsafe root case created a service user: $unsafe_case"
+  [ ! -s "$unsafe_case/chown-calls" ] ||
+    fail "unsafe root case reached a privileged chown: $unsafe_case"
 done
 
 # Four group attributes followed by eight user attributes. Every failed dscl

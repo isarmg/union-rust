@@ -84,6 +84,20 @@ validated new payload for whichever jobs were loaded before installation; it can
 that Installer has replaced. The reinstall preserves configuration/identity/spool. A different
 package version is not migrated: purge 0.3.2 state before installing another version.
 
+Because launchd executes payloads below `/usr/local`, `preinstall` checks each listed component
+of the root payload path chain, including `/usr` and `/Library`, before Installer extracts the
+package. The shared `/usr/local`, `libexec`, `bin`, and `share` directories must be real
+`root:wheel` directories,
+root-writable and service-traversable, but not group- or other-writable. The package-private share,
+LaunchDaemon and log directories use their exact package modes. `/usr` and `/Library` may retain
+system deny-only ACLs; an ACL containing any grant is rejected. The remaining listed directories,
+the command link, and pre-existing root payload files may not have an extended ACL. `postinstall`
+repeats the checks on the extracted payload before stopping a running Agent.
+
+This fail-closed rule deliberately rejects a user-owned `/usr/local`, including the traditional
+Intel Homebrew layout. Do not recursively change a working Homebrew tree merely to satisfy the
+installer: inspect the host layout and use a separately secured installation target or host.
+
 The package also installs an hourly size check. At 10 MiB it briefly stops the Agent, rotates
 the log with macOS `newsyslog`, retains seven compressed archives, and restarts the same
 LaunchDaemon. Stopping before rotation prevents a long-running process from continuing to

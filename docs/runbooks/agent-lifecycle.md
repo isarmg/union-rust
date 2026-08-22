@@ -287,13 +287,21 @@ sudo launchctl print system/com.unionc.agent
 sudo tail -n 100 /var/log/unionc-agent.log
 ```
 
-重新安装 pkg 时，preinstall 只校验 receipt 与版本，不停止现有 job。旧进程在 payload 替换和
-postinstall 校验期间继续依靠已打开的 vnode 运行。任何 `bootout` 之前，postinstall 都会严格检查
+重新安装 pkg 时，preinstall 先校验 receipt 与版本，再在 Installer 展开 payload 前只读检查下述
+root 载荷链中已存在的路径；它不会停止现有 job。旧进程在 payload 替换和 postinstall 校验期间继续依靠
+已打开的 vnode 运行。任何 `bootout` 之前，postinstall 都会严格检查
 新 Agent 二进制、日志轮转 helper、两份 plist 和命令链接的类型、root:wheel 所有权与精确权限，
-并检查二进制版本、helper shell 语法、plist 语法、链接目标以及配置、身份、状态和日志。全部通过后，
+并要求 `/usr`、`/Library` 系统父链及 `/usr/local`、`libexec`、`bin`、`share` 的共享祖先均由
+root:wheel 持有，后四者可由服务账户遍历且不可由组或其他用户写入；包专用 share、LaunchDaemon
+与日志目录使用精确权限。`/usr` 与 `/Library` 可保留系统自带的纯 deny ACL，但任何 allow 条目都
+会被拒绝；其余上述目录、命令链接和 root payload 均不得带扩展 ACL。preinstall 会在 Installer 有机会应用 payload 元数据前
+拒绝不可信旧路径，postinstall 再校验最终状态。它还会检查二进制版本、helper shell 语法、plist
+语法、链接目标以及配置、身份、状态和日志。全部通过后，
 它才短暂按日志轮转 helper → Agent 的顺序停止旧 job，并事务式注册已验证的同版本新 payload。
 停止或注册中途失败时，失败 trap 会清理半注册的 job，并只为安装前 loaded 的 label 重新注册这套
-已验证的新 payload；Installer 已替换的旧 payload 文件无法由 postinstall 恢复。
+已验证的新 payload；Installer 已替换的旧 payload 文件无法由 postinstall 恢复。传统 Intel
+Homebrew 常见的用户所有 `/usr/local` 与该 root LaunchDaemon 安全模型不兼容，安装会明确失败；
+不要为了安装而递归修改一棵正在使用的 Homebrew 目录。
 日志达到 10 MiB 后由 root LaunchDaemon 调用 `newsyslog`，保留七份压缩归档。
 
 默认卸载：
