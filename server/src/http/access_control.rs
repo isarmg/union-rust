@@ -123,7 +123,7 @@ pub(crate) async fn database_available(state: &AppState) -> bool {
     // open. Check around the cache lookup and invalidate on either mismatch so
     // restoring the old inode cannot revive a stale success snapshot.
     if state.database_identity().verify().is_err() {
-        *state.database_health.lock().await = None;
+        clear_database_health_if_uncontended(state);
         return false;
     }
     let available = cached_database_available_with(state.database_health.as_ref(), || async {
@@ -133,10 +133,21 @@ pub(crate) async fn database_available(state: &AppState) -> bool {
     })
     .await;
     if state.database_identity().verify().is_err() {
-        *state.database_health.lock().await = None;
+        clear_database_health_if_uncontended(state);
         return false;
     }
     available
+}
+
+fn clear_database_health_if_uncontended(state: &AppState) {
+    // Identity invalidation is sticky for the lifetime of the process, so a
+    // cached result can never make a later request healthy again. Do not wait
+    // behind an in-flight schema probe merely to clear an unreachable cache
+    // entry: readiness must fail closed immediately after detecting the file
+    // identity mismatch.
+    if let Ok(mut health) = state.database_health.try_lock() {
+        *health = None;
+    }
 }
 
 async fn cached_database_available_with<Probe, ProbeFuture>(
@@ -209,6 +220,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
+    use futures_util::FutureExt;
     use sqlx_core::query::query;
 
     use super::*;
@@ -268,6 +280,24 @@ mod tests {
             !matches!(acquisition, Ok(Ok(_))),
             "the pool and AppState must share sticky invalidation"
         );
+        state.db().close().await;
+    }
+
+    #[tokio::test]
+    async fn database_identity_failure_does_not_wait_for_the_health_probe_lock() {
+        let (_directory, path, state) = file_backed_state().await;
+        assert!(database_available(&state).await, "prime healthy cache");
+        let health_guard = state.database_health.lock().await;
+        let displaced = path.with_extension("displaced");
+        std::fs::rename(&path, &displaced).expect("displace live database path");
+        std::fs::File::create(&path).expect("install different file at canonical path");
+
+        let available = database_available(&state)
+            .now_or_never()
+            .expect("identity failure must complete on its first poll");
+        assert!(!available);
+
+        drop(health_guard);
         state.db().close().await;
     }
 
