@@ -258,6 +258,95 @@ async fn anonymous_pairing_storage_is_bounded_and_reclaims_expired_rows() {
     );
 }
 
+#[tokio::test]
+async fn pairing_cleanup_reclaims_only_stale_denied_rows() {
+    let url = common::test_database_url("pairing_cleanup_reclaims_only_stale_denied_rows");
+    let mut settings = Settings::default();
+    settings.database.url = url.to_string();
+    let pool = database::connect(&settings).await.expect("connect");
+    database::initialize_schema(&pool)
+        .await
+        .expect("initialize schema");
+
+    let now = Utc::now();
+    let stale_id = Uuid::new_v4().to_string();
+    let recent_id = Uuid::new_v4().to_string();
+    for (request_id, created_at) in [
+        (
+            &stale_id,
+            database::to_epoch_micros(now - Duration::days(31)),
+        ),
+        (
+            &recent_id,
+            database::to_epoch_micros(now - Duration::days(29)),
+        ),
+    ] {
+        query(
+            r#"
+            INSERT INTO agent_pairing_requests(
+                request_id,requested_host_id,name,os,arch,agent_version,
+                token_hash,polling_secret_hash,status,expires_at,created_at
+            ) VALUES(?1,?2,'denied-host','linux','x86_64','test',?3,?4,'denied',?5,?6)
+            "#,
+        )
+        .bind(request_id)
+        .bind(Uuid::new_v4().to_string())
+        .bind(hash(&secret()))
+        .bind(hash(&secret()))
+        .bind(database::to_epoch_micros(now - Duration::minutes(1)))
+        .bind(created_at)
+        .execute(&pool)
+        .await
+        .expect("insert denied fixture");
+    }
+
+    let candidate_token = secret();
+    let candidate_poll = secret();
+    let candidate: unionc::monitoring::AgentPairingRequest = serde_json::from_value(pairing_body(
+        &candidate_token,
+        &candidate_poll,
+        "cleanup-trigger",
+    ))
+    .expect("valid pairing request");
+    let result = unionc::monitoring::store::create_agent_pairing_request(
+        &pool,
+        &Uuid::new_v4().to_string(),
+        &candidate,
+        now + Duration::minutes(15),
+    )
+    .await
+    .expect("create pairing request");
+    assert!(matches!(
+        result,
+        unionc::monitoring::store::CreatePairingResult::Ready(_)
+    ));
+
+    let stale_exists: i64 =
+        query("SELECT EXISTS(SELECT 1 FROM agent_pairing_requests WHERE request_id=?1) AS found")
+            .bind(&stale_id)
+            .fetch_one(&pool)
+            .await
+            .expect("inspect stale denial")
+            .try_get("found")
+            .unwrap();
+    let recent_exists: i64 =
+        query("SELECT EXISTS(SELECT 1 FROM agent_pairing_requests WHERE request_id=?1) AS found")
+            .bind(&recent_id)
+            .fetch_one(&pool)
+            .await
+            .expect("inspect recent denial")
+            .try_get("found")
+            .unwrap();
+    assert_eq!(
+        stale_exists, 0,
+        "a denial older than 30 days must be reclaimed"
+    );
+    assert_eq!(
+        recent_exists, 1,
+        "a recent denial remains available to the Agent"
+    );
+}
+
 fn console(method: &str, path: &str) -> axum::http::request::Builder {
     Request::builder()
         .method(method)

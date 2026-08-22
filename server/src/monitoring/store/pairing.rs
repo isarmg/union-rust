@@ -202,6 +202,8 @@ pub async fn create_agent_pairing_request(
     let requested_host_id = canonical_uuid(&request.host.id)?;
     let now = Utc::now();
     let now_micros = database::to_epoch_micros(now);
+    let stale_denied_before =
+        database::to_epoch_micros(now - chrono::Duration::days(30));
     let mut tx = database::begin_write(pool).await?;
     let existing = query(EXISTING_BY_POLLING_SECRET)
         .bind(&request.polling_secret_hash)
@@ -232,13 +234,19 @@ pub async fn create_agent_pairing_request(
         WHERE request_id IN (
             SELECT request_id
             FROM agent_pairing_requests
-            WHERE status='pending' AND expires_at <= ?1
-            ORDER BY expires_at
-            LIMIT ?2
+            WHERE (status='pending' AND expires_at <= ?1)
+               OR (status='denied' AND created_at < ?2)
+            ORDER BY CASE
+                       WHEN status='pending' THEN expires_at
+                       ELSE created_at
+                     END,
+                     request_id
+            LIMIT ?3
         )
         "#,
     )
     .bind(now_micros)
+    .bind(stale_denied_before)
     .bind(CLEANUP_BATCH_SIZE)
     .execute(tx.connection())
     .await?;
