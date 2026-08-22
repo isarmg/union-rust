@@ -1,18 +1,25 @@
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
     use super::*;
     use crate::{
         config::{LocalConfig, Settings},
         infra::database,
     };
     use axum::{body::Body, http::Request};
+    use futures_util::stream;
+    use sqlx_core::query::query;
     use tower::ServiceExt;
     use unionc_protocol::AGENT_REPORT_MAX_BODY_BYTES;
 
-    fn state() -> AppState {
+    fn state_with_pool(pool: database::DbPool) -> AppState {
         AppState::new(
             Settings::default(),
-            database::in_memory_pool().expect("in-memory test pool"),
+            pool,
             "unused".to_string(),
             LocalConfig {
                 application_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -21,6 +28,62 @@ mod tests {
             },
             crate::system::ResourceMonitor::frozen(Default::default()),
         )
+    }
+
+    fn state() -> AppState {
+        state_with_pool(database::in_memory_pool().expect("in-memory test pool"))
+    }
+
+    async fn authenticated_report_state() -> (AppState, &'static str) {
+        const TOKEN: &str = "unit-test-report-token";
+
+        let pool = database::in_memory_pool().expect("in-memory test pool");
+        database::initialize_schema(&pool)
+            .await
+            .expect("initialize report test schema");
+        let host_id = uuid::Uuid::new_v4().to_string();
+        let now = database::now_epoch_micros();
+        let mut transaction = database::begin_write(&pool)
+            .await
+            .expect("begin report fixture transaction");
+        query(
+            r#"
+            INSERT INTO monitored_hosts(
+                host_id,name,os,arch,agent_version,registered_at,last_seen_at
+            ) VALUES(?1,'test host','linux','x86_64','test',?2,?2)
+            "#,
+        )
+        .bind(&host_id)
+        .bind(now)
+        .execute(transaction.connection())
+        .await
+        .expect("insert report host fixture");
+        query(
+            r#"
+            INSERT INTO agent_credentials(credential_id,host_id,token_hash,issued_at)
+            VALUES(?1,?2,?3,?4)
+            "#,
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&host_id)
+        .bind(token_hash(TOKEN))
+        .bind(now)
+        .execute(transaction.connection())
+        .await
+        .expect("insert report credential fixture");
+        transaction.commit().await.expect("commit report fixture");
+        (state_with_pool(pool), TOKEN)
+    }
+
+    fn observed_body(polled: Arc<AtomicBool>) -> Body {
+        Body::from_stream(stream::once(async move {
+            polled.store(true, Ordering::SeqCst);
+            Ok::<_, std::io::Error>(axum::body::Bytes::from(vec![
+                b'x';
+                AGENT_REPORT_MAX_BODY_BYTES
+                    + 1
+            ]))
+        }))
     }
 
     #[test]
@@ -79,9 +142,11 @@ mod tests {
 
     #[tokio::test]
     async fn report_route_uses_the_shared_exact_body_limit() {
-        let app = agent_router().with_state(state());
+        let (state, token) = authenticated_report_state().await;
+        let app = agent_router().with_state(state);
         let request = |size| {
             Request::post("/api/agent/v1/report")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(vec![b' '; size]))
                 .unwrap()
@@ -92,10 +157,10 @@ mod tests {
             .oneshot(request(AGENT_REPORT_MAX_BODY_BYTES))
             .await
             .unwrap();
-        assert_ne!(
+        assert_eq!(
             boundary.status(),
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "the documented maximum must reach the handler"
+            StatusCode::BAD_REQUEST,
+            "the documented maximum must reach JSON parsing in the handler"
         );
 
         let oversized = app
@@ -103,6 +168,47 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn report_authentication_and_media_type_run_before_body_polling() {
+        let (state, token) = authenticated_report_state().await;
+        let app = agent_router().with_state(state);
+
+        let unknown_polled = Arc::new(AtomicBool::new(false));
+        let unknown = app
+            .clone()
+            .oneshot(
+                Request::post("/api/agent/v1/report")
+                    .header(header::AUTHORIZATION, "Bearer unknown-token")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(observed_body(unknown_polled.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            !unknown_polled.load(Ordering::SeqCst),
+            "an unknown credential must be rejected without polling the body"
+        );
+
+        let media_type_polled = Arc::new(AtomicBool::new(false));
+        let unsupported = app
+            .oneshot(
+                Request::post("/api/agent/v1/report")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "text/plain")
+                    .body(observed_body(media_type_polled.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unsupported.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert!(
+            !media_type_polled.load(Ordering::SeqCst),
+            "an unsupported media type must be rejected without polling the body"
+        );
     }
 
     #[test]

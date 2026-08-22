@@ -5,8 +5,8 @@ use std::time::Instant;
 
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    extract::{FromRequestParts, Path, Query, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header, request::Parts},
     response::{IntoResponse, Response},
 };
 use chrono::Utc;
@@ -27,6 +27,46 @@ use crate::{
 
 const PAIRING_TTL_SECONDS: i64 = 15 * 60;
 const PAIRING_POLL_INTERVAL_SECONDS: u64 = 5;
+
+struct AuthenticatedReport {
+    host_id: String,
+    credential_hash: String,
+}
+
+impl FromRequestParts<AppState> for AuthenticatedReport {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let client = require_agent_reverse_proxy(state, &parts.headers)?;
+        check_report_auth_rate(state, client).await?;
+        let credential = bearer_token(&parts.headers).ok_or(AppError::Unauthorized)?;
+        let credential_hash = token_hash(credential);
+        let host_id = match crate::monitoring::store::monitoring_host_for_token(
+            state.db().as_ref(),
+            &credential_hash,
+        )
+        .await
+        .map_err(|error| agent_database_unavailable("authenticate monitoring report", error))?
+        {
+            crate::monitoring::store::MonitoringTokenAuthentication::Active(host_id) => host_id,
+            crate::monitoring::store::MonitoringTokenAuthentication::Revoked => {
+                return Err(AppError::AgentRevoked);
+            }
+            crate::monitoring::store::MonitoringTokenAuthentication::Unknown => {
+                return Err(AppError::Unauthorized);
+            }
+        };
+        check_report_rate(state, &host_id).await?;
+        require_json_content_type(&parts.headers)?;
+        Ok(Self {
+            host_id,
+            credential_hash,
+        })
+    }
+}
 
 mod agent;
 mod console;
@@ -300,64 +340,36 @@ async fn activate_pairing_request(
 ///
 /// # 为什么 body 是 `Bytes` 而不是 `Json<AgentReport>`
 ///
-/// axum 的提取器在 **handler 体执行之前**运行。用 `Json<AgentReport>` 时，一个完全
-/// 未认证的请求也能驱动一次完整的 512 KiB JSON 反序列化——认证检查在解析**之后**才
-/// 轮到执行，等于把解析成本白送给任何匿名调用方。
-///
-/// 改为先取原始 `Bytes`（只是把已读入的 body 交出来，不做结构化解析），认证与限流
-/// 通过后再 `serde_json::from_slice`。
-///
-/// 需要说清这**没有**省掉什么：`Bytes` 提取器仍然会把最多 512 KiB 的 body 完整读入
-/// 内存才进入 handler，因此带宽与内存占用不变，`DefaultBodyLimit` 仍是那道唯一的
-/// 闸门。省掉的只是 JSON 解析与 `AgentReport` 的结构化分配——对一份含上千个设备
-/// 条目的报文而言，这仍是未认证路径上最大的一块 CPU 开销。
+/// axum 按参数顺序运行提取器。`AuthenticatedReport` 是纯请求头提取器，先完成反代
+/// 契约、匿名限流、凭据认证、主机限流与媒体类型检查；只有全部通过后，最后一个
+/// `Bytes` 提取器才会读取最多 512 KiB 的请求体。handler 再执行 JSON 反序列化，避免
+/// 匿名请求驱动应用层轮询、聚合请求体或消耗 JSON 解析 CPU。底层网络栈仍可能按自身
+/// 缓冲策略预读少量数据，这不属于提取器能控制的边界。
 async fn report_metrics(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    authenticated: AuthenticatedReport,
     body: axum::body::Bytes,
 ) -> AppResult<Response> {
-    let client = require_agent_reverse_proxy(&state, &headers)?;
-    check_report_auth_rate(&state, client).await?;
-    let credential = bearer_token(&headers).ok_or(AppError::Unauthorized)?;
-    let credential_hash = token_hash(credential);
-    let authenticated_host = match crate::monitoring::store::monitoring_host_for_token(
-        state.db().as_ref(),
-        &credential_hash,
-    )
-    .await
-    .map_err(|error| agent_database_unavailable("authenticate monitoring report", error))?
-    {
-        crate::monitoring::store::MonitoringTokenAuthentication::Active(host_id) => host_id,
-        crate::monitoring::store::MonitoringTokenAuthentication::Revoked => {
-            return Err(AppError::AgentRevoked);
-        }
-        crate::monitoring::store::MonitoringTokenAuthentication::Unknown => {
-            return Err(AppError::Unauthorized);
-        }
-    };
-    check_report_rate(&state, &authenticated_host).await?;
-    // 认证与限流都通过了，现在才检查媒体类型并为 body 花解析成本。
-    require_json_content_type(&headers)?;
     let report: AgentReport = serde_json::from_slice(&body)
         .map_err(|error| AppError::BadRequest(format!("invalid agent report: {error}")))?;
     report.validate()?;
     let reported_host = uuid::Uuid::parse_str(&report.host.id)
         .expect("validated host UUID")
         .to_string();
-    if reported_host != authenticated_host {
+    if reported_host != authenticated.host_id {
         return Err(AppError::AgentHostMismatch);
     }
     let (accepted, received_at) = crate::monitoring::store::store_authenticated_monitoring_report(
         state.db().as_ref(),
         &report,
-        &credential_hash,
+        &authenticated.credential_hash,
     )
     .await
     .map_err(map_store_report_error)?;
     Ok((
         StatusCode::ACCEPTED,
         Json(AgentReportAck {
-            host_id: authenticated_host,
+            host_id: authenticated.host_id,
             report_id: report.report_id,
             accepted,
             received_at,
