@@ -148,6 +148,14 @@ impl DatabaseIdentity {
         }
         Ok(())
     }
+
+    fn invalidate(&self) {
+        self.poisoned.store(true, Ordering::SeqCst);
+    }
+
+    fn is_in_memory(&self) -> bool {
+        matches!(self.kind, DatabaseIdentityKind::InMemory)
+    }
 }
 
 fn identity_poison(path: &Path, device: u64, inode: u64) -> Arc<AtomicBool> {
@@ -211,6 +219,52 @@ fn pool_identity_result(
         .transpose()
         .map(|_| ())
         .map_err(|error| sqlx_core::error::Error::Protocol(error.to_string()))
+}
+
+async fn verify_pool_connection(
+    connection: &mut SqliteConnection,
+    identity_slot: &OnceLock<DatabaseIdentity>,
+) -> Result<(), sqlx_core::error::Error> {
+    pool_identity_result(identity_slot)?;
+    let Some(identity) = identity_slot.get() else {
+        // A missing database has no identity until the one-shot bootstrap
+        // connection creates it. Production runtime pools are existing-only
+        // and always enter this hook with an installed identity.
+        return Ok(());
+    };
+    if identity.is_in_memory() {
+        return Ok(());
+    }
+
+    let mut moved = 0_i32;
+    let mut handle = connection.lock_handle().await?;
+    // SAFETY: `lock_handle` exclusively owns SQLx's sqlite3 handle for this
+    // scope. `c"main"` is NUL-terminated, `moved` is a live `int`, and the direct
+    // libsqlite3-sys version is pinned to SQLx's semver-exempt dependency.
+    let result = unsafe {
+        libsqlite3_sys::sqlite3_file_control(
+            handle.as_raw_handle().as_ptr(),
+            c"main".as_ptr(),
+            libsqlite3_sys::SQLITE_FCNTL_HAS_MOVED,
+            (&mut moved as *mut i32).cast(),
+        )
+    };
+    drop(handle);
+    if result != libsqlite3_sys::SQLITE_OK {
+        identity.invalidate();
+        return Err(sqlx_core::error::Error::Protocol(format!(
+            "SQLite could not verify the open main database file (code {result})"
+        )));
+    }
+    if moved != 0 {
+        identity.invalidate();
+        return Err(sqlx_core::error::Error::Protocol(
+            "the open SQLite main database file was moved, replaced, or deleted".to_string(),
+        ));
+    }
+    // Close the path/handle race on both sides: the path must still identify
+    // the expected inode after SQLite has inspected its actual open handle.
+    pool_identity_result(identity_slot)
 }
 
 fn write_gate() -> Arc<Mutex<()>> {
@@ -356,6 +410,11 @@ async fn connect_with_policy(
     let (options, path) = connect_options(settings, create_if_missing)?;
     let identity_before = optional_database_identity(&path, create_if_missing)?;
     let pool_identity = Arc::new(OnceLock::new());
+    if let Some(identity) = identity_before.as_ref() {
+        pool_identity.set(identity.clone()).map_err(|_| {
+            anyhow::anyhow!("SQLite database identity was initialized more than once")
+        })?;
+    }
     let before_acquire_identity = pool_identity.clone();
     let after_connect_identity = pool_identity.clone();
     let max_connections = if path == Path::new(":memory:") { 1 } else { 8 };
@@ -365,13 +424,17 @@ async fn connect_with_policy(
         .acquire_timeout(Duration::from_secs(10))
         .idle_timeout(Duration::from_secs(300))
         .max_lifetime(Duration::from_secs(1800))
-        .before_acquire(move |_connection, _metadata| {
-            let result = pool_identity_result(before_acquire_identity.as_ref()).map(|()| true);
-            Box::pin(async move { result })
+        .before_acquire(move |connection, _metadata| {
+            let identity = before_acquire_identity.clone();
+            Box::pin(async move {
+                verify_pool_connection(connection, identity.as_ref())
+                    .await
+                    .map(|()| true)
+            })
         })
-        .after_connect(move |_connection, _metadata| {
-            let result = pool_identity_result(after_connect_identity.as_ref());
-            Box::pin(async move { result })
+        .after_connect(move |connection, _metadata| {
+            let identity = after_connect_identity.clone();
+            Box::pin(async move { verify_pool_connection(connection, identity.as_ref()).await })
         })
         .connect_with(options)
         .await
@@ -392,10 +455,18 @@ async fn connect_with_policy(
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     }
 
-    let identity_after = DatabaseIdentity::capture_path(path.clone())?;
-    if let Some(identity_before) = identity_before
-        && identity_before != identity_after
-    {
+    let identity_after = match DatabaseIdentity::capture_path(path.clone()) {
+        Ok(identity) => identity,
+        Err(error) => {
+            pool.close().await;
+            return Err(error);
+        }
+    };
+    if let Some(identity_before) = identity_before {
+        if identity_before == identity_after {
+            return Ok(pool);
+        }
+        identity_before.invalidate();
         pool.close().await;
         anyhow::bail!(
             "SQLite database path {} changed while it was being opened",
@@ -722,9 +793,57 @@ mod tests {
         .await;
         assert!(
             !matches!(write, Ok(Ok(_))),
-            "no pooled connection may adopt or keep using a replaced database path"
+            "a subsequent pool acquisition must not adopt a replaced database path"
         );
         pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn open_handle_check_rejects_an_aba_path_swap() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unionc.db");
+        let alternate = directory.path().join("alternate.db");
+        let saved_expected = directory.path().join("saved-expected.db");
+        let saved_alternate = directory.path().join("saved-alternate.db");
+
+        for candidate in [&path, &alternate] {
+            let mut settings = Settings::default();
+            settings.database.url = candidate.display().to_string();
+            let pool = connect(&settings).await.unwrap();
+            initialize_schema(&pool).await.unwrap();
+            pool.close().await;
+        }
+        let identity = DatabaseIdentity::capture_path(path.clone()).unwrap();
+        let second_capture = DatabaseIdentity::capture_path(path.clone()).unwrap();
+
+        std::fs::rename(&path, &saved_expected).unwrap();
+        std::fs::rename(&alternate, &path).unwrap();
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(false);
+        let mut wrong_connection = SqliteConnection::connect_with(&options).await.unwrap();
+        std::fs::rename(&path, &saved_alternate).unwrap();
+        std::fs::rename(&saved_expected, &path).unwrap();
+
+        assert!(
+            identity.verify().is_ok(),
+            "path-only checks cannot distinguish the restored expected inode"
+        );
+        let installed = OnceLock::new();
+        installed.set(identity.clone()).unwrap();
+        let error = verify_pool_connection(&mut wrong_connection, &installed)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("moved, replaced, or deleted"));
+        assert!(
+            identity.verify().is_err(),
+            "an fd/path mismatch must poison every shared identity capture"
+        );
+        assert!(
+            second_capture.verify().is_err(),
+            "separate captures of one canonical inode must share sticky invalidation"
+        );
+        wrong_connection.close().await.unwrap();
     }
 
     #[tokio::test]

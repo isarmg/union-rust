@@ -19,6 +19,9 @@ mime = "0.3"
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
+# SQLx's locked SQLite handle exposes this semver-exempt FFI type. Keep the
+# exact version aligned with sqlx-sqlite while using SQLITE_FCNTL_HAS_MOVED.
+libsqlite3-sys = "=0.30.1"
 sqlx-core = { version = "0.8", default-features = false, features = ["chrono", "_rt-tokio"] }
 # SQLite is the runtime database. `bundled` keeps the server self-contained and
 # pins the SQLite feature set (STRICT tables, RETURNING, JSON1 and WAL) instead
