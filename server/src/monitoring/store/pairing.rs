@@ -447,10 +447,25 @@ pub async fn activate_agent_pairing(
     request_id: &str,
     activation_code_hash: &str,
 ) -> anyhow::Result<ActivatePairingResult> {
+    activate_agent_pairing_with_clock(pool, request_id, activation_code_hash, Utc::now).await
+}
+
+async fn activate_agent_pairing_with_clock<F>(
+    pool: &DbPool,
+    request_id: &str,
+    activation_code_hash: &str,
+    clock: F,
+) -> anyhow::Result<ActivatePairingResult>
+where
+    F: FnOnce() -> DateTime<Utc> + Send,
+{
     let request_id = canonical_uuid(request_id)?;
-    let now = Utc::now();
-    let now_micros = database::to_epoch_micros(now);
     let mut tx = database::begin_write(pool).await?;
+    // Expiration belongs to the serialized read/check/write decision. Taking
+    // the timestamp before waiting for the writer gate would let a request
+    // queued before expiry activate after the code has already expired.
+    let now = clock();
+    let now_micros = database::to_epoch_micros(now);
     let pairing = query(
         r#"
         SELECT request_id,name,os,os_version,kernel_version,arch,
