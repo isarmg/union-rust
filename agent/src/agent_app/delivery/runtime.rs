@@ -50,6 +50,7 @@ pub(super) async fn run_loop(
     spool: Spool,
     reporter: Reporter,
     active_pairing: Option<(Uuid, Uuid)>,
+    process_shutdown: &ShutdownSignal,
 ) -> anyhow::Result<()> {
     let (delivery_sender, delivery_receiver) = mpsc::channel(1);
     let delivery_trigger = DeliveryTrigger {
@@ -81,8 +82,7 @@ pub(super) async fn run_loop(
             result = &mut delivery_worker => {
                 return delivery_worker_result(result);
             }
-            result = shutdown_signal() => {
-                if let Err(error) = result { error!("shutdown handler failed: {error}"); }
+            _ = process_shutdown.cancelled() => {
                 info!("shutdown signal received");
                 let _ = shutdown_sender.send(true);
                 drop(delivery_trigger);

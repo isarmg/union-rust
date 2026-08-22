@@ -15,7 +15,7 @@ use unionc_agent::{
     collectors::{load_host_identity, transient_host_identity},
     model::AgentReport,
     pairing::{self, PairingProgress},
-    service::ShutdownSignal,
+    service::{ShutdownSignal, shutdown_channel},
     spool::Spool,
     transport::Reporter,
 };
@@ -60,6 +60,7 @@ async fn run_agent(ready: Option<fn() -> anyhow::Result<bool>>) -> anyhow::Resul
     if command == AgentCommand::Doctor && !config.doctor_delivery {
         return run_read_only_doctor(&config).await;
     }
+    let shutdown = install_process_shutdown_signal()?;
     let mut host = if command == AgentCommand::Probe {
         transient_host_identity(Uuid::new_v4())
     } else if pairing::has_current_authorized_identity(&config)? {
@@ -70,15 +71,25 @@ async fn run_agent(ready: Option<fn() -> anyhow::Result<bool>>) -> anyhow::Resul
     if let Some(name) = &config.host_name {
         host.name.clone_from(name);
     }
+    if shutdown.is_requested() {
+        return Ok(());
+    }
     if command == AgentCommand::Pair {
-        return run_pairing(&mut config, host).await;
+        return run_pairing(&mut config, host, &shutdown).await;
     }
 
     let mut sampler = SystemSampler::new();
-    tokio::time::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
+    tokio::select! {
+        biased;
+        _ = shutdown.cancelled() => return Ok(()),
+        _ = tokio::time::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL) => {}
+    }
 
     if command == AgentCommand::Probe {
         let report = sampler.collect(host, config.slow_interval_seconds, 0);
+        if shutdown.is_requested() {
+            return Ok(());
+        }
         match config.output_mode {
             OutputMode::Json => println!("{}", serde_json::to_string_pretty(&report)?),
             OutputMode::Human => println!(
@@ -105,16 +116,27 @@ async fn run_agent(ready: Option<fn() -> anyhow::Result<bool>>) -> anyhow::Resul
         return Ok(());
     }
     let Some((reporter, active_pairing)) =
-        prepare_reporter(&mut config, &mut host, command).await?
+        prepare_reporter(&mut config, &mut host, command, &shutdown).await?
     else {
         info!("shutdown signal received while waiting for browser pairing");
         return Ok(());
     };
 
     if matches!(command, AgentCommand::Once | AgentCommand::Doctor) {
-        let result = run_once(&config, host.clone(), &mut sampler, &spool, reporter).await;
+        let outcome = run_once(
+            &config,
+            host.clone(),
+            &mut sampler,
+            &spool,
+            reporter,
+            &shutdown,
+        )
+        .await?;
+        if outcome == delivery::RunOnceOutcome::Shutdown {
+            info!("shutdown signal received during one-shot delivery");
+            return Ok(());
+        }
         if command == AgentCommand::Doctor {
-            result?;
             let delivery = serde_json::json!({
                 "schema_version": 1,
                 "command": "doctor",
@@ -143,7 +165,6 @@ async fn run_agent(ready: Option<fn() -> anyhow::Result<bool>>) -> anyhow::Resul
             }
             return Ok(());
         }
-        result?;
         match config.output_mode {
             OutputMode::Json => println!(
                 "{}",
@@ -161,12 +182,22 @@ async fn run_agent(ready: Option<fn() -> anyhow::Result<bool>>) -> anyhow::Resul
     }
 
     info!(host_id = %host.id, host_name = %host.name, "read-only telemetry agent started");
-    run_loop(config, host, sampler, spool, reporter, active_pairing).await
+    run_loop(
+        config,
+        host,
+        sampler,
+        spool,
+        reporter,
+        active_pairing,
+        &shutdown,
+    )
+    .await
 }
 
 async fn run_pairing(
     config: &mut AgentConfig,
     host: unionc_agent::HostIdentity,
+    shutdown: &ShutdownSignal,
 ) -> anyhow::Result<()> {
     let tray_cancel = tray_pair_cancel_signal(config.tray_cancel_event.as_deref())?;
     let tray_deadline = config
@@ -174,7 +205,7 @@ async fn run_pairing(
         .map(|seconds| Instant::now() + Duration::from_secs(seconds));
     let session = tokio::select! {
         result = pairing::start_or_resume(config, &host) => result?,
-        outcome = wait_for_pairing_abort(tray_cancel.as_ref(), tray_deadline) => {
+        outcome = wait_for_pairing_abort(shutdown, tray_cancel.as_ref(), tray_deadline) => {
             match outcome? {
                 PairingWait::Shutdown => return Ok(()),
                 outcome => stop_tray_pairing(config, outcome)?,
@@ -220,21 +251,34 @@ async fn run_pairing(
     }
 
     let expected_activation_instance = if config.tray_activation_stdin {
-        let activation_code = read_tray_activation_code()?;
-        let activated = tokio::select! {
-            result = pairing::activate_pending_with_code(
-                config,
-                expected_generation,
-                expected_request_id,
-                activation_code.as_str()?,
-            ) => result?,
-            outcome = wait_for_pairing_abort(tray_cancel.as_ref(), tray_deadline) => {
+        let activation_code = tokio::select! {
+            biased;
+            outcome = wait_for_pairing_abort(shutdown, tray_cancel.as_ref(), tray_deadline) => {
                 match outcome? {
                     PairingWait::Shutdown => return Ok(()),
                     outcome => stop_tray_pairing(config, outcome)?,
                 }
                 unreachable!()
             }
+            result = spawn_tray_activation_code_reader()? => {
+                result.context("authorization-key reader stopped unexpectedly")??
+            }
+        };
+        let activated = tokio::select! {
+            biased;
+            outcome = wait_for_pairing_abort(shutdown, tray_cancel.as_ref(), tray_deadline) => {
+                match outcome? {
+                    PairingWait::Shutdown => return Ok(()),
+                    outcome => stop_tray_pairing(config, outcome)?,
+                }
+                unreachable!()
+            }
+            result = pairing::activate_pending_with_code(
+                config,
+                expected_generation,
+                expected_request_id,
+                activation_code.as_str()?,
+            ) => result?,
         };
         drop(activation_code);
         activated
@@ -246,7 +290,7 @@ async fn run_pairing(
     loop {
         let polled = tokio::select! {
             result = pairing::poll_existing(config) => result,
-            outcome = wait_for_pairing_abort(tray_cancel.as_ref(), tray_deadline) => {
+            outcome = wait_for_pairing_abort(shutdown, tray_cancel.as_ref(), tray_deadline) => {
                 match outcome? {
                     PairingWait::Shutdown => return Ok(()),
                     outcome => stop_tray_pairing(config, outcome)?,
@@ -275,7 +319,9 @@ async fn run_pairing(
                 }
                 network_backoff = Duration::from_secs(1);
                 let delay = Duration::from_secs(waiting.poll_interval);
-                match wait_for_pairing_control(delay, tray_cancel.as_ref(), tray_deadline).await? {
+                match wait_for_pairing_control(delay, shutdown, tray_cancel.as_ref(), tray_deadline)
+                    .await?
+                {
                     PairingWait::Elapsed => {}
                     PairingWait::Shutdown => {
                         if config.tray_events {
@@ -423,7 +469,9 @@ async fn run_pairing(
                     retry_seconds = delay.as_secs_f64(),
                     "pairing status could not be checked; the saved request will be retried: {error}"
                 );
-                match wait_for_pairing_control(delay, tray_cancel.as_ref(), tray_deadline).await? {
+                match wait_for_pairing_control(delay, shutdown, tray_cancel.as_ref(), tray_deadline)
+                    .await?
+                {
                     PairingWait::Elapsed => {}
                     PairingWait::Shutdown => return Ok(()),
                     outcome => stop_tray_pairing(config, outcome)?,
@@ -473,19 +521,35 @@ fn read_tray_activation_code() -> anyhow::Result<TrayActivationCode> {
     Ok(code)
 }
 
+type TrayActivationCodeReceiver =
+    tokio::sync::oneshot::Receiver<anyhow::Result<TrayActivationCode>>;
+
+fn spawn_tray_activation_code_reader() -> anyhow::Result<TrayActivationCodeReceiver> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("unionc-pair-stdin".into())
+        .spawn(move || {
+            // A standard-input read has no portable asynchronous cancellation. Keep it off the
+            // Tokio blocking pool so process shutdown does not wait for a broker that failed to
+            // close its pipe. If the receiver was cancelled, SendError drops and zeroizes the
+            // returned activation code on this thread.
+            let _ = sender.send(read_tray_activation_code());
+        })
+        .context("failed to start the authorization-key reader")?;
+    Ok(receiver)
+}
+
 fn crate_validate_tray_activation_code(value: &str) -> anyhow::Result<()> {
     unionc_agent::tray_support::validate_activation_code(value).map(|_| ())
 }
 
 async fn wait_for_pairing_abort(
+    shutdown: &ShutdownSignal,
     tray_cancel: Option<&ShutdownSignal>,
     tray_deadline: Option<Instant>,
 ) -> anyhow::Result<PairingWait> {
     tokio::select! {
-        result = shutdown_signal() => {
-            result?;
-            Ok(PairingWait::Shutdown)
-        },
+        _ = shutdown.cancelled() => Ok(PairingWait::Shutdown),
         _ = optional_pair_cancel(tray_cancel) => Ok(PairingWait::Cancelled),
         _ = optional_pair_deadline(tray_deadline) => Ok(PairingWait::Deadline),
     }
@@ -501,15 +565,13 @@ enum PairingWait {
 
 async fn wait_for_pairing_control(
     delay: Duration,
+    shutdown: &ShutdownSignal,
     tray_cancel: Option<&ShutdownSignal>,
     tray_deadline: Option<Instant>,
 ) -> anyhow::Result<PairingWait> {
     tokio::select! {
         _ = tokio::time::sleep(delay) => Ok(PairingWait::Elapsed),
-        result = shutdown_signal() => {
-            result?;
-            Ok(PairingWait::Shutdown)
-        },
+        _ = shutdown.cancelled() => Ok(PairingWait::Shutdown),
         _ = optional_pair_cancel(tray_cancel) => Ok(PairingWait::Cancelled),
         _ = optional_pair_deadline(tray_deadline) => Ok(PairingWait::Deadline),
     }
@@ -578,25 +640,49 @@ mod delivery;
 
 use delivery::{jitter, prepare_reporter, run_loop, run_once};
 
-#[cfg(unix)]
-async fn shutdown_signal() -> anyhow::Result<()> {
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    tokio::select! {
-        result = tokio::signal::ctrl_c() => result?,
-        _ = terminate.recv() => {},
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-async fn shutdown_signal() -> anyhow::Result<()> {
+fn install_process_shutdown_signal() -> anyhow::Result<ShutdownSignal> {
     #[cfg(windows)]
     if let Some(signal) = windows_service_host::shutdown_signal() {
-        signal.cancelled().await;
-        return Ok(());
+        return Ok(signal);
     }
-    tokio::signal::ctrl_c().await?;
-    Ok(())
+
+    let (controller, signal) = shutdown_channel();
+
+    #[cfg(unix)]
+    {
+        // Tokio permanently replaces the operating system's default handling after the first
+        // signal stream is registered. Keep both streams alive and continuously polled for the
+        // process lifetime; recreating them around individual waits leaves windows in which a
+        // SIGINT/SIGTERM is consumed globally but observed by no receiver.
+        let mut interrupt =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::spawn(async move {
+            loop {
+                let (name, received) = tokio::select! {
+                    signal = interrupt.recv() => ("SIGINT", signal),
+                    signal = terminate.recv() => ("SIGTERM", signal),
+                };
+                if received.is_none() {
+                    error!(signal = name, "process signal listener closed unexpectedly");
+                    controller.request_shutdown();
+                    return;
+                }
+                controller.request_shutdown();
+            }
+        });
+    }
+
+    #[cfg(not(unix))]
+    tokio::spawn(async move {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            error!("shutdown handler failed: {error}");
+        }
+        controller.request_shutdown();
+    });
+
+    Ok(signal)
 }
 
 #[cfg(windows)]

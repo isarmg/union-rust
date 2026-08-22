@@ -2,6 +2,7 @@ pub(super) async fn prepare_reporter(
     config: &mut AgentConfig,
     host: &mut unionc_agent::HostIdentity,
     command: AgentCommand,
+    shutdown: &ShutdownSignal,
 ) -> anyhow::Result<Option<(Reporter, Option<(Uuid, Uuid)>)>> {
     let mut backoff = Duration::from_secs(1);
     let mut last_authorization_notice: Option<(&'static str, Option<Uuid>)> = None;
@@ -11,7 +12,11 @@ pub(super) async fn prepare_reporter(
         {
             return Ok(Some((reporter, None)));
         }
-        match pairing::poll_existing(config).await {
+        let progress = tokio::select! {
+            result = pairing::poll_existing(config) => result,
+            _ = shutdown.cancelled() => return Ok(None),
+        };
+        match progress {
             Ok(Some(PairingProgress::Creating { .. })) => {
                 continue;
             }
@@ -35,10 +40,7 @@ pub(super) async fn prepare_reporter(
                 }
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(waiting.poll_interval)) => {},
-                    result = shutdown_signal() => {
-                        result?;
-                        return Ok(None);
-                    }
+                    _ = shutdown.cancelled() => return Ok(None),
                 }
                 continue;
             }
@@ -83,10 +85,7 @@ pub(super) async fn prepare_reporter(
                 }
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(60)) => {},
-                    result = shutdown_signal() => {
-                        result?;
-                        return Ok(None);
-                    }
+                    _ = shutdown.cancelled() => return Ok(None),
                 }
                 continue;
             }
@@ -112,10 +111,7 @@ pub(super) async fn prepare_reporter(
                 }
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(60)) => {},
-                    result = shutdown_signal() => {
-                        result?;
-                        return Ok(None);
-                    }
+                    _ = shutdown.cancelled() => return Ok(None),
                 }
                 continue;
             }
@@ -131,10 +127,7 @@ pub(super) async fn prepare_reporter(
                 );
                 tokio::select! {
                     _ = tokio::time::sleep(delay) => {},
-                    result = shutdown_signal() => {
-                        result?;
-                        return Ok(None);
-                    }
+                    _ = shutdown.cancelled() => return Ok(None),
                 }
                 backoff = (backoff * 2).min(Duration::from_secs(300));
                 continue;
@@ -158,10 +151,7 @@ pub(super) async fn prepare_reporter(
         }
         tokio::select! {
             _ = tokio::time::sleep(delay) => {},
-            result = shutdown_signal() => {
-                result?;
-                return Ok(None);
-            }
+            _ = shutdown.cancelled() => return Ok(None),
         }
         backoff = (backoff * 2).min(Duration::from_secs(60));
     }

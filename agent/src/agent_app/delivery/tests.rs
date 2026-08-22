@@ -48,6 +48,35 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn cancelled_one_shot_retains_the_current_report_for_idempotent_retry() {
+        let directory = std::env::temp_dir().join(format!(
+            "unionc-once-shutdown-{}",
+            Uuid::new_v4()
+        ));
+        let spool = Spool::open(&directory, 1024 * 1024).unwrap();
+        let mut sampler = SystemSampler::new();
+        let report = sampler.collect(
+            transient_host_identity(Uuid::new_v4()),
+            10,
+            0,
+        );
+        let (controller, shutdown) = unionc_agent::service::shutdown_channel();
+        controller.request_shutdown();
+
+        let operation = finish_before_shutdown(&shutdown, std::future::pending::<()>()).await;
+        assert!(operation.is_none());
+        assert_eq!(
+            retain_once_report(&spool, &report).unwrap(),
+            RunOnceOutcome::Shutdown
+        );
+        let pending = spool.oldest().unwrap().expect("cancelled report is durable");
+        assert_eq!(pending.report.report_id, report.report_id);
+
+        drop(spool);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     /// 偶发 I/O 失败必须降级续跑，不能终止常驻进程。
     #[test]
     fn transient_spool_failures_do_not_stop_the_agent() {
