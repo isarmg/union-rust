@@ -18,13 +18,20 @@ user_marker_state=absent
 recorded_group_gid=
 recorded_user_uid=
 recorded_user_primary_gid=
+group_created_now=0
+group_creation_committed=0
+rollback_group_gid=
+user_created_now=0
+user_creation_committed=0
+rollback_user_uid=
+rollback_user_primary_gid=
 
 die() {
   echo "unionc postinstall: $*" >&2
   exit 1
 }
 
-for command_name in getent groupadd useradd install cut chown chmod mv stat awk; do
+for command_name in getent groupadd groupdel useradd userdel install cut chown chmod rm mv stat awk; do
   command -v "$command_name" >/dev/null 2>&1 ||
     die "required command is unavailable: $command_name"
 done
@@ -204,6 +211,154 @@ write_user_marker() {
   recorded_user_primary_gid=$marker_primary_gid
 }
 
+# Enumerate NSS for both normal creation and rollback. A failed keyed lookup is
+# not proof that an account is absent, and deletion must never rely on that
+# ambiguity after a partially completed package transaction.
+lookup_user_entry() {
+  passwd_listing=$(getent passwd 2>/dev/null) || return 2
+  user_entry=
+  user_match_count=0
+  while IFS= read -r directory_entry || [ -n "$directory_entry" ]; do
+    case "$directory_entry" in
+      unionc:*)
+        user_match_count=$((user_match_count + 1))
+        user_entry=$directory_entry
+        ;;
+    esac
+  done <<EOF
+$passwd_listing
+EOF
+  case "$user_match_count" in
+    0) return 1 ;;
+    1) return 0 ;;
+    *) return 2 ;;
+  esac
+}
+
+lookup_group_entry() {
+  group_listing=$(getent group 2>/dev/null) || return 2
+  group_entry=
+  group_match_count=0
+  while IFS= read -r directory_entry || [ -n "$directory_entry" ]; do
+    case "$directory_entry" in
+      unionc:*)
+        group_match_count=$((group_match_count + 1))
+        group_entry=$directory_entry
+        ;;
+    esac
+  done <<EOF
+$group_listing
+EOF
+  case "$group_match_count" in
+    0) return 1 ;;
+    1) return 0 ;;
+    *) return 2 ;;
+  esac
+}
+
+rollback_user_is_exact() {
+  current_uid=$(printf '%s\n' "$user_entry" | cut -d: -f3)
+  current_gid=$(printf '%s\n' "$user_entry" | cut -d: -f4)
+  current_home=$(printf '%s\n' "$user_entry" | cut -d: -f6)
+  current_shell=$(printf '%s\n' "$user_entry" | cut -d: -f7)
+  [ -n "$rollback_user_uid" ] && [ -n "$rollback_user_primary_gid" ] &&
+    [ "$current_uid" = "$rollback_user_uid" ] &&
+    [ "$current_gid" = "$rollback_user_primary_gid" ] &&
+    [ "$current_home" = "$data_dir" ] &&
+    { [ "$current_shell" = /usr/sbin/nologin ] || [ "$current_shell" = /sbin/nologin ]; }
+}
+
+# Return 0 when the just-created group is referenced, 1 when it is unused, and
+# 2 when usage cannot be established safely.
+rollback_group_is_in_use() {
+  current_group_gid=$(printf '%s\n' "$group_entry" | cut -d: -f3)
+  group_members=$(printf '%s\n' "$group_entry" | cut -d: -f4-)
+  [ -n "$rollback_group_gid" ] && [ "$current_group_gid" = "$rollback_group_gid" ] ||
+    return 2
+  case "$group_members" in
+    *:*) return 2 ;;
+    '') ;;
+    *) return 0 ;;
+  esac
+
+  current_passwd_listing=$(getent passwd 2>/dev/null) || return 2
+  while IFS=: read -r account_name _password _uid primary_gid _gecos _home _shell; do
+    [ -n "$account_name" ] || continue
+    if [ "$primary_gid" = "$rollback_group_gid" ]; then
+      return 0
+    fi
+  done <<EOF
+$current_passwd_listing
+EOF
+  return 1
+}
+
+rollback_account_creation() {
+  rollback_status=$?
+  trap - EXIT HUP INT TERM
+  set +e
+  if [ "$rollback_status" -eq 0 ]; then
+    exit 0
+  fi
+
+  # Marker publication is the ownership commit point. Delete only an identity
+  # created by this invocation that is still exact and has not been committed.
+  if [ "$user_created_now" -eq 1 ] && [ "$user_creation_committed" -eq 0 ] &&
+    [ "$user_marker_state" != valid ]; then
+    user_lookup_status=0
+    if lookup_user_entry; then
+      if rollback_user_is_exact; then
+        userdel unionc ||
+          echo "unionc postinstall: could not roll back the incomplete dedicated user" >&2
+      else
+        echo "unionc postinstall: refusing to roll back a dedicated user whose identity changed" >&2
+      fi
+    else
+      user_lookup_status=$?
+      if [ "$user_lookup_status" -eq 2 ]; then
+        echo "unionc postinstall: could not enumerate users while rolling back account creation" >&2
+      fi
+    fi
+  fi
+
+  if [ "$group_created_now" -eq 1 ] && [ "$group_creation_committed" -eq 0 ] &&
+    [ "$group_marker_state" != valid ]; then
+    group_lookup_status=0
+    if lookup_group_entry; then
+      current_group_gid=$(printf '%s\n' "$group_entry" | cut -d: -f3)
+      if [ -z "$rollback_group_gid" ] || [ "$current_group_gid" != "$rollback_group_gid" ]; then
+        echo "unionc postinstall: refusing to roll back a dedicated group whose gid changed" >&2
+      else
+        group_usage_status=0
+        if rollback_group_is_in_use; then
+          group_usage_status=0
+        else
+          group_usage_status=$?
+        fi
+        case "$group_usage_status" in
+          1)
+            groupdel unionc ||
+              echo "unionc postinstall: could not roll back the incomplete dedicated group" >&2
+            ;;
+          0)
+            echo "unionc postinstall: refusing to roll back an incomplete group that is in use" >&2
+            ;;
+          *)
+            echo "unionc postinstall: could not verify incomplete group usage; preserving it" >&2
+            ;;
+        esac
+      fi
+    else
+      group_lookup_status=$?
+      if [ "$group_lookup_status" -eq 2 ]; then
+        echo "unionc postinstall: could not enumerate groups while rolling back account creation" >&2
+      fi
+    fi
+  fi
+  rm -f -- "$account_state_dir/.managed-user.$$" "$account_state_dir/.managed-group.$$"
+  exit "$rollback_status"
+}
+
 # The root-owned marker directory binds the current package version to the
 # exact numeric service identity. Removing the package deliberately keeps it,
 # so only an exact 0.3.2 reinstall can reclaim the retained state. Never
@@ -239,28 +394,45 @@ if [ -e "$data_dir" ] || [ -L "$data_dir" ]; then
     die "refusing to adopt pre-existing $data_dir without current package ownership markers"
 fi
 
-group_created_now=0
-if ! getent group unionc >/dev/null 2>&1; then
+trap rollback_account_creation EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+group_lookup_status=0
+if lookup_group_entry; then
+  group_lookup_status=0
+else
+  group_lookup_status=$?
+  [ "$group_lookup_status" -eq 1 ] ||
+    die "dedicated group database is unavailable or ambiguous"
   [ "$group_marker_state" = absent ] ||
     die "package-managed unionc group is missing"
   groupadd --system unionc
   group_created_now=1
+  lookup_group_entry || die "new dedicated group could not be enumerated"
 fi
-group_entry=$(getent group unionc) || die "dedicated group lookup failed"
 group_gid=$(printf '%s\n' "$group_entry" | cut -d: -f3)
+rollback_group_gid=$group_gid
 case "$group_gid" in
   ''|*[!0-9]*) die "dedicated group has an invalid gid" ;;
 esac
 if [ "$group_created_now" -eq 1 ]; then
   write_group_marker "$group_gid"
+  group_creation_committed=1
 elif [ "$group_marker_state" != valid ]; then
   die "existing unionc group has no current $package_version ownership marker"
 elif [ "$recorded_group_gid" != "$group_gid" ]; then
   die "package-managed unionc group was replaced with a different gid"
 fi
 
-user_created_now=0
-if ! getent passwd unionc >/dev/null 2>&1; then
+user_lookup_status=0
+if lookup_user_entry; then
+  user_lookup_status=0
+else
+  user_lookup_status=$?
+  [ "$user_lookup_status" -eq 1 ] ||
+    die "dedicated user database is unavailable or ambiguous"
   [ "$user_marker_state" = absent ] ||
     die "package-managed unionc user is missing"
   nologin_shell=/usr/sbin/nologin
@@ -271,11 +443,13 @@ if ! getent passwd unionc >/dev/null 2>&1; then
   useradd --system --gid unionc --home-dir "$data_dir" \
     --shell "$nologin_shell" unionc
   user_created_now=1
+  lookup_user_entry || die "new dedicated user could not be enumerated"
 fi
 
-user_entry=$(getent passwd unionc) || die "dedicated user lookup failed"
 user_uid=$(printf '%s\n' "$user_entry" | cut -d: -f3)
 user_gid=$(printf '%s\n' "$user_entry" | cut -d: -f4)
+rollback_user_uid=$user_uid
+rollback_user_primary_gid=$user_gid
 user_home=$(printf '%s\n' "$user_entry" | cut -d: -f6)
 user_shell=$(printf '%s\n' "$user_entry" | cut -d: -f7)
 case "$user_uid:$user_gid" in
@@ -291,6 +465,7 @@ esac
 
 if [ "$user_created_now" -eq 1 ]; then
   write_user_marker "$user_uid" "$user_gid"
+  user_creation_committed=1
 elif [ "$user_marker_state" != valid ]; then
   die "existing unionc user has no current $package_version ownership marker"
 elif

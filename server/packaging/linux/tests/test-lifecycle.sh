@@ -73,13 +73,89 @@ EOF
 
 cat >"$test_root/trusted-bin/getent" <<'EOF'
 #!/bin/sh
+current_group_gid=998
+current_user_uid=998
+current_user_gid=998
+if [ -f "$test_root/current-group-gid" ]; then
+  IFS= read -r current_group_gid <"$test_root/current-group-gid"
+fi
+if [ -f "$test_root/current-user-uid" ]; then
+  IFS= read -r current_user_uid <"$test_root/current-user-uid"
+fi
+if [ -f "$test_root/current-user-gid" ]; then
+  IFS= read -r current_user_gid <"$test_root/current-user-gid"
+fi
+group_exists() {
+  if [ "${START_ACCOUNTS_ABSENT:-0}" -eq 1 ]; then
+    [ -f "$test_root/group.created" ] && [ ! -f "$test_root/group.deleted" ]
+  else
+    [ ! -f "$test_root/group.deleted" ]
+  fi
+}
+user_exists() {
+  if [ "${START_ACCOUNTS_ABSENT:-0}" -eq 1 ]; then
+    [ -f "$test_root/user.created" ] && [ ! -f "$test_root/user.deleted" ]
+  else
+    [ ! -f "$test_root/user.deleted" ]
+  fi
+}
 case "${1:-}:${2:-}" in
-  group:unionc) printf 'unionc:x:998:\n' ;;
+  group:unionc)
+    group_exists || exit 2
+    printf 'unionc:x:%s:\n' "$current_group_gid"
+    ;;
+  group:)
+    [ "${FAIL_GROUP_ENUM:-0}" -ne 1 ] || exit 2
+    if group_exists; then
+      printf 'unionc:x:%s:\n' "$current_group_gid"
+    fi
+    exit 0
+    ;;
   passwd:unionc)
-    printf 'unionc:x:998:998::%s/var/lib/unionc:/usr/sbin/nologin\n' "$test_root"
+    user_exists || exit 2
+    printf 'unionc:x:%s:%s::%s/var/lib/unionc:/usr/sbin/nologin\n' \
+      "$current_user_uid" "$current_user_gid" "$test_root"
+    ;;
+  passwd:)
+    [ "${FAIL_PASSWD_ENUM:-0}" -ne 1 ] || exit 2
+    if user_exists; then
+      printf 'unionc:x:%s:%s::%s/var/lib/unionc:/usr/sbin/nologin\n' \
+        "$current_user_uid" "$current_user_gid" "$test_root"
+    fi
+    exit 0
     ;;
   *) exit 2 ;;
 esac
+EOF
+
+cat >"$test_root/trusted-bin/groupadd" <<'EOF'
+#!/bin/sh
+[ "${START_ACCOUNTS_ABSENT:-0}" -eq 1 ]
+rm -f "$test_root/group.deleted"
+: >"$test_root/group.created"
+printf 'groupadd %s\n' "$*" >>"$TEST_LOG"
+EOF
+
+cat >"$test_root/trusted-bin/useradd" <<'EOF'
+#!/bin/sh
+[ "${START_ACCOUNTS_ABSENT:-0}" -eq 1 ]
+rm -f "$test_root/user.deleted"
+: >"$test_root/user.created"
+printf 'useradd %s\n' "$*" >>"$TEST_LOG"
+EOF
+
+cat >"$test_root/trusted-bin/groupdel" <<'EOF'
+#!/bin/sh
+[ "${1:-}" = unionc ]
+: >"$test_root/group.deleted"
+printf 'groupdel %s\n' "$*" >>"$TEST_LOG"
+EOF
+
+cat >"$test_root/trusted-bin/userdel" <<'EOF'
+#!/bin/sh
+[ "${1:-}" = unionc ]
+: >"$test_root/user.deleted"
+printf 'userdel %s\n' "$*" >>"$TEST_LOG"
 EOF
 
 cat >"$test_root/trusted-bin/install" <<'EOF'
@@ -173,7 +249,34 @@ case "$format" in
 esac
 EOF
 
-for attacker_command in unionc getent groupadd useradd install cut chown chmod mv stat awk; do
+cat >"$test_root/trusted-bin/mv" <<'EOF'
+#!/bin/sh
+destination=
+for argument in "$@"; do
+  destination=$argument
+done
+case "$destination" in
+  "$test_root/var/lib/unionc-package/managed-group")
+    if [ "${FAIL_GROUP_MARKER_MOVE:-0}" -eq 1 ]; then
+      if [ "${REPLACE_GROUP_BEFORE_ROLLBACK:-0}" -eq 1 ]; then
+        printf '997\n' >"$test_root/current-group-gid"
+      fi
+      exit 73
+    fi
+    ;;
+  "$test_root/var/lib/unionc-package/managed-user")
+    if [ "${FAIL_USER_MARKER_MOVE:-0}" -eq 1 ]; then
+      if [ "${REPLACE_USER_BEFORE_ROLLBACK:-0}" -eq 1 ]; then
+        printf '997\n' >"$test_root/current-user-uid"
+      fi
+      exit 74
+    fi
+    ;;
+esac
+exec /usr/bin/mv "$@"
+EOF
+
+for attacker_command in unionc getent groupadd groupdel useradd userdel install cut chown chmod rm mv stat awk; do
   cat >"$test_root/attacker-bin/$attacker_command" <<'EOF'
 #!/bin/sh
 : >"$test_root/attacker-command-ran"
@@ -270,5 +373,88 @@ rm -f "$test_root/config-chowned-gid"
 MODEL_CONFIG_CHOWN=1 STAT_CONFIG_FILE=0:0:640 "$test_root/postinstall.sh" \
   >"$test_root/fresh-config.log" 2>&1 ||
   fail 'postinstall rejected a fresh root-owned Server config'
+
+reset_fresh_account_state() {
+  rm -rf -- "$test_root/var/lib/unionc-package" "$test_root/var/lib/unionc"
+  rm -f -- \
+    "$test_root/group.created" "$test_root/group.deleted" \
+    "$test_root/user.created" "$test_root/user.deleted" \
+    "$test_root/current-group-gid" "$test_root/current-user-uid" \
+    "$test_root/current-user-gid" "$test_root/config-chowned-gid"
+  : >"$TEST_LOG"
+}
+
+assert_no_marker_temporaries() {
+  for marker_temporary in "$test_root/var/lib/unionc-package"/.managed-*; do
+    if [ -e "$marker_temporary" ] || [ -L "$marker_temporary" ]; then
+      fail "unexpected marker temporary remains: $marker_temporary"
+    fi
+  done
+}
+
+# Marker publication is the account-creation commit point. If publication
+# fails, roll back only the exact uncommitted identity so the same package can
+# be retried without manual account surgery.
+reset_fresh_account_state
+if START_ACCOUNTS_ABSENT=1 MODEL_CONFIG_CHOWN=1 STAT_CONFIG_FILE=0:0:640 \
+  FAIL_GROUP_MARKER_MOVE=1 "$test_root/postinstall.sh" \
+  >"$test_root/group-marker-failure.log" 2>&1; then
+  fail 'postinstall accepted a failed managed-group marker publication'
+fi
+if [ ! -f "$test_root/group.deleted" ]; then
+  cat "$test_root/group-marker-failure.log" >&2
+  fail 'postinstall did not roll back the uncommitted dedicated group'
+fi
+[ ! -e "$test_root/var/lib/unionc-package/managed-group" ] ||
+  fail 'failed group marker publication left a committed marker'
+assert_no_marker_temporaries
+START_ACCOUNTS_ABSENT=1 MODEL_CONFIG_CHOWN=1 STAT_CONFIG_FILE=0:0:640 \
+  "$test_root/postinstall.sh" >"$test_root/group-marker-retry.log" 2>&1 ||
+  fail 'postinstall could not retry after group marker rollback'
+[ -f "$test_root/var/lib/unionc-package/managed-group" ] ||
+  fail 'group marker retry did not commit the dedicated group'
+[ -f "$test_root/var/lib/unionc-package/managed-user" ] ||
+  fail 'group marker retry did not commit the dedicated user'
+
+reset_fresh_account_state
+if START_ACCOUNTS_ABSENT=1 MODEL_CONFIG_CHOWN=1 STAT_CONFIG_FILE=0:0:640 \
+  FAIL_USER_MARKER_MOVE=1 "$test_root/postinstall.sh" \
+  >"$test_root/user-marker-failure.log" 2>&1; then
+  fail 'postinstall accepted a failed managed-user marker publication'
+fi
+[ -f "$test_root/user.deleted" ] ||
+  fail 'postinstall did not roll back the uncommitted dedicated user'
+[ ! -e "$test_root/group.deleted" ] ||
+  fail 'postinstall rolled back a group whose marker was already committed'
+[ -f "$test_root/var/lib/unionc-package/managed-group" ] ||
+  fail 'user rollback discarded the committed group marker'
+[ ! -e "$test_root/var/lib/unionc-package/managed-user" ] ||
+  fail 'failed user marker publication left a committed marker'
+assert_no_marker_temporaries
+START_ACCOUNTS_ABSENT=1 MODEL_CONFIG_CHOWN=1 STAT_CONFIG_FILE=0:0:640 \
+  "$test_root/postinstall.sh" >"$test_root/user-marker-retry.log" 2>&1 ||
+  fail 'postinstall could not retry after user marker rollback'
+[ -f "$test_root/var/lib/unionc-package/managed-user" ] ||
+  fail 'user marker retry did not commit the dedicated user'
+
+# Rollback is intentionally conservative: a same-name identity replaced after
+# creation must never be deleted on the strength of stale in-memory values.
+reset_fresh_account_state
+if START_ACCOUNTS_ABSENT=1 MODEL_CONFIG_CHOWN=1 STAT_CONFIG_FILE=0:0:640 \
+  FAIL_GROUP_MARKER_MOVE=1 REPLACE_GROUP_BEFORE_ROLLBACK=1 \
+  "$test_root/postinstall.sh" >"$test_root/replaced-group.log" 2>&1; then
+  fail 'postinstall accepted a replaced group during marker rollback'
+fi
+[ ! -e "$test_root/group.deleted" ] ||
+  fail 'postinstall deleted a replacement group during rollback'
+
+reset_fresh_account_state
+if START_ACCOUNTS_ABSENT=1 MODEL_CONFIG_CHOWN=1 STAT_CONFIG_FILE=0:0:640 \
+  FAIL_USER_MARKER_MOVE=1 REPLACE_USER_BEFORE_ROLLBACK=1 \
+  "$test_root/postinstall.sh" >"$test_root/replaced-user.log" 2>&1; then
+  fail 'postinstall accepted a replaced user during marker rollback'
+fi
+[ ! -e "$test_root/user.deleted" ] ||
+  fail 'postinstall deleted a replacement user during rollback'
 
 echo 'Server Linux lifecycle checks passed'
