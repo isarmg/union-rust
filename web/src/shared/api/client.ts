@@ -24,7 +24,9 @@ export class ApiError extends Error {
 }
 
 async function readApiError(response: Response): Promise<ApiError> {
-  const text = await response.text().catch(() => "");
+  // Body transport failures (especially AbortError) are request failures, not
+  // empty API errors. Let the outer request lifecycle normalize them.
+  const text = await response.text();
   const fallback = text || `${response.status} ${response.statusText}`;
   try {
     const payload = JSON.parse(text) as Record<string, unknown>;
@@ -63,10 +65,9 @@ export async function request<T>(path: string, init?: ApiRequestInit): Promise<T
   if (callerSignal?.aborted) abortFromCaller();
   else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
 
-  let response: Response;
   try {
     const shouldSendJson = Boolean(fetchInit.body) && !(fetchInit.body instanceof FormData);
-    response = await fetch(path, {
+    const response = await fetch(path, {
       ...fetchInit,
       credentials: "include",
       signal: controller.signal,
@@ -78,42 +79,48 @@ export async function request<T>(path: string, init?: ApiRequestInit): Promise<T
         ...fetchInit.headers,
       },
     });
+
+    if (response.status === 401) {
+      if (suppressAuthExpired) throw await readApiError(response);
+      await response.body?.cancel();
+      if (requestSessionGeneration !== currentAuthSessionGeneration()) {
+        throw new ApiError("请求所属会话已结束", "stale_session", 401);
+      }
+      window.dispatchEvent(new CustomEvent("unionc:auth-expired", {
+        detail: requestSessionGeneration,
+      }));
+      throw new ApiError("认证已失效，请重新登录", "unauthorized", 401);
+    }
+    if (!response.ok) throw await readApiError(response);
+    if (response.status !== expectedStatus) {
+      await response.body?.cancel();
+      throw new ApiError(
+        `UnionC 返回了非当前契约状态：应为 ${expectedStatus}，实际为 ${response.status}`,
+        "unexpected_status",
+        response.status,
+      );
+    }
+    if (expectedStatus === 204) return undefined as T;
+    const mediaType = response.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase();
+    if (mediaType !== "application/json") {
+      await response.body?.cancel();
+      throw new ApiError(
+        "UnionC 返回了非当前契约媒体类型，应为 application/json",
+        "unexpected_content_type",
+        response.status,
+      );
+    }
+    return await response.json() as T;
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error(didTimeout ? "请求超时，请检查 UnionC 是否可用" : "请求已取消", { cause: error });
+    if (controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) {
+      throw new Error(
+        didTimeout ? "请求超时，请检查 UnionC 是否可用" : "请求已取消",
+        { cause: error },
+      );
     }
     throw error;
   } finally {
     if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     callerSignal?.removeEventListener("abort", abortFromCaller);
   }
-
-  if (response.status === 401) {
-    if (suppressAuthExpired) throw await readApiError(response);
-    if (requestSessionGeneration !== currentAuthSessionGeneration()) {
-      throw new ApiError("请求所属会话已结束", "stale_session", 401);
-    }
-    window.dispatchEvent(new CustomEvent("unionc:auth-expired", {
-      detail: requestSessionGeneration,
-    }));
-    throw new ApiError("认证已失效，请重新登录", "unauthorized", 401);
-  }
-  if (!response.ok) throw await readApiError(response);
-  if (response.status !== expectedStatus) {
-    throw new ApiError(
-      `UnionC 返回了非当前契约状态：应为 ${expectedStatus}，实际为 ${response.status}`,
-      "unexpected_status",
-      response.status,
-    );
-  }
-  if (expectedStatus === 204) return undefined as T;
-  const mediaType = response.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase();
-  if (mediaType !== "application/json") {
-    throw new ApiError(
-      "UnionC 返回了非当前契约媒体类型，应为 application/json",
-      "unexpected_content_type",
-      response.status,
-    );
-  }
-  return await response.json() as T;
 }
