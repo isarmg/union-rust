@@ -74,6 +74,16 @@ do
   rewrite_for_test_root "$source_script" "$test_root/$(basename "$source_script")"
 done
 
+grep -Fx 'Type=notify' "$packaging_dir/unionc-agent.service" >/dev/null ||
+  fail 'systemd unit does not wait for Agent readiness'
+grep -Fx 'NotifyAccess=main' "$packaging_dir/unionc-agent.service" >/dev/null ||
+  fail 'systemd unit accepts readiness from an unexpected process'
+grep -Fx 'TimeoutStartSec=30s' "$packaging_dir/unionc-agent.service" >/dev/null ||
+  fail 'systemd unit has no bounded readiness timeout'
+if grep -Fx 'Type=simple' "$packaging_dir/unionc-agent.service" >/dev/null; then
+  fail 'systemd unit can report startup before Agent initialization'
+fi
+
 mkdir -p "$test_root/bin" "$test_root/run/systemd/system"
 TEST_LOG="$test_root/commands.log"
 export TEST_LOG test_root
@@ -88,6 +98,9 @@ case "$1" in
     ;;
   restart)
     [ "${FAIL_RESTART:-0}" -ne 1 ]
+    ;;
+  is-active)
+    [ "${FAIL_ACTIVE:-0}" -ne 1 ]
     ;;
   *)
     exit 0
@@ -1391,10 +1404,22 @@ if FAIL_RESTART=1 "$test_root/postinstall.sh" >"$test_root/postinstall-failure.l
   fail 'postinstall ignored a service restart failure'
 fi
 assert_log_contains 'restart unionc-agent.service'
-if grep -F '后台服务已启用并正在运行' "$test_root/postinstall-failure.log" >/dev/null; then
+if grep -F 'UnionC Agent 服务已启动' "$test_root/postinstall-failure.log" >/dev/null; then
   fail 'postinstall printed a false success message'
 fi
 assert_exists "$test_root/var/lib/unionc-agent-package/managed-user"
 assert_exists "$test_root/var/lib/unionc-agent-package/managed-group"
+
+# `is-active` is a second guard after the notify-aware restart job completes.
+reset_safe_reinstall_state
+: >"$TEST_LOG"
+if FAIL_ACTIVE=1 "$test_root/postinstall.sh" >"$test_root/postinstall-inactive.log" 2>&1; then
+  fail 'postinstall ignored a service that did not remain active'
+fi
+assert_log_contains 'restart unionc-agent.service'
+assert_log_contains 'is-active --quiet unionc-agent.service'
+if grep -F 'UnionC Agent 服务已启动' "$test_root/postinstall-inactive.log" >/dev/null; then
+  fail 'postinstall printed success for an inactive service'
+fi
 
 echo 'Linux packaging lifecycle tests passed'

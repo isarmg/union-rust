@@ -236,9 +236,11 @@ DEB/RPM 包负责完整的本地生命周期，Agent 本身不包含自更新器
 卸载与永久本地清理，然后安装当前制品并重新配对；只有同一当前版本的 reinstall 会复用
 现有状态。
 
-安装脚本在 systemd 正常运行时会启用、重启并验证服务；任何关键步骤失败都会让包安装失败，
-不会打印“服务已运行”的假成功。在容器镜像/chroot 等 systemd 未作为 PID 1 运行的环境中，
-包只安装文件并明确提示稍后手工 `systemctl enable --now unionc-agent`。
+安装脚本在 systemd 正常运行时会启用、重启并验证服务；`Type=notify` 使重启操作一直等待到
+配置、主机身份、采集器和持久 spool 全部初始化完成。未配对或 Server 暂时不可达不属于启动
+失败，Agent 会先报告本地就绪再等待恢复。任何关键步骤失败都会让包安装失败，不会打印
+“服务已运行”的假成功。在容器镜像/chroot 等 systemd 未作为 PID 1 运行的环境中，包只安装
+文件并明确提示稍后手工 `systemctl enable --now unionc-agent`。
 
 RPM 普通卸载为防止 `%config(noreplace)` 被移走，会在 root-only 记账目录中通过临时文件和
 原子 rename 保存配置，再以相同方式恢复。整个事务会重新验证配置、两个 ownership marker、

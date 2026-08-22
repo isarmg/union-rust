@@ -24,6 +24,9 @@ use uuid::Uuid;
 #[cfg(windows)]
 use unionc_agent::service;
 
+#[cfg(target_os = "linux")]
+mod systemd;
+
 pub(crate) fn entry() -> anyhow::Result<()> {
     #[cfg(windows)]
     if service::windows_service_requested(std::env::args_os()) {
@@ -31,7 +34,18 @@ pub(crate) fn entry() -> anyhow::Result<()> {
     }
 
     init_tracing()?;
-    build_runtime()?.block_on(run_agent(None))
+    build_runtime()?.block_on(run_agent(platform_ready_callback()))
+}
+
+fn platform_ready_callback() -> Option<fn() -> anyhow::Result<bool>> {
+    #[cfg(target_os = "linux")]
+    {
+        Some(systemd::report_ready)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
 }
 
 fn init_tracing() -> anyhow::Result<()> {
@@ -106,10 +120,10 @@ async fn run_agent(ready: Option<fn() -> anyhow::Result<bool>>) -> anyhow::Resul
 
     let spool = Spool::open(&config.state_dir, config.spool_max_bytes)
         .with_context(|| format!("failed to open spool in {}", config.state_dir.display()))?;
-    // A Windows service becomes RUNNING only after configuration, host identity,
-    // collectors and durable spool have all initialized. Network authorization
-    // is deliberately not part of bootstrap: an unpaired service must remain
-    // healthy while it waits for browser approval.
+    // A service becomes ready only after configuration, host identity, collectors
+    // and durable spool have all initialized. Network authorization is deliberately
+    // not part of bootstrap: an unpaired service must remain healthy while it waits
+    // for browser approval.
     if let Some(report_ready) = ready
         && !report_ready()?
     {
