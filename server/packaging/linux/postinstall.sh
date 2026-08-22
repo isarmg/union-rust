@@ -1,8 +1,12 @@
 #!/bin/sh
 set -eu
 
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
 service_name=unionc.service
 package_version=0.3.2
+server_binary=/usr/bin/unionc
 data_dir=/var/lib/unionc
 package_config=/etc/unionc/unionc.env
 account_state_dir=/var/lib/unionc-package
@@ -19,12 +23,13 @@ die() {
   exit 1
 }
 
-for command_name in unionc getent groupadd useradd install cut chown chmod mv stat awk; do
+for command_name in getent groupadd useradd install cut chown chmod mv stat awk; do
   command -v "$command_name" >/dev/null 2>&1 ||
     die "required command is unavailable: $command_name"
 done
+[ -x "$server_binary" ] || die "installed Server binary is missing or not executable"
 
-[ "$(unionc --version)" = "unionc $package_version" ] ||
+[ "$("$server_binary" --version)" = "unionc $package_version" ] ||
   die "installed binary version does not match package lifecycle version $package_version"
 
 # nFPM lays down this config before invoking postinstall. Its exact marker
