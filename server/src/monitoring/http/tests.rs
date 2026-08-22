@@ -74,6 +74,41 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn report_storage_failures_preserve_protocol_errors_and_retry_database_failures() {
+        let conflict = anyhow::Error::new(
+            crate::monitoring::store::StoreReportError::ReportIdBelongsToAnotherHost,
+        );
+        assert!(matches!(
+            map_store_report_error(conflict),
+            AppError::Conflict(_)
+        ));
+
+        let revoked = anyhow::Error::new(
+            crate::monitoring::store::StoreReportError::HostNotActive,
+        );
+        assert!(matches!(
+            map_store_report_error(revoked),
+            AppError::AgentRevoked
+        ));
+
+        let superseded = anyhow::Error::new(
+            crate::monitoring::store::StoreReportError::CredentialNotActive,
+        );
+        assert!(matches!(
+            map_store_report_error(superseded),
+            AppError::Unauthorized
+        ));
+
+        let database = map_store_report_error(anyhow::anyhow!("database is locked"));
+        assert!(matches!(&database, AppError::DatabaseUnavailable(_)));
+        assert_eq!(database.code(), "database_unavailable");
+        assert_eq!(
+            database.into_response().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
     #[tokio::test]
     async fn unauthenticated_report_flood_is_isolated_by_source() {
         let state = state();

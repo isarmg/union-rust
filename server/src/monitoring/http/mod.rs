@@ -101,7 +101,7 @@ async fn list_agent_instances(
     Ok(Json(
         crate::monitoring::store::list_agent_instance_invites(state.db().as_ref())
             .await
-            .map_err(AppError::Anyhow)?,
+            .map_err(|error| agent_database_unavailable("list agent instance invites", error))?,
     ))
 }
 
@@ -112,7 +112,7 @@ async fn cancel_agent_instance(
     let request_id = validate_uuid(&request_id, "agent instance request id")?;
     match crate::monitoring::store::revoke_agent_instance_invite(state.db().as_ref(), &request_id)
         .await
-        .map_err(AppError::Anyhow)?
+        .map_err(|error| agent_database_unavailable("cancel agent instance invite", error))?
     {
         crate::monitoring::store::RevokeInviteResult::Revoked => Ok(StatusCode::NO_CONTENT),
         crate::monitoring::store::RevokeInviteResult::NotFound => Err(AppError::NotFound(
@@ -325,10 +325,8 @@ async fn report_metrics(
         &credential_hash,
     )
     .await
-    .map_err(|error| {
-        tracing::warn!(%error, "agent token lookup failed");
-        AppError::DatabaseUnavailable("database is unavailable".to_string())
-    })? {
+    .map_err(|error| agent_database_unavailable("authenticate monitoring report", error))?
+    {
         crate::monitoring::store::MonitoringTokenAuthentication::Active(host_id) => host_id,
         crate::monitoring::store::MonitoringTokenAuthentication::Revoked => {
             return Err(AppError::AgentRevoked);
@@ -355,22 +353,7 @@ async fn report_metrics(
         &credential_hash,
     )
     .await
-    .map_err(|error| {
-        // report_id 由 Agent 生成，撞上另一台主机的 id 属于客户端输入冲突，
-        // 应当是 409 而不是 500——重试同一个 id 永远不会成功。
-        match error.downcast_ref::<crate::monitoring::store::StoreReportError>() {
-            Some(crate::monitoring::store::StoreReportError::ReportIdBelongsToAnotherHost) => {
-                AppError::Conflict(error.to_string())
-            }
-            Some(crate::monitoring::store::StoreReportError::HostNotActive) => {
-                AppError::AgentRevoked
-            }
-            Some(crate::monitoring::store::StoreReportError::CredentialNotActive) => {
-                AppError::Unauthorized
-            }
-            None => AppError::Anyhow(error),
-        }
-    })?;
+    .map_err(map_store_report_error)?;
     Ok((
         StatusCode::ACCEPTED,
         Json(AgentReportAck {
@@ -401,7 +384,7 @@ async fn list_hosts(
     let (stored, total) =
         crate::monitoring::store::list_monitored_hosts(state.db().as_ref(), limit, offset)
             .await
-            .map_err(AppError::Anyhow)?;
+            .map_err(|error| agent_database_unavailable("list monitored hosts", error))?;
     Ok(Json(HostListResponse {
         hosts: stored.into_iter().map(host_summary).collect(),
         total,
@@ -417,7 +400,7 @@ async fn host_detail(
     validate_host_id(&host_id)?;
     let stored = crate::monitoring::store::get_monitored_host(state.db().as_ref(), &host_id)
         .await
-        .map_err(AppError::Anyhow)?
+        .map_err(|error| agent_database_unavailable("read monitored host", error))?
         .ok_or_else(|| AppError::NotFound("monitored host not found".to_string()))?;
     let latest = stored.latest.clone();
     Ok(Json(HostDetailResponse {
@@ -446,7 +429,7 @@ async fn host_history(
         query.limit.unwrap_or(300).clamp(1, 1000),
     )
     .await
-    .map_err(AppError::Anyhow)?
+    .map_err(|error| agent_database_unavailable("read monitoring history", error))?
     .ok_or_else(|| AppError::NotFound("monitored host not found".to_string()))?
     .into_iter()
     .map(history_point)
@@ -462,7 +445,7 @@ async fn revoke_host(
     require_database(&state).await?;
     if !crate::monitoring::store::revoke_monitored_host(state.db().as_ref(), &host_id)
         .await
-        .map_err(AppError::Anyhow)?
+        .map_err(|error| agent_database_unavailable("revoke monitored host", error))?
     {
         return Err(AppError::NotFound("monitored host not found".to_string()));
     }
@@ -554,6 +537,21 @@ async fn require_database(state: &AppState) -> AppResult<()> {
 fn agent_database_unavailable(operation: &str, error: impl std::fmt::Display) -> AppError {
     tracing::warn!(operation, %error, "Agent database operation failed");
     AppError::DatabaseUnavailable("database is unavailable".to_string())
+}
+
+fn map_store_report_error(error: anyhow::Error) -> AppError {
+    // report_id 由 Agent 生成，撞上另一台主机的 id 属于客户端输入冲突，
+    // 应当是 409 而不是 503——重试同一个 id 永远不会成功。
+    match error.downcast_ref::<crate::monitoring::store::StoreReportError>() {
+        Some(crate::monitoring::store::StoreReportError::ReportIdBelongsToAnotherHost) => {
+            AppError::Conflict(error.to_string())
+        }
+        Some(crate::monitoring::store::StoreReportError::HostNotActive) => AppError::AgentRevoked,
+        Some(crate::monitoring::store::StoreReportError::CredentialNotActive) => {
+            AppError::Unauthorized
+        }
+        None => agent_database_unavailable("store monitoring report", error),
+    }
 }
 
 /// Agent 接口的反向代理契约。与控制台接口共用同一份实现。
