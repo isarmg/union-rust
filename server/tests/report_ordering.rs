@@ -191,6 +191,74 @@ async fn a_late_arriving_old_report_is_stored_without_rewriting_host_state() {
         .expect("cleanup");
 }
 
+#[tokio::test]
+async fn latest_report_never_moves_last_seen_backwards() {
+    let url = common::test_database_url("latest_report_never_moves_last_seen_backwards");
+    let mut settings = Settings::default();
+    settings.database.url = url.to_string();
+    let pool = database::connect(&settings).await.expect("connect");
+    database::initialize_schema(&pool)
+        .await
+        .expect("initialize schema");
+
+    let host_id = Uuid::new_v4();
+    common::insert_active_monitoring_host(
+        &pool,
+        &identity(host_id, "monotonic-last-seen"),
+        &hex_hash("monotonic-last-seen-token"),
+    )
+    .await
+    .expect("register");
+
+    // Simulate either a clock correction or an earlier task that captured its timestamp before
+    // waiting for the write lock. The new report must still advance latest_* without lowering
+    // the already-observed liveness timestamp.
+    let future_last_seen = database::to_epoch_micros(Utc::now() + Duration::days(1));
+    query("UPDATE monitored_hosts SET last_seen_at=?2 WHERE host_id=?1")
+        .bind(host_id.to_string())
+        .bind(future_last_seen)
+        .execute(&pool)
+        .await
+        .expect("move liveness marker forward");
+
+    let current: unionc::monitoring::AgentReport = serde_json::from_value(report(
+        host_id,
+        "monotonic-last-seen",
+        Utc::now(),
+        "capability.monotonic",
+    ))
+    .expect("valid report");
+    let report_id = current.report_id.clone();
+    let (accepted, received_at) =
+        unionc::monitoring::store::store_monitoring_report(&pool, &current)
+            .await
+            .expect("store current report");
+    assert!(accepted);
+    assert!(database::to_epoch_micros(received_at) < future_last_seen);
+
+    let row = query("SELECT last_seen_at,latest_report_id FROM monitored_hosts WHERE host_id=?1")
+        .bind(host_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("read host state");
+    assert_eq!(
+        sqlx_core::row::Row::try_get::<i64, _>(&row, "last_seen_at").unwrap(),
+        future_last_seen,
+        "committing a latest report must not move liveness backwards"
+    );
+    assert_eq!(
+        sqlx_core::row::Row::try_get::<String, _>(&row, "latest_report_id").unwrap(),
+        report_id,
+        "the monotonic guard must not block latest report advancement"
+    );
+
+    query("DELETE FROM monitored_hosts WHERE host_id=?1")
+        .bind(host_id.to_string())
+        .execute(&pool)
+        .await
+        .expect("cleanup");
+}
+
 /// Equal collection timestamps use the same `report_id DESC` tie-break as the
 /// history query. Arrival order must not change which report represents the
 /// host's current state.

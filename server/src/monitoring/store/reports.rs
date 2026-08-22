@@ -80,9 +80,12 @@ async fn store_monitoring_report_inner(
     let host_id = canonical_uuid(&report.host.id)?;
     let report_id = canonical_uuid(&report.report_id)?;
     let capabilities = serde_json::to_string(&report.capabilities)?;
+    // Capture receipt time only after this request owns the SQLite write transaction. A task
+    // can wait behind a later-arriving writer; taking the timestamp before BEGIN IMMEDIATE would
+    // let the older timestamp commit last and move host liveness backwards.
+    let mut tx = database::begin_write(pool).await?;
     let received_at = Utc::now();
     let received_at_micros = database::to_epoch_micros(received_at);
-    let mut tx = database::begin_write(pool).await?;
 
     // 一条语句同时完成三件事：确认主机存在、取出当前的 latest 指针与时间戳，
     // 取出当前的 latest 指针与时间戳，以及**判断身份列是否真的变了**。
@@ -238,7 +241,7 @@ async fn store_monitoring_report_inner(
                 arch                    = CASE WHEN ?9 THEN ?6 ELSE arch END,
                 agent_version           = CASE WHEN ?9 THEN ?7 ELSE agent_version END,
                 capabilities            = CASE WHEN ?9 THEN ?8 ELSE capabilities END,
-                last_seen_at            = ?14,
+                last_seen_at            = MAX(last_seen_at, ?14),
                 latest_report_id        = CASE WHEN ?10 THEN ?11 ELSE latest_report_id END,
                 latest_collected_at     = CASE WHEN ?10 THEN ?12 ELSE latest_collected_at END,
                 latest_interval_seconds = CASE WHEN ?10 THEN ?13 ELSE latest_interval_seconds END
