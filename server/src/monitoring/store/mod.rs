@@ -146,3 +146,65 @@ mod activation_expiry_tests {
         pool.close().await;
     }
 }
+
+#[cfg(test)]
+mod history_query_plan_tests {
+    use sqlx_core::{query::query, row::Row};
+
+    use super::*;
+
+    async fn explain_range(pool: &DbPool, has_from: bool, has_to: bool) -> Vec<String> {
+        let sql = format!("EXPLAIN QUERY PLAN {}", history_query_sql(has_from, has_to));
+        let statement = query(&sql).bind(uuid::Uuid::new_v4().to_string());
+        let statement = match (has_from, has_to) {
+            (false, false) => statement.bind(100_i64),
+            (true, false) => statement.bind(10_i64).bind(100_i64),
+            (false, true) => statement.bind(20_i64).bind(100_i64),
+            (true, true) => statement.bind(10_i64).bind(20_i64).bind(100_i64),
+        };
+        statement
+            .fetch_all(pool)
+            .await
+            .expect("explain production history query")
+            .iter()
+            .map(|row| row.try_get::<String, _>("detail").unwrap_or_default())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn every_history_range_shape_uses_the_compound_index_range() {
+        let pool = database::in_memory_pool().expect("in-memory test pool");
+        database::initialize_schema(&pool)
+            .await
+            .expect("initialize history plan schema");
+
+        for (label, has_from, has_to) in [
+            ("unbounded", false, false),
+            ("from only", true, false),
+            ("to only", false, true),
+            ("both", true, true),
+        ] {
+            let plan = explain_range(&pool, has_from, has_to).await;
+            let index_detail = plan
+                .iter()
+                .find(|detail| {
+                    detail.contains("SEARCH agent_metric_reports")
+                        && detail.contains("idx_agent_metric_reports_host_collected_at")
+                })
+                .unwrap_or_else(|| {
+                    panic!("{label} query did not use the history index: {plan:#?}")
+                });
+            let compact = index_detail.replace(' ', "");
+            assert_eq!(
+                compact.contains("collected_at>?"),
+                has_from,
+                "{label} query has the wrong lower index bound: {index_detail}"
+            );
+            assert_eq!(
+                compact.contains("collected_at<?"),
+                has_to,
+                "{label} query has the wrong upper index bound: {index_detail}"
+            );
+        }
+    }
+}

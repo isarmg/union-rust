@@ -53,6 +53,40 @@ pub async fn get_monitored_host(
     row.map(|row| stored_host_from_row(row, true)).transpose()
 }
 
+fn history_query_sql(has_from: bool, has_to: bool) -> String {
+    let (range_predicate, limit_parameter) = match (has_from, has_to) {
+        (false, false) => ("", "?2"),
+        (true, false) => ("AND collected_at >= ?2", "?3"),
+        (false, true) => ("AND collected_at <= ?2", "?3"),
+        (true, true) => (
+            "AND collected_at >= ?2 AND collected_at <= ?3",
+            "?4",
+        ),
+    };
+    format!(
+        r#"
+        WITH recent AS (
+            SELECT host_id, report_id, collected_at, received_at, {plain_metrics}
+            FROM agent_metric_reports
+            WHERE host_id = ?1
+              {range_predicate}
+            ORDER BY collected_at DESC, report_id DESC
+            LIMIT {limit_parameter}
+        )
+        SELECT r.report_id, r.collected_at, r.received_at, {metrics}
+        FROM (SELECT host_id FROM monitored_hosts WHERE host_id = ?1) h
+        LEFT JOIN recent r ON r.host_id = h.host_id
+        ORDER BY r.collected_at DESC, r.report_id DESC
+        "#,
+        metrics = METRIC_COLUMNS
+            .iter()
+            .map(|column| format!("r.{column}"))
+            .collect::<Vec<_>>()
+            .join(","),
+        plain_metrics = METRIC_COLUMNS.join(","),
+    )
+}
+
 /// 查询历史曲线。返回 `None` 表示主机不存在（供上层返回 404）。
 ///
 /// 存在性判断与数据查询合并为**一次往返**：限量 CTE 与目标主机做 LEFT JOIN，使得
@@ -80,35 +114,15 @@ pub async fn monitoring_history(
     // (host_id, collected_at DESC, report_id)，它完全覆盖了 WHERE 与 ORDER BY。
     // 若把 9 个指标列都放进索引可以减少回表，但会明显扩大每次上报必须
     // 更新的索引；实测读取无收益而写入慢 37%，因此不建立覆盖索引。
-    let rows = query(&format!(
-        r#"
-        WITH recent AS (
-            SELECT host_id, report_id, collected_at, received_at, {plain_metrics}
-            FROM agent_metric_reports
-            WHERE host_id = ?1
-              AND (?2 IS NULL OR collected_at >= ?2)
-              AND (?3 IS NULL OR collected_at <= ?3)
-            ORDER BY collected_at DESC, report_id DESC
-            LIMIT ?4
-        )
-        SELECT r.report_id, r.collected_at, r.received_at, {metrics}
-        FROM (SELECT host_id FROM monitored_hosts WHERE host_id = ?1) h
-        LEFT JOIN recent r ON r.host_id = h.host_id
-        ORDER BY r.collected_at DESC, r.report_id DESC
-        "#,
-        metrics = METRIC_COLUMNS
-            .iter()
-            .map(|column| format!("r.{column}"))
-            .collect::<Vec<_>>()
-            .join(","),
-        plain_metrics = METRIC_COLUMNS.join(","),
-    ))
-    .bind(host_id)
-    .bind(from)
-    .bind(to)
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
+    let statement = history_query_sql(from.is_some(), to.is_some());
+    let statement = query(&statement).bind(host_id);
+    let statement = match (from, to) {
+        (None, None) => statement.bind(limit),
+        (Some(from), None) => statement.bind(from).bind(limit),
+        (None, Some(to)) => statement.bind(to).bind(limit),
+        (Some(from), Some(to)) => statement.bind(from).bind(to).bind(limit),
+    };
+    let rows = statement.fetch_all(pool).await?;
 
     // 0 行 = 主机不存在。
     if rows.is_empty() {

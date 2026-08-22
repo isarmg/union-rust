@@ -8,7 +8,7 @@
 //!   * 主机存在且有历史  → `Some(数据点)`
 
 use chrono::{Duration, Utc};
-use sqlx_core::{query::query, row::Row};
+use sqlx_core::query::query;
 use unionc::monitoring::HostIdentity;
 use unionc::{config::Settings, infra::database};
 use uuid::Uuid;
@@ -175,14 +175,9 @@ async fn history_distinguishes_missing_host_from_empty_history() {
     }
 }
 
-/// 合并后的查询形状仍须能用上 `(host_id, collected_at DESC, report_id)` 索引。
-///
-/// SQLite 的 `EXPLAIN QUERY PLAN` 会明确给出 `SEARCH ... USING INDEX`。
-/// 这里用与生产查询相同的限量 CTE，守住报告表仍能按
-/// `(host_id, collected_at DESC, report_id)` 取最近数据，不会随表规模退化为全表扫描。
 #[tokio::test]
-async fn merged_history_query_still_uses_an_index() {
-    let url = common::test_database_url("merged_history_query_uses_index");
+async fn history_range_boundaries_are_inclusive_for_every_query_shape() {
+    let url = common::test_database_url("history_range_boundaries_are_inclusive");
     let mut settings = Settings::default();
     settings.database.url = url.to_string();
     let pool = database::connect(&settings).await.expect("connect");
@@ -192,61 +187,45 @@ async fn merged_history_query_still_uses_an_index() {
 
     let host = Uuid::new_v4();
     register(&pool, host).await;
-    for index in 0..50 {
-        let parsed = serde_json::from_value(report(
-            host,
-            Utc::now() - Duration::seconds(50 - index),
-            5.0,
-        ))
-        .expect("valid report");
+    let first = Utc::now() - Duration::minutes(2);
+    let middle = first + Duration::seconds(10);
+    let last = middle + Duration::seconds(10);
+    for (collected_at, cpu) in [(first, 10.0), (middle, 20.0), (last, 30.0)] {
+        let parsed = serde_json::from_value(report(host, collected_at, cpu)).expect("valid report");
         unionc::monitoring::store::store_monitoring_report(&pool, &parsed)
             .await
             .expect("store report");
     }
-    // 让规划器基于真实统计信息选择计划。
-    query("ANALYZE agent_metric_reports")
-        .execute(&pool)
-        .await
-        .expect("analyze");
 
-    let plan = query(
-        r#"
-        EXPLAIN QUERY PLAN
-        WITH recent AS (
-            SELECT host_id, report_id, collected_at, received_at,
-                   cpu_usage_percent, memory_usage_percent,
-                   network_received_bytes_per_second, network_transmitted_bytes_per_second,
-                   disk_read_bytes_per_second, disk_written_bytes_per_second,
-                   max_temperature_celsius, gpu_utilization_percent, gpu_memory_usage_percent
-            FROM agent_metric_reports
-            WHERE host_id = ?1
-            ORDER BY collected_at DESC, report_id DESC
-            LIMIT 100
-        )
-        SELECT r.report_id, r.collected_at, r.received_at,
-               r.cpu_usage_percent, r.memory_usage_percent,
-               r.network_received_bytes_per_second, r.network_transmitted_bytes_per_second,
-               r.disk_read_bytes_per_second, r.disk_written_bytes_per_second,
-               r.max_temperature_celsius, r.gpu_utilization_percent, r.gpu_memory_usage_percent
-        FROM (SELECT host_id FROM monitored_hosts WHERE host_id = ?1) h
-        LEFT JOIN recent r ON r.host_id = h.host_id
-        ORDER BY r.collected_at DESC, r.report_id DESC
-        "#,
-    )
-    .bind(host.to_string())
-    .fetch_all(&pool)
-    .await
-    .expect("explain")
-    .iter()
-    .map(|row| row.try_get::<String, _>("detail").unwrap_or_default())
-    .collect::<Vec<_>>()
-    .join("\n");
+    for (label, from, to, expected) in [
+        ("unbounded", None, None, vec![10.0, 20.0, 30.0]),
+        ("from only", Some(middle), None, vec![20.0, 30.0]),
+        ("to only", None, Some(middle), vec![10.0, 20.0]),
+        ("both", Some(middle), Some(middle), vec![20.0]),
+    ] {
+        let points =
+            unionc::monitoring::store::monitoring_history(&pool, &host.to_string(), from, to, 100)
+                .await
+                .unwrap_or_else(|error| panic!("{label} query failed: {error}"))
+                .expect("registered host must exist");
+        let actual = points
+            .iter()
+            .map(|point| point.metrics.cpu_usage_percent.expect("stored CPU metric"))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected, "{label} range returned wrong points");
 
-    eprintln!("--- SQLite 合并后的历史查询计划 ---\n{plan}");
-    assert!(
-        plan.contains("idx_agent_metric_reports_host_collected_at"),
-        "合并后的查询已无法在报告表上使用索引，数据量增大后会退化为全表扫描：\n{plan}"
-    );
+        let limited =
+            unionc::monitoring::store::monitoring_history(&pool, &host.to_string(), from, to, 1)
+                .await
+                .unwrap_or_else(|error| panic!("limited {label} query failed: {error}"))
+                .expect("registered host must exist");
+        assert_eq!(limited.len(), 1, "{label} limit was not applied");
+        assert_eq!(
+            limited[0].metrics.cpu_usage_percent,
+            expected.last().copied(),
+            "{label} limit did not retain the newest in-range point"
+        );
+    }
 
     query("DELETE FROM monitored_hosts WHERE host_id=?1")
         .bind(host.to_string())
