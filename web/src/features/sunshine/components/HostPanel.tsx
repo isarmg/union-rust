@@ -21,6 +21,7 @@ import {
 } from "../../../shared/components/ui";
 import { sunshineApi as api } from "../api";
 import { parseSunshineConfigDraft } from "../data";
+import { removeMutationFromCache } from "../../../shared/lib/mutations";
 import { sunshineQueryKeys as queryKeys } from "../queryKeys";
 import type { SunshineHostInfo } from "../types";
 import { AppsSection } from "./AppsSection";
@@ -40,14 +41,34 @@ const HOST_SECTIONS: Array<{
   { key: "system", label: "系统", Icon: Wrench },
 ];
 
+function pairMutationKey(hostId: string) {
+  return ["sunshine-pair", hostId] as const;
+}
+
+interface PairVariables {
+  pin: string;
+  deviceName: string;
+}
+
 function PairingSection({ host }: { host: SunshineHostInfo }) {
+  const queryClient = useQueryClient();
   const [pin, setPin] = useState("");
   const [deviceName, setDeviceName] = useState("");
   const pairMutation = useMutation({
-    mutationFn: () => api.sunshinePin(host.id, pin.trim(), deviceName.trim() || "Moonlight Client"),
+    mutationKey: pairMutationKey(host.id),
+    mutationFn: ({ pin: submittedPin, deviceName: submittedDeviceName }: PairVariables) =>
+      api.sunshinePin(host.id, submittedPin, submittedDeviceName),
     onSuccess: () => { setPin(""); setDeviceName(""); },
+    onSettled: (_result, _error, variables) => {
+      variables.pin = "";
+      removeMutationFromCache(queryClient, pairMutationKey(host.id), variables);
+    },
   });
   const canPair = /^\d{4,8}$/.test(pin.trim()) && !pairMutation.isPending;
+  const submitPairing = () => pairMutation.mutate({
+    pin: pin.trim(),
+    deviceName: deviceName.trim() || "Moonlight Client",
+  });
 
   return (
     <section className="section-band">
@@ -71,7 +92,7 @@ function PairingSection({ host }: { host: SunshineHostInfo }) {
             onKeyDown={(event) => {
               if (event.key === "Enter" && canPair) {
                 event.preventDefault();
-                pairMutation.mutate();
+                submitPairing();
               }
             }}
           />
@@ -80,7 +101,7 @@ function PairingSection({ host }: { host: SunshineHostInfo }) {
           <input value={deviceName} maxLength={80} onChange={(event) => setDeviceName(event.target.value)} placeholder="Moonlight Client" />
         </label>
         <div style={{ display: "flex" }}>
-          <ActionButton icon={Check} label="提交配对" busy={pairMutation.isPending} disabled={!canPair} onClick={() => pairMutation.mutate()} />
+          <ActionButton icon={Check} label="提交配对" busy={pairMutation.isPending} disabled={!canPair} onClick={submitPairing} />
         </div>
       </div>
     </section>

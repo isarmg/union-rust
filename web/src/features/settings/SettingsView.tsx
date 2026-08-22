@@ -1,9 +1,17 @@
 import { useState } from "react";
 import { Check, Edit2, KeyRound, Loader2, Save, X } from "lucide-react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { authApi as api } from "../auth/api";
 import { authQueryKeys as queryKeys } from "../auth/queryKeys";
 import { CardActions, CardInner, CardRow, InlineNotice, MutationError, SectionHeader, TruncatedText } from "../../shared/components/ui";
+import { removeMutationFromCache } from "../../shared/lib/mutations";
+
+const changePasswordMutationKey = ["settings-change-password"] as const;
+
+interface ChangePasswordVariables {
+  currentPassword: string;
+  newPassword: string;
+}
 
 // ─── 修改密码侧面板 ───────────────────────────────────────────────────────────
 
@@ -14,12 +22,15 @@ function ChangePasswordPanel({
   onClose: () => void;
   onPasswordChanged: () => void;
 }) {
+  const queryClient = useQueryClient();
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw] = useState("");
   const [confirmPw, setConfirmPw] = useState("");
 
   const changeMutation = useMutation({
-    mutationFn: () => api.changePassword(currentPw, newPw),
+    mutationKey: changePasswordMutationKey,
+    mutationFn: ({ currentPassword, newPassword }: ChangePasswordVariables) =>
+      api.changePassword(currentPassword, newPassword),
     onSuccess: () => {
       setCurrentPw("");
       setNewPw("");
@@ -27,7 +38,12 @@ function ChangePasswordPanel({
       // The server revoked this session in the same password transaction. Do not issue a second
       // logout request: a delayed mutation callback could otherwise send it with a newer cookie.
       onPasswordChanged();
-    }
+    },
+    onSettled: (_result, _error, variables) => {
+      variables.currentPassword = "";
+      variables.newPassword = "";
+      removeMutationFromCache(queryClient, changePasswordMutationKey, variables);
+    },
   });
 
   const passwordMismatch = confirmPw.length > 0 && newPw !== confirmPw;
@@ -43,7 +59,11 @@ function ChangePasswordPanel({
       <form
         className="account-form"
         aria-label="修改管理员密码"
-        onSubmit={(e) => { e.preventDefault(); if (newPw !== confirmPw) return; changeMutation.mutate(); }}
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (newPw !== confirmPw) return;
+          changeMutation.mutate({ currentPassword: currentPw, newPassword: newPw });
+        }}
       >
         <label className="inline-field">
           <span>当前密码</span>

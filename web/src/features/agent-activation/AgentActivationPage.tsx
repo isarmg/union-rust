@@ -1,11 +1,21 @@
 import { FormEvent, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, KeyRound, MonitorCog } from "lucide-react";
 import { activationCodeForSubmission, canActivatePairing } from "./route";
 import { agentActivationApi as api } from "./api";
 import { InlineNotice, LoadingBlock, MutationError } from "../../shared/components/ui";
 import { agentActivationQueryKeys as queryKeys } from "./queryKeys";
 import { formatDateTime } from "../../shared/lib/format";
+import { removeMutationFromCache } from "../../shared/lib/mutations";
+
+function activationMutationKey(requestId: string) {
+  return ["agent-activation", requestId] as const;
+}
+
+interface ActivationVariables {
+  requestId: string;
+  activationCode: string;
+}
 
 const pairingStatusLabel = {
   waiting: "等待激活",
@@ -15,6 +25,7 @@ const pairingStatusLabel = {
 } as const;
 
 export function AgentActivationPage({ requestId }: { requestId: string | null }) {
+  const queryClient = useQueryClient();
   const [activationCode, setActivationCode] = useState("");
   const code = activationCodeForSubmission(activationCode);
   const pairingQuery = useQuery({
@@ -24,13 +35,23 @@ export function AgentActivationPage({ requestId }: { requestId: string | null })
     retry: false,
   });
   const activationMutation = useMutation({
-    mutationFn: () => api.activateAgent(requestId!, code),
+    mutationKey: activationMutationKey(requestId ?? ""),
+    mutationFn: ({ requestId: submittedRequestId, activationCode: submittedCode }: ActivationVariables) =>
+      api.activateAgent(submittedRequestId, submittedCode),
     onSuccess: () => setActivationCode(""),
+    onSettled: (_result, _error, variables) => {
+      variables.activationCode = "";
+      removeMutationFromCache(
+        queryClient,
+        activationMutationKey(variables.requestId),
+        variables,
+      );
+    },
   });
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (requestId && code) activationMutation.mutate();
+    if (requestId && code) activationMutation.mutate({ requestId, activationCode: code });
   };
 
   if (activationMutation.data) {

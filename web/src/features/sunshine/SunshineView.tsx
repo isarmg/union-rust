@@ -90,7 +90,8 @@ export function SunshineView({ addTrigger = 0 }: { addTrigger?: number }) {
       queryClient.setQueryData<SunshineHostInfo[]>(queryKeys.sunshine.hosts, (current) =>
         replaceSunshineHost(current ?? [], context.previous!, id));
     },
-    onSettled: () => {
+    onSettled: (_result, _error, variables) => {
+      if (Object.hasOwn(variables.patch, "password")) delete variables.patch.password;
       void queryClient.invalidateQueries({ queryKey: queryKeys.sunshine.hosts, exact: true });
     },
   });

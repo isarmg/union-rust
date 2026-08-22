@@ -41,6 +41,13 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function mutationCacheSnapshot(queryClient: QueryClient) {
+  return JSON.stringify(queryClient.getMutationCache().getAll().map((mutation) => ({
+    mutationKey: mutation.options.mutationKey,
+    state: mutation.state,
+  })));
+}
+
 describe("Sunshine inline password editing", () => {
   it("treats an untouched empty password blur as cancel", async () => {
     const save = vi.fn(async () => undefined);
@@ -85,6 +92,38 @@ describe("Sunshine inline password editing", () => {
     await user.type(screen.getByLabelText("密码"), "  secret  ");
     await user.keyboard("{Enter}");
     await waitFor(() => expect(save).toHaveBeenCalledWith("  secret  "));
+  });
+
+  it("clears a saved password from the host draft and mutation variables", async () => {
+    const original = host("one", "Host one");
+    const saved = { ...original, password_set: true };
+    let submittedPassword = "";
+    vi.spyOn(api, "sunshineUpdateHost").mockImplementation(async (_id, patch) => {
+      submittedPassword = patch.password ?? "";
+      return saved;
+    });
+    vi.spyOn(api, "sunshineHosts").mockResolvedValue([saved]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    });
+    queryClient.setQueryData(queryKeys.sunshine.hosts, [original]);
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SunshineView />
+      </QueryClientProvider>,
+    );
+
+    const card = screen.getByRole("article", { name: /Host one/ });
+    await user.click(within(card).getByRole("button", { name: /修改密码/ }));
+    await user.type(within(card).getByLabelText("密码"), "sunshine-secret-789");
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => expect(submittedPassword).toBe("sunshine-secret-789"));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect(mutationCacheSnapshot(queryClient)).not.toContain("sunshine-secret-789");
+    await user.click(within(card).getByRole("button", { name: /修改密码/ }));
+    expect((within(card).getByLabelText("密码") as HTMLInputElement).value).toBe("");
   });
 });
 
@@ -136,6 +175,36 @@ describe("Sunshine application editing", () => {
 });
 
 describe("Sunshine host panel state", () => {
+  it("removes a submitted Moonlight PIN from the mutation cache", async () => {
+    const hosts = [host("one", "Host one")];
+    vi.spyOn(api, "sunshineHosts").mockResolvedValue(hosts);
+    vi.spyOn(api, "sunshineApps").mockResolvedValue({ apps: [] });
+    vi.spyOn(api, "sunshinePin").mockResolvedValue({});
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    });
+    queryClient.setQueryData(queryKeys.sunshine.hosts, hosts);
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SunshineView />
+      </QueryClientProvider>,
+    );
+
+    await user.click(within(screen.getByRole("article", { name: /Host one/ })).getByRole("button", { name: "管理" }));
+    await user.click(screen.getByRole("tab", { name: "配对" }));
+    await user.type(screen.getByLabelText(/PIN 码/), "8675309");
+    await user.click(screen.getByRole("button", { name: "提交配对" }));
+
+    expect(await screen.findByText("配对请求已提交。")).toBeTruthy();
+    expect(api.sunshinePin).toHaveBeenCalledWith("one", "8675309", "Moonlight Client");
+    expect(mutationCacheSnapshot(queryClient)).not.toContain("8675309");
+    expect(queryClient.getMutationCache().findAll({
+      mutationKey: ["sunshine-pair", "one"],
+      exact: true,
+    })).toHaveLength(0);
+  });
+
   it("remounts the panel when selecting another host", async () => {
     const hosts = [host("one", "Host one"), host("two", "Host two")];
     vi.spyOn(api, "sunshineHosts").mockResolvedValue(hosts);

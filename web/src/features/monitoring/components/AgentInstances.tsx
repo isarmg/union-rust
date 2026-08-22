@@ -11,19 +11,13 @@ import {
   StatusLed,
 } from "../../../shared/components/ui";
 import { formatDateTime } from "../../../shared/lib/format";
+import { removeMutationFromCache } from "../../../shared/lib/mutations";
 import { monitoringApi as api } from "../api";
 import { agentAuthorizationKeyGuidance, pendingAgentInstances } from "../model";
 import { monitoringQueryKeys as queryKeys } from "../queryKeys";
 import type { AgentInstanceSummary, CreatedAgentInstance, MonitoringHostSummary } from "../types";
 
 const createAgentMutationKey = ["monitoring-create-agent-instance"] as const;
-
-function removeMutationFromCache(queryClient: ReturnType<typeof useQueryClient>, mutationKey: readonly unknown[]) {
-  const mutationCache = queryClient.getMutationCache();
-  for (const mutation of mutationCache.findAll({ mutationKey, exact: true })) {
-    mutationCache.remove(mutation);
-  }
-}
 
 function ActivationCodePanel({ created, onClose }: {
   created: CreatedAgentInstance;

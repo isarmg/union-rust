@@ -86,6 +86,7 @@ export function InlineHostField({
     committingRef.current = true;
     try {
       await onSave(next);
+      setDraft(inputType === "password" ? value : next);
       setError("");
       setEditing(false);
     } catch (saveError) {
