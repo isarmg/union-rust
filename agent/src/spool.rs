@@ -4,6 +4,9 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
+use anyhow::Context;
+use uuid::Uuid;
+
 use crate::{
     model::AgentReport,
     private_fs::{self, OwnerPolicy},
@@ -103,8 +106,19 @@ impl Spool {
         match serde_json::from_slice(&bytes) {
             Ok(report) => Ok(Some(PendingReport { path, report })),
             Err(error) => {
-                let quarantine = path.with_extension(INVALID);
-                let _ = fs::rename(&path, quarantine);
+                // Keep every forensic sample and stay portable: Windows rename does not replace
+                // an existing destination, so a fixed `.invalid` name can leave the corrupt JSON
+                // at the FIFO head forever. The final extension remains `.invalid` so the normal
+                // spool budget continues to account for and evict these files.
+                let quarantine = path.with_extension(format!("{}.invalid", Uuid::new_v4()));
+                fs::rename(&path, &quarantine).with_context(|| {
+                    format!(
+                        "failed to quarantine invalid spool report {} as {} after JSON error: \
+                         {error}",
+                        path.display(),
+                        quarantine.display()
+                    )
+                })?;
                 Err(error.into())
             }
         }
@@ -257,7 +271,6 @@ fn file_size(path: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use uuid::Uuid;
 
     use super::*;
     use crate::model::*;
@@ -394,6 +407,45 @@ mod tests {
 
         // 待发报文本身必须活下来——隔离文件先被淘汰。
         assert_eq!(spool.pending_count().unwrap(), 1);
+
+        drop(spool);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn an_existing_fixed_quarantine_name_cannot_pin_a_corrupt_fifo_head() {
+        let directory = temp_dir();
+        let spool = Spool::open(&directory, 1024 * 1024).unwrap();
+        let corrupt =
+            directory
+                .join("spool")
+                .join(format!("{zero:020}-{}.json", Uuid::new_v4(), zero = 0));
+        let old_fixed_quarantine = corrupt.with_extension(INVALID);
+        fs::write(&corrupt, b"not valid JSON").unwrap();
+        fs::write(&old_fixed_quarantine, b"previous forensic sample").unwrap();
+
+        let valid = report();
+        spool.enqueue(&valid).unwrap();
+        let error = spool
+            .oldest()
+            .expect_err("the corrupt head is reported after it is quarantined");
+        assert!(error.to_string().contains("expected ident"));
+        assert!(!corrupt.exists(), "the corrupt JSON must leave the FIFO");
+        assert!(
+            old_fixed_quarantine.exists(),
+            "existing forensic data is preserved"
+        );
+        assert_eq!(
+            spool.paths(INVALID).unwrap().len(),
+            2,
+            "the new unique quarantine still uses the budgeted .invalid extension"
+        );
+
+        let pending = spool
+            .oldest()
+            .unwrap()
+            .expect("the next valid report remains deliverable");
+        assert_eq!(pending.report.report_id, valid.report_id);
 
         drop(spool);
         fs::remove_dir_all(directory).unwrap();

@@ -170,7 +170,8 @@ query 参数语义不受这个配对专用限制影响。
 - `enqueue`：JSON 序列化，临时文件写入、同步、原子 rename；
 - `oldest`：O(n) 找最小文件，不分配并排序整个队列；
 - `acknowledge`：成功 ACK 后删除；
-- 损坏 JSON：改名为 `.invalid` 隔离；
+- 损坏 JSON：改成带唯一后缀的 `.invalid` 名称隔离；既不覆盖旧取证样本，也不会因
+  Windows 拒绝覆盖 rename 而让损坏队首永久卡住；
 - 容量超限：先删最老 `.invalid`，再淘汰最老待发报告。
 
 `.invalid` 也计入同一预算，否则磁盘损坏持续产生的隔离文件会无限占盘。
