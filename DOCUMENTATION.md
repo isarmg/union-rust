@@ -138,9 +138,9 @@ Agent 的权限模型即由此而来：它只需要读权限，systemd unit 里 
                       └─ 反代契约 → 匿名限流 → 凭据校验 → 才解析 body
 ```
 
-数据库可用性检查带 1 秒 TTL 的缓存，避免每个请求都往库里打一次 `SELECT 1`；
-且只对确实需要库的路径（`/api/services`、`/api/monitoring`、`/api/events`、
-`/api/audit-logs`）生效。
+数据库可用性检查带 1 秒 TTL 的单航缓存，避免每个请求都往库里打一次 `SELECT 1`；
+过期时并发请求只触发一个探测，其余等待并复用结果。它供公开的 `/api/ready` 与确实需要库
+的管理面路径（`/api/services`、`/api/monitoring`、`/api/events`、`/api/audit-logs`）共享。
 
 ---
 

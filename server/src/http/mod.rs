@@ -21,6 +21,8 @@
 mod access_control;
 mod security_headers;
 
+pub(crate) use access_control::database_available;
+
 use axum::{
     Router,
     extract::{DefaultBodyLimit, Request},

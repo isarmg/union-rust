@@ -108,9 +108,7 @@ pub(crate) async fn health(State(state): State<AppState>) -> Json<HealthResponse
 pub(crate) async fn ready(
     State(state): State<AppState>,
 ) -> (axum::http::StatusCode, Json<ReadinessResponse>) {
-    let database = crate::infra::database::ping(state.db().as_ref())
-        .await
-        .is_ok();
+    let database = crate::http::database_available(&state).await;
     let data_directory = crate::infra::paths::data_dir().is_dir();
     // SQLite 是启动必需的本地持久层；无法查询时进程仍存活，但不得接收业务流量。
     let ready = data_directory && database;

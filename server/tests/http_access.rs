@@ -93,6 +93,24 @@ async fn health_is_public_but_current_user_requires_authentication() {
 }
 
 #[tokio::test]
+async fn ready_reuses_a_fresh_database_health_snapshot() {
+    let state = test_state().await;
+    *state.database_health.lock().await = Some(unionc::state::DatabaseHealthSnapshot {
+        checked_at: std::time::Instant::now(),
+        available: false,
+    });
+
+    let response = http::router(state)
+        .oneshot(Request::get("/api/ready").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let payload: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    assert_eq!(payload["database"], false);
+}
+
+#[tokio::test]
 async fn login_response_with_session_cookies_is_not_cacheable() {
     let response = http::router(test_state().await)
         .oneshot(

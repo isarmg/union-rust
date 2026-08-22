@@ -116,19 +116,33 @@ async fn ensure_database_available(state: &AppState, path: &str) -> Result<(), A
     Ok(())
 }
 
-async fn database_available(state: &AppState) -> bool {
-    let now = Instant::now();
+pub(crate) async fn database_available(state: &AppState) -> bool {
+    cached_database_available_with(state.database_health.as_ref(), || async {
+        database::ping(state.db().as_ref()).await.is_ok()
+    })
+    .await
+}
+
+async fn cached_database_available_with<Probe, ProbeFuture>(
+    cache: &tokio::sync::Mutex<Option<crate::state::DatabaseHealthSnapshot>>,
+    probe: Probe,
+) -> bool
+where
+    Probe: FnOnce() -> ProbeFuture,
+    ProbeFuture: std::future::Future<Output = bool>,
+{
+    // Keep the lock across the stale probe. Besides protecting the snapshot,
+    // this is a single-flight gate: concurrent public readiness checks at the
+    // TTL boundary must not all acquire a scarce database connection.
+    let mut cached = cache.lock().await;
+    if let Some(snapshot) = cached.as_ref()
+        && snapshot.checked_at.elapsed() < DATABASE_HEALTH_TTL
     {
-        let cached = state.database_health.lock().await;
-        if let Some(snapshot) = cached.as_ref()
-            && now.duration_since(snapshot.checked_at) < DATABASE_HEALTH_TTL
-        {
-            return snapshot.available;
-        }
+        return snapshot.available;
     }
 
-    let available = database::ping(state.db().as_ref()).await.is_ok();
-    *state.database_health.lock().await = Some(crate::state::DatabaseHealthSnapshot {
+    let available = probe().await;
+    *cached = Some(crate::state::DatabaseHealthSnapshot {
         checked_at: Instant::now(),
         available,
     });
@@ -170,4 +184,92 @@ fn requires_database(path: &str) -> bool {
         || path == "/api/events/ticket"
         || path.starts_with("/api/services")
         || path.starts_with("/api/monitoring")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use super::*;
+
+    #[tokio::test]
+    async fn stale_database_health_probe_is_single_flight() {
+        let cache = Arc::new(tokio::sync::Mutex::new(None));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+
+        let first = tokio::spawn({
+            let cache = cache.clone();
+            let calls = calls.clone();
+            let release = release.clone();
+            async move {
+                cached_database_available_with(cache.as_ref(), || async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    let _ = started_tx.send(());
+                    release.acquire().await.expect("release probe").forget();
+                    true
+                })
+                .await
+            }
+        });
+
+        started_rx.await.expect("first probe did not start");
+        assert!(
+            cache.try_lock().is_err(),
+            "the cache lock must remain held while the stale probe is in flight"
+        );
+
+        let mut followers = Vec::new();
+        for _ in 0..31 {
+            let cache = cache.clone();
+            let calls = calls.clone();
+            followers.push(tokio::spawn(async move {
+                cached_database_available_with(cache.as_ref(), || async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    false
+                })
+                .await
+            }));
+        }
+        tokio::task::yield_now().await;
+        release.add_permits(1);
+
+        assert!(first.await.expect("join first health probe"));
+        for follower in followers {
+            assert!(follower.await.expect("join follower health probe"));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn fresh_database_health_is_reused_and_stale_health_is_refreshed() {
+        let cache = tokio::sync::Mutex::new(Some(crate::state::DatabaseHealthSnapshot {
+            checked_at: Instant::now(),
+            available: false,
+        }));
+        let calls = AtomicUsize::new(0);
+
+        let fresh = cached_database_available_with(&cache, || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            true
+        })
+        .await;
+        assert!(!fresh);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        cache.lock().await.as_mut().unwrap().checked_at =
+            Instant::now() - DATABASE_HEALTH_TTL - Duration::from_millis(1);
+        let refreshed = cached_database_available_with(&cache, || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            true
+        })
+        .await;
+        assert!(refreshed);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(cache.lock().await.as_ref().unwrap().available);
+    }
 }
