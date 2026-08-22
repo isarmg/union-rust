@@ -214,7 +214,7 @@ schema_version 只代表顶层报告 schema；同一 schema 编号内的校验�
 收到这两种稳定机器码后写 `reauth_required`、停止投递并继续采样到有界 spool；重启后会在采样前因
 没有 authorized reporter 而退出并等待重新配对。一次性投递命令只入队并失败。421 是请求
 没有走预期反代，修复部署后可原样重试。有效 credential 与报告 `host_id` 不匹配时返回
-403 + `forbidden`，Agent 只丢弃这一份无法匹配的旧报告；未知 403 则保持可重试。
+403 + `agent_host_mismatch`，Agent 只丢弃这一份无法匹配的旧报告；通用或未知 403 则保持可重试。
 
 ### Q11：为什么登录后写请求还需要 CSRF？
 

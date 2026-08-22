@@ -376,7 +376,7 @@ fn ensure_success(status: StatusCode, body: &[u8], target: &str) -> Result<(), S
             // A valid credential accompanied by another host identity can never make this exact
             // report valid. This is the expected fate of old queued reports after pairing to a
             // different server/instance, so discard only that report and continue the FIFO.
-            Some("forbidden") => Err(SendError::Permanent(message)),
+            Some("agent_host_mismatch") => Err(SendError::Permanent(message)),
             // A proxy, WAF, or incompatible server may generate an unrelated 403. Retrying is
             // safer than permanently deauthorizing a valid credential or deleting telemetry.
             _ => Err(SendError::Transient(message)),
@@ -661,7 +661,7 @@ mod tests {
     fn forbidden_host_identity_mismatch_is_permanent_for_that_report() {
         let error = ensure_success(
             StatusCode::FORBIDDEN,
-            br#"{"code":"forbidden","message":"token does not belong to host"}"#,
+            br#"{"code":"agent_host_mismatch","message":"token does not belong to host"}"#,
             "UnionC",
         )
         .expect_err("a queued report for another host can never match the current credential");
@@ -671,13 +671,15 @@ mod tests {
 
     #[test]
     fn unrecognized_forbidden_response_does_not_revoke_the_credential() {
-        let error = ensure_success(
-            StatusCode::FORBIDDEN,
-            b"temporary policy rejection",
-            "UnionC",
-        )
-        .expect_err("an unknown 403 must not be accepted");
-        assert!(matches!(error, SendError::Transient(_)));
-        assert!(!error.is_revoked());
+        for body in [
+            b"temporary policy rejection".as_slice(),
+            br#"{"code":"forbidden","message":"unrelated access policy"}"#,
+        ] {
+            let error = ensure_success(StatusCode::FORBIDDEN, body, "UnionC")
+                .expect_err("an unknown 403 must not be accepted");
+            assert!(matches!(error, SendError::Transient(_)));
+            assert!(!error.is_revoked());
+            assert!(!error.is_permanent());
+        }
     }
 }

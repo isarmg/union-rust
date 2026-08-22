@@ -37,6 +37,10 @@ pub enum AppError {
     /// 已认证但请求缺少必要的安全证明，返回 403。
     #[error("{0}")]
     Forbidden(String),
+    /// A valid Agent credential was presented with a report for another host.
+    /// This stable code lets the Agent discard only that impossible report.
+    #[error("agent credential does not belong to the reported host")]
+    AgentHostMismatch,
     /// The Agent's host instance is persistently revoked. Distinct from an
     /// unknown or superseded token so the daemon can enter a deauthorized state.
     #[error("agent credential has been revoked")]
@@ -96,7 +100,9 @@ impl IntoResponse for AppError {
             }
             AppError::UnsupportedMediaType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             AppError::Unauthorized => StatusCode::UNAUTHORIZED,
-            AppError::Forbidden(_) | AppError::AgentRevoked => StatusCode::FORBIDDEN,
+            AppError::Forbidden(_) | AppError::AgentHostMismatch | AppError::AgentRevoked => {
+                StatusCode::FORBIDDEN
+            }
             AppError::MisdirectedRequest(_) => StatusCode::MISDIRECTED_REQUEST,
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::Gone(_) => StatusCode::GONE,
@@ -119,6 +125,9 @@ impl IntoResponse for AppError {
             AppError::InvalidHost(msg) => msg.clone(),
             AppError::Unauthorized => "unauthorized".to_string(),
             AppError::Forbidden(msg) => msg.clone(),
+            AppError::AgentHostMismatch => {
+                "agent credential does not belong to the reported host".to_string()
+            }
             AppError::AgentRevoked => "agent credential has been revoked".to_string(),
             AppError::MisdirectedRequest(msg) => msg.clone(),
             AppError::NotFound(msg) => msg.clone(),
@@ -158,6 +167,7 @@ impl AppError {
             Self::InvalidHost(_) => "invalid_host",
             Self::Unauthorized => "unauthorized",
             Self::Forbidden(_) => "forbidden",
+            Self::AgentHostMismatch => "agent_host_mismatch",
             Self::AgentRevoked => "agent_revoked",
             Self::MisdirectedRequest(_) => "misdirected_request",
             Self::NotFound(_) => "not_found",

@@ -748,12 +748,12 @@ async fn pairing_is_atomic_replay_safe_and_creation_is_idempotent() {
     );
 
     // Re-pairing to another server leaves older host reports at the head of the durable spool.
-    // The stable `forbidden` code lets the Agent discard only those impossible reports without
-    // mistaking the newly issued credential for a revoked host.
+    // The dedicated machine code lets the Agent discard only those impossible reports without
+    // treating an unrelated generic 403 as either a host mismatch or a revoked credential.
     let previous_instance_id = Uuid::new_v4().to_string();
     let (mismatch_status, mismatch_body) = report(&app, &previous_instance_id, &token).await;
     assert_eq!(mismatch_status, StatusCode::FORBIDDEN, "{mismatch_body}");
-    assert_eq!(mismatch_body["code"], "forbidden");
+    assert_eq!(mismatch_body["code"], "agent_host_mismatch");
     assert_eq!(
         report(&app, instance_id, &token).await.0,
         StatusCode::ACCEPTED,

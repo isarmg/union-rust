@@ -347,9 +347,7 @@ async fn report_metrics(
         .expect("validated host UUID")
         .to_string();
     if reported_host != authenticated_host {
-        return Err(AppError::Forbidden(
-            "agent token does not belong to the reported host".to_string(),
-        ));
+        return Err(AppError::AgentHostMismatch);
     }
     let (accepted, received_at) = crate::monitoring::store::store_authenticated_monitoring_report(
         state.db().as_ref(),
@@ -560,10 +558,9 @@ fn agent_database_unavailable(operation: &str, error: impl std::fmt::Display) ->
 
 /// Agent 接口的反向代理契约。与控制台接口共用同一份实现。
 ///
-/// 返回 421 而非 403 是刻意的：Agent 把 403 当作实例被持久撤销并进入
-/// `reauth_required`（见 `agent/src/transport.rs` 的 `ensure_success`）。若这里沿用 403，
-/// 一次反代漏配请求头就会让每台 Agent 误以为自己已被退役。421 归入可重试类，反代修好后
-/// 同一份报文原样重发即可。
+/// 返回 421 而非 403 是刻意的：Agent 只对受控的 403 机器码采取不可逆动作，未知 403
+/// 虽然会保留重试，但不能清楚表达“请求走错入口”。421 直接归入可重试部署故障，反代
+/// 修好后同一份报文原样重发即可。
 fn require_agent_reverse_proxy(
     state: &AppState,
     headers: &HeaderMap,
