@@ -10,12 +10,10 @@ use super::*;
 const AUDIT_RETENTION_BATCH: i64 = 1_000;
 
 fn context() -> AuditContext {
-    AUDIT_CONTEXT
-        .try_with(Clone::clone)
-        .unwrap_or(AuditContext {
-            actor: "system".to_string(),
-            request_id: None,
-        })
+    current_audit_context().unwrap_or(AuditContext {
+        actor: "system".to_string(),
+        request_id: None,
+    })
 }
 
 pub async fn insert_audit(

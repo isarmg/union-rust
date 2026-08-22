@@ -225,9 +225,16 @@ async fn finish_sunshine_mutation<T>(
 where
     T: Send + 'static,
 {
-    tokio::spawn(mutation).await.map_err(|error| {
-        AppError::Anyhow(anyhow::anyhow!("Sunshine mutation task failed: {error}"))
-    })?
+    let audit_context = database::current_audit_context().ok_or_else(|| {
+        AppError::Anyhow(anyhow::anyhow!(
+            "Sunshine mutation is missing its authenticated audit context"
+        ))
+    })?;
+    tokio::spawn(database::with_audit_context(audit_context, mutation))
+        .await
+        .map_err(|error| {
+            AppError::Anyhow(anyhow::anyhow!("Sunshine mutation task failed: {error}"))
+        })?
 }
 
 // ─── 单主机状态 ───────────────────────────────────────────────────────────────
@@ -319,6 +326,22 @@ mod tests {
         )
     }
 
+    fn request_waiter<T>(
+        request_id: &'static str,
+        mutation: impl std::future::Future<Output = AppResult<T>> + Send + 'static,
+    ) -> tokio::task::JoinHandle<AppResult<T>>
+    where
+        T: Send + 'static,
+    {
+        tokio::spawn(database::with_audit_context(
+            database::AuditContext {
+                actor: "test-admin".to_string(),
+                request_id: Some(request_id.to_string()),
+            },
+            finish_sunshine_mutation(mutation),
+        ))
+    }
+
     async fn cancel_waiter_after_commit<T>(
         state: &AppState,
         waiter: tokio::task::JoinHandle<AppResult<T>>,
@@ -376,7 +399,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_requests_finish_database_and_memory_publication() {
+    async fn cancelled_requests_preserve_publication_and_audit_context() {
         let state = initialized_state().await;
         let host = SunshineHostConfig {
             id: "cancelled-mutation-host".into(),
@@ -389,11 +412,10 @@ mod tests {
         };
 
         let (pause, committed, release) = commit_pause();
-        let create_waiter = tokio::spawn(finish_sunshine_mutation(create_host_and_publish(
-            state.clone(),
-            host.clone(),
-            pause,
-        )));
+        let create_waiter = request_waiter(
+            "cancelled-create-request",
+            create_host_and_publish(state.clone(), host.clone(), pause),
+        );
         cancel_waiter_after_commit(&state, create_waiter, committed, release).await;
         assert!(
             state
@@ -418,15 +440,18 @@ mod tests {
             crate::state::SunshineHostHealth::completed(true, &Ok(())),
         );
         let (pause, committed, release) = commit_pause();
-        let update_waiter = tokio::spawn(finish_sunshine_mutation(update_host_and_publish(
-            state.clone(),
-            host.id.clone(),
-            SunshineHostPatchRequest {
-                name: Some("after-update".into()),
-                ..SunshineHostPatchRequest::default()
-            },
-            pause,
-        )));
+        let update_waiter = request_waiter(
+            "cancelled-update-request",
+            update_host_and_publish(
+                state.clone(),
+                host.id.clone(),
+                SunshineHostPatchRequest {
+                    name: Some("after-update".into()),
+                    ..SunshineHostPatchRequest::default()
+                },
+                pause,
+            ),
+        );
         cancel_waiter_after_commit(&state, update_waiter, committed, release).await;
         let memory_name = state.hosts.sunshine.read().await[0].name.clone();
         let stored = database::load_sunshine_hosts(state.db().as_ref())
@@ -439,11 +464,10 @@ mod tests {
         drop(health);
 
         let (pause, committed, release) = commit_pause();
-        let delete_waiter = tokio::spawn(finish_sunshine_mutation(delete_host_and_publish(
-            state.clone(),
-            host.id.clone(),
-            pause,
-        )));
+        let delete_waiter = request_waiter(
+            "cancelled-delete-request",
+            delete_host_and_publish(state.clone(), host.id.clone(), pause),
+        );
         cancel_waiter_after_commit(&state, delete_waiter, committed, release).await;
         assert!(state.hosts.sunshine.read().await.is_empty());
         assert!(state.hosts.sunshine_health.read().await.is_empty());
@@ -453,5 +477,22 @@ mod tests {
                 .expect("reload after delete")
                 .is_empty()
         );
+
+        let audit = database::list_audit_logs(state.db().as_ref(), None, 10)
+            .await
+            .expect("load Sunshine mutation audit rows");
+        for (action, request_id) in [
+            ("sunshine.host.create", "cancelled-create-request"),
+            ("sunshine.host.update", "cancelled-update-request"),
+            ("sunshine.host.delete", "cancelled-delete-request"),
+        ] {
+            let entry = audit
+                .entries
+                .iter()
+                .find(|entry| entry.action == action)
+                .unwrap_or_else(|| panic!("missing {action} audit row"));
+            assert_eq!(entry.actor, "test-admin");
+            assert_eq!(entry.request_id.as_deref(), Some(request_id));
+        }
     }
 }

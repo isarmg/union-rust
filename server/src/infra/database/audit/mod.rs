@@ -38,6 +38,15 @@ where
     AUDIT_CONTEXT.scope(context, future).await
 }
 
+/// Clone the audit identity attached to the currently executing request task.
+///
+/// Tokio task-local values are not inherited by `tokio::spawn`. A request that
+/// deliberately detaches cancellation-safe work must capture this value before
+/// spawning and re-establish it inside the child task.
+pub fn current_audit_context() -> Option<AuditContext> {
+    AUDIT_CONTEXT.try_with(Clone::clone).ok()
+}
+
 mod operations;
 pub use operations::{
     insert_audit, insert_audit_in_transaction, list_audit_logs, prune_audit_history,
