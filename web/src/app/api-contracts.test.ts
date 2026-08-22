@@ -2,11 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authApi } from "../features/auth/api";
 import { agentActivationApi } from "../features/agent-activation/api";
 import { sunshineApi } from "../features/sunshine/api";
+import {
+  advanceAuthSessionGeneration,
+  currentAuthSessionGeneration,
+} from "../shared/api/client";
 
 const api = { ...authApi, ...agentActivationApi, ...sunshineApi };
 
 describe("API request contracts", () => {
-  const dispatchEvent = vi.fn(() => true);
+  const dispatchEvent = vi.fn((event: Event) => Boolean(event.type));
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
@@ -56,6 +60,26 @@ describe("API request contracts", () => {
     await expect(api.activateAgent("pairing-request", "bad-code"))
       .rejects.toThrow("激活码无效或已过期");
     expect(dispatchEvent).not.toHaveBeenCalled();
+  });
+
+  it("broadcasts a 401 only for the browser session that issued the request", async () => {
+    let resolveResponse!: (response: Response) => void;
+    fetchMock.mockReturnValue(new Promise<Response>((resolve) => { resolveResponse = resolve; }));
+    const generation = currentAuthSessionGeneration();
+    const stale = api.logout().catch((error: unknown) => error);
+    advanceAuthSessionGeneration();
+    resolveResponse(jsonResponse({ code: "unauthorized", message: "expired" }, 401));
+
+    await expect(stale).resolves.toMatchObject({ code: "stale_session", status: 401 });
+    expect(dispatchEvent).not.toHaveBeenCalled();
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ code: "unauthorized", message: "expired" }, 401));
+    await expect(api.logout()).rejects.toMatchObject({ code: "unauthorized", status: 401 });
+    expect(dispatchEvent).toHaveBeenCalledTimes(1);
+    expect(dispatchEvent.mock.calls[0]?.[0]).toMatchObject({
+      type: "unionc:auth-expired",
+      detail: generation + 1,
+    });
   });
 
   it("reads the limited public pairing summary without requiring a console session", async () => {

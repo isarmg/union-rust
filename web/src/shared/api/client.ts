@@ -1,4 +1,14 @@
 const REQUEST_TIMEOUT_MS = 15_000;
+let authSessionGeneration = 0;
+
+export function currentAuthSessionGeneration(): number {
+  return authSessionGeneration;
+}
+
+export function advanceAuthSessionGeneration(): number {
+  authSessionGeneration += 1;
+  return authSessionGeneration;
+}
 
 export type ApiRequestInit = RequestInit & {
   timeoutMs?: number;
@@ -36,6 +46,7 @@ function csrfToken(): string {
 }
 
 export async function request<T>(path: string, init?: ApiRequestInit): Promise<T> {
+  const requestSessionGeneration = currentAuthSessionGeneration();
   const {
     timeoutMs = REQUEST_TIMEOUT_MS,
     suppressAuthExpired = false,
@@ -79,7 +90,12 @@ export async function request<T>(path: string, init?: ApiRequestInit): Promise<T
 
   if (response.status === 401) {
     if (suppressAuthExpired) throw await readApiError(response);
-    window.dispatchEvent(new Event("unionc:auth-expired"));
+    if (requestSessionGeneration !== currentAuthSessionGeneration()) {
+      throw new ApiError("请求所属会话已结束", "stale_session", 401);
+    }
+    window.dispatchEvent(new CustomEvent("unionc:auth-expired", {
+      detail: requestSessionGeneration,
+    }));
     throw new ApiError("认证已失效，请重新登录", "unauthorized", 401);
   }
   if (!response.ok) throw await readApiError(response);
@@ -101,4 +117,3 @@ export async function request<T>(path: string, init?: ApiRequestInit): Promise<T
   }
   return await response.json() as T;
 }
-

@@ -4,7 +4,11 @@ import {
   RefreshCw, Settings, Sun, Terminal, User, X,
 } from "lucide-react";
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ApiError } from "../shared/api/client";
+import {
+  ApiError,
+  advanceAuthSessionGeneration,
+  currentAuthSessionGeneration,
+} from "../shared/api/client";
 import { authApi } from "../features/auth/api";
 import { authQueryKeys } from "../features/auth/queryKeys";
 import { overviewApi } from "../features/overview/api";
@@ -215,14 +219,14 @@ function AuthenticatedAppRoot() {
     defaultOptions: parentQueryClient.getDefaultOptions(),
   }));
   const sessionQueryClientRef = useRef(sessionQueryClient);
-  const sessionGenerationRef = useRef(0);
+  const sessionGenerationRef = useRef(currentAuthSessionGeneration());
   const [signedOut, setSignedOut] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
   const logoutPendingRef = useRef(false);
 
   const replaceSessionQueryClient = useCallback(() => {
     const previousQueryClient = sessionQueryClientRef.current;
-    sessionGenerationRef.current += 1;
+    sessionGenerationRef.current = advanceAuthSessionGeneration();
     previousQueryClient.clear();
     const nextQueryClient = new QueryClient({
       defaultOptions: previousQueryClient.getDefaultOptions(),
@@ -232,7 +236,10 @@ function AuthenticatedAppRoot() {
   }, []);
 
   useEffect(() => {
-    const expire = () => {
+    const expire = (event: Event) => {
+      const expiredGeneration = event instanceof CustomEvent ? event.detail : undefined;
+      if (typeof expiredGeneration === "number"
+        && expiredGeneration !== sessionGenerationRef.current) return;
       replaceSessionQueryClient();
       setSignedOut(true);
     };
@@ -260,6 +267,7 @@ function AuthenticatedAppRoot() {
     if (loginQueryClient !== sessionQueryClientRef.current) {
       throw new Error("会话状态已改变，请重新登录");
     }
+    sessionGenerationRef.current = advanceAuthSessionGeneration();
     loginQueryClient.setQueryData(authQueryKeys.me, { username: result.username });
     setSignedOut(false);
   };

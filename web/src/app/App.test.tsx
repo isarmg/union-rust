@@ -9,7 +9,7 @@ import { authQueryKeys } from "../features/auth/queryKeys";
 import { overviewApi } from "../features/overview/api";
 import { overviewQueryKeys } from "../features/overview/queryKeys";
 import type { ServiceStatus } from "../features/overview/types";
-import { ApiError } from "../shared/api/client";
+import { ApiError, request } from "../shared/api/client";
 import { realtimeApi } from "./realtimeApi";
 
 function renderApp() {
@@ -62,6 +62,7 @@ describe("session verification", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("shows the login form only for an unauthenticated response", async () => {
@@ -237,5 +238,42 @@ describe("session verification", () => {
     expect(screen.getByRole("button", { name: "退出登录" })).toBeTruthy();
     expect(screen.queryByRole("form", { name: "登录 UnionC 管理中心" })).toBeNull();
     expect(logout).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a late 401 response from a replaced browser session", async () => {
+    mockAuthenticatedApp();
+    let finishOldRequest!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => {
+      finishOldRequest = resolve;
+    })));
+    let finishLogout!: () => void;
+    vi.spyOn(api, "logout").mockReturnValue(
+      new Promise<void>((resolve) => { finishLogout = resolve; }),
+    );
+    vi.spyOn(api, "login").mockResolvedValue({ username: "admin" });
+    renderApp();
+
+    expect(await screen.findByRole("button", { name: "退出登录" })).toBeTruthy();
+    const oldRequestOutcome = request("/api/old-session").catch((error: unknown) => error);
+    fireEvent.click(screen.getByRole("button", { name: "退出登录" }));
+    const loginForm = await screen.findByRole("form", { name: "登录 UnionC 管理中心" });
+    act(() => finishLogout());
+    fireEvent.change(screen.getByLabelText("密码"), { target: { value: "new-session-password" } });
+    await waitFor(() => {
+      expect((screen.getByRole("button", { name: "登录" }) as HTMLButtonElement).disabled).toBe(false);
+    });
+    fireEvent.submit(loginForm);
+    expect(await screen.findByRole("button", { name: "退出登录" })).toBeTruthy();
+
+    await act(async () => {
+      finishOldRequest(new Response(
+        JSON.stringify({ code: "unauthorized", message: "old session expired" }),
+        { status: 401, headers: { "Content-Type": "application/json" } },
+      ));
+      expect(await oldRequestOutcome).toMatchObject({ code: "stale_session", status: 401 });
+    });
+
+    expect(screen.getByRole("button", { name: "退出登录" })).toBeTruthy();
+    expect(screen.queryByRole("form", { name: "登录 UnionC 管理中心" })).toBeNull();
   });
 });
