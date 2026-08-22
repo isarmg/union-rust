@@ -275,9 +275,9 @@ pub enum SendError {
     /// 当前 v2 浏览器配对流程恢复；Agent 不会自动生成或替换凭据。
     #[error("{0}")]
     Unauthorized(String),
-    /// The host credential was deliberately revoked or is bound to another
-    /// instance (403). Replacing it automatically would defeat host
-    /// decommissioning, so browser authorization is required.
+    /// The server returned its stable `agent_revoked` error code. Replacing the
+    /// credential automatically would defeat host decommissioning, so browser
+    /// authorization is required.
     #[error("{0}")]
     Revoked(String),
     /// 网络故障或服务端暂时不可用。重试有意义。
@@ -345,6 +345,9 @@ fn ensure_success(status: StatusCode, body: String, target: &str) -> Result<(), 
     if status.is_success() {
         return Ok(());
     }
+    let error_code = serde_json::from_str::<ServerErrorCode>(&body)
+        .ok()
+        .map(|error| error.code);
     let detail: String = body.chars().take(512).collect();
     let message = format!("{target} rejected telemetry with HTTP {status}: {detail}");
     // 404/408/421/429 与 5xx 留作可重试：服务端重启、反代修复、限流退避之后，
@@ -361,12 +364,26 @@ fn ensure_success(status: StatusCode, body: String, target: &str) -> Result<(), 
              X-Forwarded-Proto 与 X-Forwarded-For）"
         ))),
         StatusCode::UNAUTHORIZED => Err(SendError::Unauthorized(message)),
-        StatusCode::FORBIDDEN => Err(SendError::Revoked(format!(
-            "{message}; this credential will not be replaced automatically—run `unionc-agent \
-             pair --server <url>` to authorize the host again"
-        ))),
+        StatusCode::FORBIDDEN => match error_code.as_deref() {
+            Some("agent_revoked") => Err(SendError::Revoked(format!(
+                "{message}; this credential will not be replaced automatically—run \
+                 `unionc-agent pair --server <url>` to authorize the host again"
+            ))),
+            // A valid credential accompanied by another host identity can never make this exact
+            // report valid. This is the expected fate of old queued reports after pairing to a
+            // different server/instance, so discard only that report and continue the FIFO.
+            Some("forbidden") => Err(SendError::Permanent(message)),
+            // A proxy, WAF, or incompatible server may generate an unrelated 403. Retrying is
+            // safer than permanently deauthorizing a valid credential or deleting telemetry.
+            _ => Err(SendError::Transient(message)),
+        },
         _ => Err(SendError::Transient(message)),
     }
+}
+
+#[derive(serde::Deserialize)]
+struct ServerErrorCode {
+    code: String,
 }
 
 #[cfg(test)]
@@ -597,10 +614,38 @@ mod tests {
     }
 
     #[test]
-    fn forbidden_requires_browser_reauthorization() {
-        let error = ensure_success(StatusCode::FORBIDDEN, "revoked".into(), "UnionC")
-            .expect_err("403 must require browser reauthorization");
+    fn explicit_revocation_requires_browser_reauthorization() {
+        let error = ensure_success(
+            StatusCode::FORBIDDEN,
+            r#"{"code":"agent_revoked","message":"revoked"}"#.into(),
+            "UnionC",
+        )
+        .expect_err("the stable revocation code must require browser reauthorization");
         assert!(error.is_revoked());
         assert!(!error.is_unauthorized());
+    }
+
+    #[test]
+    fn forbidden_host_identity_mismatch_is_permanent_for_that_report() {
+        let error = ensure_success(
+            StatusCode::FORBIDDEN,
+            r#"{"code":"forbidden","message":"token does not belong to host"}"#.into(),
+            "UnionC",
+        )
+        .expect_err("a queued report for another host can never match the current credential");
+        assert!(error.is_permanent());
+        assert!(!error.is_revoked());
+    }
+
+    #[test]
+    fn unrecognized_forbidden_response_does_not_revoke_the_credential() {
+        let error = ensure_success(
+            StatusCode::FORBIDDEN,
+            "temporary policy rejection".into(),
+            "UnionC",
+        )
+        .expect_err("an unknown 403 must not be accepted");
+        assert!(matches!(error, SendError::Transient(_)));
+        assert!(!error.is_revoked());
     }
 }

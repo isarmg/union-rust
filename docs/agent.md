@@ -68,11 +68,11 @@ macOS 使用相同命令，但服务账户是 `_unioncagent`、配置位于
 临时生成且不持久化的 UUID，不是配对后的稳定实例 ID。
 `once` 会先补传状态目录中的历史积压，再发送当前报文，适合由外部调度器周期执行；网络
 仍不可用时当前报文留在 spool。配对凭据被拒后不会回退到其他身份建立流程。
-主机生命周期被管理员明确撤销，或当前有效 credential 与报告 `host_id` 绑定不匹配时返回
-403；未知/失效、以及主机仍 active 但已被重配替换的 credential 返回 401。当前常驻
-`run` 收到两者之一后会持久记录 `reauth_required`，停止投递但继续采样到有界 spool；
-`once` / `doctor --delivery` 只入队并失败，不改授权状态。常驻进程重启后会在采样循环前
-因没有 authorized reporter 而退出，只有新的浏览器配对才能恢复。
+主机生命周期被管理员明确撤销时返回 403 + `agent_revoked`；当前有效 credential 与报告
+`host_id` 绑定不匹配时返回 403 + `forbidden`；未知/失效、以及主机仍 active 但已被重配
+替换的 credential 返回 401。当前常驻 `run` 只在 401 或 `agent_revoked` 时持久记录
+`reauth_required`，停止投递但继续采样到有界 spool。`forbidden` 表示该份报文本身属于另一
+身份，Agent 会丢弃它并继续 FIFO，因而跨服务器重新配对不会被旧 spool 队首锁死。
 
 配置文件路径可用 `--config PATH` 或 `UNIONC_AGENT_CONFIG` 指定。以下环境变量**优先于**
 配置文件：`UNIONC_AGENT_ENDPOINT`、`UNIONC_AGENT_PAIRING_ENDPOINT`、
@@ -135,7 +135,9 @@ systemd 用 0755 并**每次启动都重设**，而 Agent 的 chmod 要等到第
 |---|---|---|
 | 400 / 409 / 413 / 422 | 内容或 report ID 冲突（改不了） | `run` 删除已排队报文；一次性命令不入队。重发只会再次失败 |
 | 401 | 未知/失效 credential，或主机仍 active 但该 credential 已被重配替换/撤销 | `run` 保留已排队的队首并进入 `reauth_required`；一次性命令把当前报告入队并失败，但不改授权状态 |
-| 403 | 主机生命周期已撤销，或当前有效 credential 与报告 `host_id` 绑定不匹配 | `run` 保留已排队的队首并进入 `reauth_required`；一次性命令把当前报告入队并失败，但不改授权状态 |
+| 403 + `agent_revoked` | 主机生命周期已撤销 | `run` 保留已排队的队首并进入 `reauth_required`；一次性命令把当前报告入队并失败，但不改授权状态 |
+| 403 + `forbidden` | 当前有效 credential 与报告 `host_id` 不匹配 | 该报文永久无效，`run` 删除队首后继续投递；一次性命令不入队 |
+| 其他或无法解析的 403 | 代理/WAF 或不兼容服务端拒绝 | 保留队首并退避，不擅自撤销凭据或丢弃报告 |
 | **421** | 链路问题——反代契约头或独立代理证明缺失/不匹配 | `run` 保留队首并退避；一次性命令把当前报告入队。**不是**凭据失效，绝不触发重新注册 |
 | 其他 4xx / 5xx / 网络故障 | 仅需等待 | `run` 保留队首并指数退避（上限 300 秒）；一次性命令把当前报告入队 |
 
@@ -143,9 +145,9 @@ systemd 用 0755 并**每次启动都重设**，而 Agent 的 chmod 要等到第
 在客户端表现为每台 Agent 的凭据失效——故障现象与根因毫不相关。
 
 Web 撤销不会主动推送到本机，Agent 要在下一次报告响应才得知。一次性的 `once` /
-`doctor --delivery` 遇到 401/403 时只保留报告并返回错误，不写 `reauth_required`。正在运行
-的 `run` 写入该状态后会继续采样；重启后则无法取得 authorized reporter，在进入采样循环前
-退出并由服务管理器重试，直到同实例重新配对。
+`doctor --delivery` 遇到 401 或 `agent_revoked` 时只保留报告并返回错误，不写
+`reauth_required`。正在运行的 `run` 写入该状态后会继续采样；重启后则无法取得 authorized
+reporter，在进入采样循环前退出并由服务管理器重试，直到同实例重新配对。
 
 spool 文件名以零填充的毫秒时间戳为前缀，字典序即投递顺序；每轮最多补传 32 批，
 避免长时间断线恢复后独占网络与采样线程。反序列化失败的报文隔离为 `.invalid`，
