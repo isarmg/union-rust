@@ -194,11 +194,16 @@ where
 /// POST /api/auth/login — JSON 登录并建立浏览器 Cookie 会话。
 pub(crate) async fn login(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    reservation: LoginAttemptReservation,
     Json(payload): Json<LoginRequest>,
 ) -> AppResult<Response> {
-    let client = require_reverse_proxy_contract(&state, &headers, "登录接口")?;
-    let authenticated = authenticate(&state, &payload.username, payload.password, client).await?;
+    let authenticated = authenticate(
+        &state,
+        &payload.username,
+        payload.password,
+        reservation,
+    )
+    .await?;
     finalize_login(&state, authenticated).await
 }
 
@@ -220,15 +225,8 @@ async fn finalize_login(
 
     let response = create_login_response(state, authenticated.username).await?;
     drop(transition);
-    // 成功登录释放该来源的配额，避免管理员多次手误后被自己的桶挡住。
-    // 只清与本次来源相关的两个桶——全局桶是资源兜底，不该被一次成功登录重置。
-    if let Some(address) = authenticated.client {
-        let mut attempts = state.auth.login_attempts.lock().await;
-        attempts.by_ip.remove(&address);
-        attempts
-            .by_ip_username
-            .remove(&(address, authenticated.rate_limit_key));
-    }
+    // 成功请求也保留在限流窗口内。整桶退款会同时删除同一 NAT 来源下其他并发请求
+    // 已占用的 body/认证额度，让一次成功登录成为绕过来源限流的开关。
     Ok(response)
 }
 

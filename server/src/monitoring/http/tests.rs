@@ -34,6 +34,20 @@ mod tests {
         state_with_pool(database::in_memory_pool().expect("in-memory test pool"))
     }
 
+    fn state_with_settings(settings: Settings) -> AppState {
+        AppState::new(
+            settings,
+            database::in_memory_pool().expect("in-memory test pool"),
+            "unused".to_string(),
+            LocalConfig {
+                application_version: env!("CARGO_PKG_VERSION").to_string(),
+                admin_username: "admin".to_string(),
+                admin_password_hash: "unused".to_string(),
+            },
+            crate::system::ResourceMonitor::frozen(Default::default()),
+        )
+    }
+
     async fn authenticated_report_state() -> (AppState, &'static str) {
         const TOKEN: &str = "unit-test-report-token";
 
@@ -209,6 +223,85 @@ mod tests {
             !media_type_polled.load(Ordering::SeqCst),
             "an unsupported media type must be rejected without polling the body"
         );
+    }
+
+    #[tokio::test]
+    async fn pairing_admission_runs_before_body_polling() {
+        const PATHS: [&str; 2] = [
+            "/api/agent/v2/pairing-requests",
+            "/api/agent/v2/activate",
+        ];
+
+        let production = Settings {
+            production: true,
+            server: crate::config::ServerSettings {
+                proxy_secret: "test-proxy-secret".to_string(),
+                ..crate::config::ServerSettings::default()
+            },
+            ..Settings::default()
+        };
+        let proxy_app = agent_router().with_state(state_with_settings(production));
+        for path in PATHS {
+            let polled = Arc::new(AtomicBool::new(false));
+            let response = proxy_app
+                .clone()
+                .oneshot(
+                    Request::post(path)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(observed_body(polled.clone()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::MISDIRECTED_REQUEST);
+            assert!(
+                !polled.load(Ordering::SeqCst),
+                "an untrusted request to {path} polled its body"
+            );
+        }
+
+        let quota_state = state();
+        *quota_state.agents.pairing_attempts.lock().await =
+            std::iter::repeat_n(Instant::now(), MAX_PAIRING_GLOBAL).collect();
+        let quota_app = agent_router().with_state(quota_state);
+        for path in PATHS {
+            let polled = Arc::new(AtomicBool::new(false));
+            let response = quota_app
+                .clone()
+                .oneshot(
+                    Request::post(path)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(observed_body(polled.clone()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+            assert!(
+                !polled.load(Ordering::SeqCst),
+                "a rate-limited request to {path} polled its body"
+            );
+        }
+
+        let media_type_app = agent_router().with_state(state());
+        for path in PATHS {
+            let polled = Arc::new(AtomicBool::new(false));
+            let response = media_type_app
+                .clone()
+                .oneshot(
+                    Request::post(path)
+                        .header(header::CONTENT_TYPE, "text/plain")
+                        .body(observed_body(polled.clone()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+            assert!(
+                !polled.load(Ordering::SeqCst),
+                "an unsupported media type on {path} polled its body"
+            );
+        }
     }
 
     #[test]

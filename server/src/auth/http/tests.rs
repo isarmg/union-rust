@@ -3,12 +3,19 @@ mod tests {
     use super::*;
 
     async fn password_state(password_hash: String) -> AppState {
+        password_state_with_settings(password_hash, crate::config::Settings::default()).await
+    }
+
+    async fn password_state_with_settings(
+        password_hash: String,
+        settings: crate::config::Settings,
+    ) -> AppState {
         let pool = crate::infra::database::in_memory_pool().expect("in-memory database");
         crate::infra::database::initialize_schema(&pool)
             .await
             .expect("initialize password test database");
         AppState::new(
-            crate::config::Settings::default(),
+            settings,
             pool,
             password_hash.clone(),
             crate::config::LocalConfig {
@@ -18,6 +25,183 @@ mod tests {
             },
             crate::system::ResourceMonitor::frozen(Default::default()),
         )
+    }
+
+    fn observed_login_body(polled: std::sync::Arc<std::sync::atomic::AtomicBool>) -> axum::body::Body {
+        axum::body::Body::from_stream(futures_util::stream::once(async move {
+            polled.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok::<_, std::io::Error>(axum::body::Bytes::from_static(
+                br#"{"username":"admin","password":"irrelevant"}"#,
+            ))
+        }))
+    }
+
+    #[tokio::test]
+    async fn login_admission_runs_before_body_polling() {
+        use tower::ServiceExt;
+
+        let production = crate::config::Settings {
+            production: true,
+            server: crate::config::ServerSettings {
+                proxy_secret: "test-proxy-secret".to_string(),
+                ..crate::config::ServerSettings::default()
+            },
+            ..crate::config::Settings::default()
+        };
+        let proxy_state = password_state_with_settings("unused".to_string(), production).await;
+        let proxy_body_polled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let proxy_rejection = router()
+            .with_state(proxy_state)
+            .oneshot(
+                axum::http::Request::post("/api/auth/login")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(observed_login_body(proxy_body_polled.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(proxy_rejection.status(), StatusCode::MISDIRECTED_REQUEST);
+        assert!(
+            !proxy_body_polled.load(std::sync::atomic::Ordering::SeqCst),
+            "an untrusted login request must be rejected without polling its body"
+        );
+
+        let quota_state = password_state("unused".to_string()).await;
+        quota_state.auth.login_attempts.lock().await.global =
+            std::iter::repeat_n(std::time::Instant::now(), MAX_GLOBAL_LOGIN_ATTEMPTS).collect();
+        let quota_body_polled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let quota_rejection = router()
+            .with_state(quota_state)
+            .oneshot(
+                axum::http::Request::post("/api/auth/login")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(observed_login_body(quota_body_polled.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(quota_rejection.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            !quota_body_polled.load(std::sync::atomic::Ordering::SeqCst),
+            "a rate-limited login request must be rejected without polling its body"
+        );
+
+        let media_type_state = password_state("unused".to_string()).await;
+        let media_type_body_polled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let media_type_rejection = router()
+            .with_state(media_type_state)
+            .oneshot(
+                axum::http::Request::post("/api/auth/login")
+                    .header(header::CONTENT_TYPE, "text/plain")
+                    .body(observed_login_body(media_type_body_polled.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            media_type_rejection.status(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+        assert!(
+            !media_type_body_polled.load(std::sync::atomic::Ordering::SeqCst),
+            "an unsupported login media type must be rejected without polling its body"
+        );
+    }
+
+    #[tokio::test]
+    async fn login_admission_counts_each_layer_exactly_once() {
+        use tower::ServiceExt;
+
+        let hash = bcrypt::hash("known-test-password", 4).unwrap();
+        let state = password_state(hash).await;
+        let client: std::net::IpAddr = "203.0.113.9".parse().unwrap();
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                axum::http::Request::post("/api/auth/login")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-forwarded-for", client.to_string())
+                    .body(axum::body::Body::from(
+                        r#"{"username":"No-Such-User","password":"wrong-password"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let attempts = state.auth.login_attempts.lock().await;
+        assert_eq!(attempts.global.len(), 1);
+        assert_eq!(attempts.by_ip.get(&client).map(Vec::len), Some(1));
+        assert_eq!(
+            attempts
+                .by_ip_username
+                .get(&(client, "no-such-user".to_string()))
+                .map(Vec::len),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_login_json_charges_only_the_source_layers() {
+        use tower::ServiceExt;
+
+        let state = password_state("unused".to_string()).await;
+        let client: std::net::IpAddr = "198.51.100.20".parse().unwrap();
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                axum::http::Request::post("/api/auth/login")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-forwarded-for", client.to_string())
+                    .body(axum::body::Body::from(r#"{"username": "#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let attempts = state.auth.login_attempts.lock().await;
+        assert_eq!(attempts.global.len(), 1);
+        assert_eq!(attempts.by_ip.get(&client).map(Vec::len), Some(1));
+        assert!(attempts.by_ip_username.is_empty());
+    }
+
+    #[tokio::test]
+    async fn full_account_bucket_does_not_double_charge_source_layers() {
+        use tower::ServiceExt;
+
+        let state = password_state("unused".to_string()).await;
+        let client: std::net::IpAddr = "192.0.2.25".parse().unwrap();
+        state.auth.login_attempts.lock().await.by_ip_username.insert(
+            (client, "admin".to_string()),
+            std::iter::repeat_n(std::time::Instant::now(), MAX_LOGIN_ATTEMPTS).collect(),
+        );
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                axum::http::Request::post("/api/auth/login")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-forwarded-for", client.to_string())
+                    .body(axum::body::Body::from(
+                        r#"{"username":"admin","password":"wrong-password"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let attempts = state.auth.login_attempts.lock().await;
+        assert_eq!(attempts.global.len(), 1);
+        assert_eq!(attempts.by_ip.get(&client).map(Vec::len), Some(1));
+        assert_eq!(
+            attempts
+                .by_ip_username
+                .get(&(client, "admin".to_string()))
+                .map(Vec::len),
+            Some(MAX_LOGIN_ATTEMPTS)
+        );
     }
 
     async fn replace_test_password<P, Fut>(
@@ -127,7 +311,7 @@ mod tests {
             &state,
             "admin",
             "old-password-value".to_string(),
-            None,
+            LoginAttemptReservation { client: None },
         )
         .await
         .expect("the old password should verify before the change");

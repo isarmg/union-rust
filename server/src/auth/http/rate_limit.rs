@@ -1,15 +1,49 @@
 struct AuthenticatedPassword {
     username: String,
     password_hash: String,
-    rate_limit_key: String,
+}
+
+/// Header-only login admission. Axum runs this extractor before `Json<LoginRequest>`, so an
+/// untrusted proxy or a source that has exhausted its quota cannot make the application poll and
+/// aggregate a request body first.
+#[derive(Clone, Copy)]
+pub(crate) struct LoginAttemptReservation {
     client: Option<std::net::IpAddr>,
+}
+
+impl axum::extract::FromRequestParts<AppState> for LoginAttemptReservation {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let client = require_reverse_proxy_contract(state, &parts.headers, "登录接口")?;
+        reserve_login_source_attempt(state, client).await?;
+        Ok(Self { client })
+    }
+}
+
+async fn reserve_login_source_attempt(
+    state: &AppState,
+    client: Option<std::net::IpAddr>,
+) -> AppResult<()> {
+    let now = std::time::Instant::now();
+    let mut attempts = state.auth.login_attempts.lock().await;
+    if login_source_quota_exhausted(&mut attempts, client, now) {
+        return Err(AppError::TooManyRequests(
+            "登录尝试过于频繁，请一分钟后再试".to_string(),
+        ));
+    }
+    record_login_source_attempt(&mut attempts, client, now);
+    Ok(())
 }
 
 async fn authenticate(
     state: &AppState,
     username: &str,
     password: String,
-    client: Option<std::net::IpAddr>,
+    reservation: LoginAttemptReservation,
 ) -> AppResult<AuthenticatedPassword> {
     let username = validate_username(username)?;
     validate_bcrypt_input(&password, "密码")?;
@@ -17,13 +51,14 @@ async fn authenticate(
     let now = std::time::Instant::now();
     {
         let mut attempts = state.auth.login_attempts.lock().await;
-        if login_quota_exhausted(&mut attempts, &key, client, now) {
+        if login_account_quota_exhausted(&mut attempts, &key, reservation.client, now) {
             return Err(AppError::TooManyRequests(
                 "登录尝试过于频繁，请一分钟后再试".to_string(),
             ));
         }
-        // 在昂贵校验前占用名额，避免并发请求同时穿过限流检查。
-        record_login_attempt(&mut attempts, &key, client, now);
+        // 在昂贵校验前占用账号名额，避免并发请求同时穿过限流检查。全局与来源 IP
+        // 名额已由纯请求头提取器在读取 body 前占用，不能在这里重复记账。
+        record_login_account_attempt(&mut attempts, &key, reservation.client, now);
     }
 
     let config = state.auth.local_config.read().await;
@@ -50,8 +85,6 @@ async fn authenticate(
         (true, true) => Ok(AuthenticatedPassword {
             username: configured_username,
             password_hash,
-            rate_limit_key: key,
-            client,
         }),
         _ => Err(AppError::Unauthorized),
     }
@@ -124,6 +157,15 @@ fn login_quota_exhausted(
     client: Option<std::net::IpAddr>,
     now: std::time::Instant,
 ) -> bool {
+    login_source_quota_exhausted(attempts, client, now)
+        || login_account_quota_exhausted(attempts, key, client, now)
+}
+
+fn login_source_quota_exhausted(
+    attempts: &mut LoginAttemptState,
+    client: Option<std::net::IpAddr>,
+    now: std::time::Instant,
+) -> bool {
     if prune_window(&mut attempts.global, now) >= MAX_GLOBAL_LOGIN_ATTEMPTS {
         return true;
     }
@@ -132,15 +174,25 @@ fn login_quota_exhausted(
         // 生产环境下 `require_reverse_proxy_contract` 已把这种请求挡在门外。
         return false;
     };
-    let by_ip = attempts
+    attempts
         .by_ip
         .get_mut(&address)
-        .is_some_and(|values| prune_window(values, now) >= MAX_LOGIN_ATTEMPTS_PER_IP);
-    let by_account = attempts
+        .is_some_and(|values| prune_window(values, now) >= MAX_LOGIN_ATTEMPTS_PER_IP)
+}
+
+fn login_account_quota_exhausted(
+    attempts: &mut LoginAttemptState,
+    key: &str,
+    client: Option<std::net::IpAddr>,
+    now: std::time::Instant,
+) -> bool {
+    let Some(address) = client else {
+        return false;
+    };
+    attempts
         .by_ip_username
         .get_mut(&(address, key.to_string()))
-        .is_some_and(|values| prune_window(values, now) >= MAX_LOGIN_ATTEMPTS);
-    by_ip || by_account
+        .is_some_and(|values| prune_window(values, now) >= MAX_LOGIN_ATTEMPTS)
 }
 
 fn record_login_attempt(
@@ -149,9 +201,28 @@ fn record_login_attempt(
     client: Option<std::net::IpAddr>,
     now: std::time::Instant,
 ) {
+    record_login_source_attempt(attempts, client, now);
+    record_login_account_attempt(attempts, key, client, now);
+}
+
+fn record_login_source_attempt(
+    attempts: &mut LoginAttemptState,
+    client: Option<std::net::IpAddr>,
+    now: std::time::Instant,
+) {
     attempts.global.push(now);
     if let Some(address) = client {
         attempts.by_ip.entry(address).or_default().push(now);
+    }
+}
+
+fn record_login_account_attempt(
+    attempts: &mut LoginAttemptState,
+    key: &str,
+    client: Option<std::net::IpAddr>,
+    now: std::time::Instant,
+) {
+    if let Some(address) = client {
         attempts
             .by_ip_username
             .entry((address, key.to_string()))

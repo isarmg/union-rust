@@ -33,6 +33,25 @@ struct AuthenticatedReport {
     credential_hash: String,
 }
 
+/// Header-only admission for anonymous pairing writes. Keeping this separate from the final
+/// `Bytes` extractor guarantees proxy validation, quota consumption and media-type validation all
+/// complete before Axum starts polling the request body.
+struct AnonymousPairingWrite;
+
+impl FromRequestParts<AppState> for AnonymousPairingWrite {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let client = require_agent_reverse_proxy(state, &parts.headers)?;
+        check_pairing_rate(state, client).await?;
+        require_json_content_type(&parts.headers)?;
+        Ok(Self)
+    }
+}
+
 impl FromRequestParts<AppState> for AuthenticatedReport {
     type Rejection = AppError;
 
@@ -166,14 +185,9 @@ async fn cancel_agent_instance(
 
 async fn create_pairing_request(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _admission: AnonymousPairingWrite,
     body: axum::body::Bytes,
 ) -> AppResult<Response> {
-    let client = require_agent_reverse_proxy(&state, &headers)?;
-    // Anonymous quota and the 16 KiB route limit are both applied before JSON
-    // deserialization.
-    check_pairing_rate(&state, client).await?;
-    require_json_content_type(&headers)?;
     let request: AgentPairingRequest = serde_json::from_slice(&body)
         .map_err(|error| AppError::BadRequest(format!("invalid pairing request: {error}")))?;
     request.validate()?;
@@ -285,12 +299,9 @@ async fn pairing_request_status(
 
 async fn activate_pairing_request(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _admission: AnonymousPairingWrite,
     body: axum::body::Bytes,
 ) -> AppResult<Response> {
-    let client = require_agent_reverse_proxy(&state, &headers)?;
-    check_pairing_rate(&state, client).await?;
-    require_json_content_type(&headers)?;
     let request: ActivateAgentRequest = serde_json::from_slice(&body)
         .map_err(|error| AppError::BadRequest(format!("invalid activation request: {error}")))?;
     let request_id = validate_uuid(&request.request_id, "pairing request id")?;
