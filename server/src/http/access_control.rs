@@ -215,9 +215,12 @@ fn requires_database(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
+    use std::{
+        os::unix::fs::PermissionsExt,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
     };
 
     use futures_util::FutureExt;
@@ -299,6 +302,35 @@ mod tests {
 
         drop(health_guard);
         state.db().close().await;
+    }
+
+    #[tokio::test]
+    async fn fresh_health_cache_cannot_hide_unsafe_database_permissions() {
+        let (_directory, path, state) = file_backed_state().await;
+        assert!(database_available(&state).await, "prime healthy cache");
+        let pool = state.db();
+        let mut existing_connection = pool.acquire().await.expect("acquire before chmod");
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("make database readable by other users");
+        query("SELECT 1")
+            .execute(&mut *existing_connection)
+            .await
+            .expect("an existing SQLite descriptor remains usable after chmod");
+        assert!(
+            !database_available(&state).await,
+            "a fresh SQL snapshot must not hide unsafe main-file permissions"
+        );
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("restore private permissions");
+        assert!(
+            !database_available(&state).await,
+            "an observed permission violation must require a full restart"
+        );
+
+        drop(existing_connection);
+        pool.close().await;
     }
 
     #[tokio::test]

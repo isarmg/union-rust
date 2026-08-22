@@ -15,9 +15,9 @@ pub use settings::*;
 use std::{
     borrow::Cow,
     collections::HashMap,
-    fs,
+    fs::{self, File, OpenOptions},
     ops::{Deref, DerefMut},
-    os::unix::fs::MetadataExt,
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     str::FromStr,
     sync::{
@@ -42,6 +42,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 use crate::config::Settings;
 
 const DATABASE_FILE_NAME: &str = "unionc.db";
+const DATABASE_FILE_MODE: u32 = 0o600;
 const WRITE_BUSY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Project-wide runtime pool type.
@@ -62,10 +63,24 @@ type SchemaObject = (String, String, String, Option<String>);
 type IdentityPoisonKey = (PathBuf, u64, u64);
 type IdentityPoisonRegistry = HashMap<IdentityPoisonKey, Weak<AtomicBool>>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DatabaseIdentityKind {
     InMemory,
-    File { device: u64, inode: u64 },
+    File {
+        device: u64,
+        inode: u64,
+        owner_uid: u32,
+        owner_gid: u32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DatabaseFileIdentity {
+    device: u64,
+    inode: u64,
+    owner_uid: u32,
+    owner_gid: u32,
+    mode: u32,
 }
 
 /// The canonical runtime database path and the filesystem object opened at
@@ -102,11 +117,16 @@ impl DatabaseIdentity {
                 poisoned: Arc::new(AtomicBool::new(false)),
             });
         }
-        let (device, inode) = regular_file_identity(&path)?;
+        let file = private_database_file_identity(&path)?;
         Ok(Self {
-            poisoned: identity_poison(&path, device, inode),
+            poisoned: identity_poison(&path, file.device, file.inode),
             path,
-            kind: DatabaseIdentityKind::File { device, inode },
+            kind: DatabaseIdentityKind::File {
+                device: file.device,
+                inode: file.inode,
+                owner_uid: file.owner_uid,
+                owner_gid: file.owner_gid,
+            },
         })
     }
 
@@ -118,26 +138,39 @@ impl DatabaseIdentity {
                 "runtime SQLite database identity was previously invalidated; restart is required"
             );
         }
-        let DatabaseIdentityKind::File { device, inode } = self.kind else {
+        let Some(expected) = self.expected_file_identity() else {
             return Ok(());
         };
-        let current = regular_file_identity(&self.path).map_err(|error| {
-            anyhow::anyhow!(
-                "runtime SQLite database path {} is unavailable: {error:#}",
-                self.path.display()
-            )
-        });
-        let current = match current {
+        let metadata = match fs::symlink_metadata(&self.path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) {
+                    self.invalidate();
+                }
+                return Err(anyhow::anyhow!(
+                    "runtime SQLite database path {} is unavailable: {error}",
+                    self.path.display()
+                ));
+            }
+        };
+        let current = match checked_database_file_identity(&metadata, &self.path) {
             Ok(current) => current,
             Err(error) => {
-                self.poisoned.store(true, Ordering::SeqCst);
+                self.invalidate();
                 return Err(error);
             }
         };
-        if current != (device, inode) {
+        if let Err(error) = ensure_private_database_mode(&self.path, current) {
+            self.invalidate();
+            return Err(error);
+        };
+        if current != expected {
             self.poisoned.store(true, Ordering::SeqCst);
             anyhow::bail!(
-                "runtime SQLite database path {} no longer identifies the file opened at startup",
+                "runtime SQLite database path {} no longer has the identity, owner, and private permissions captured at startup",
                 self.path.display()
             );
         }
@@ -151,6 +184,79 @@ impl DatabaseIdentity {
 
     fn invalidate(&self) {
         self.poisoned.store(true, Ordering::SeqCst);
+    }
+
+    fn expected_file_identity(&self) -> Option<DatabaseFileIdentity> {
+        let DatabaseIdentityKind::File {
+            device,
+            inode,
+            owner_uid,
+            owner_gid,
+        } = self.kind
+        else {
+            return None;
+        };
+        Some(DatabaseFileIdentity {
+            device,
+            inode,
+            owner_uid,
+            owner_gid,
+            mode: DATABASE_FILE_MODE,
+        })
+    }
+
+    fn verify_reopenable(&self) -> anyhow::Result<()> {
+        self.verify_reopenable_with(open_database_file_read_write)
+    }
+
+    fn verify_reopenable_with<Open>(&self, opener: Open) -> anyhow::Result<()>
+    where
+        Open: FnOnce(&Path) -> std::io::Result<File>,
+    {
+        self.verify()?;
+        let Some(expected) = self.expected_file_identity() else {
+            return Ok(());
+        };
+        let file = match opener(&self.path) {
+            Ok(file) => file,
+            Err(open_error) => {
+                // A path/metadata change is conclusive and remains sticky. A
+                // plain reopen failure (for example EMFILE or a transient MAC
+                // denial) makes this probe unavailable without permanently
+                // poisoning an otherwise unchanged identity.
+                self.verify()?;
+                return Err(anyhow::anyhow!(
+                    "failed to reopen SQLite database {} read-write: {open_error}",
+                    self.path.display()
+                ));
+            }
+        };
+        let opened_metadata = match file.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                self.verify()?;
+                return Err(anyhow::anyhow!(
+                    "failed to inspect reopened SQLite database {}: {error}",
+                    self.path.display()
+                ));
+            }
+        };
+        let opened = match checked_database_file_identity(&opened_metadata, &self.path) {
+            Ok(opened) => opened,
+            Err(error) => {
+                self.invalidate();
+                return Err(error);
+            }
+        };
+        if opened != expected {
+            self.invalidate();
+            anyhow::bail!(
+                "reopened SQLite database {} does not match the private file captured at startup",
+                self.path.display()
+            );
+        }
+        // Close the pathname/fd race on the far side of the raw reopen.
+        self.verify()
     }
 
     fn is_in_memory(&self) -> bool {
@@ -171,9 +277,26 @@ fn identity_poison(path: &Path, device: u64, inode: u64) -> Arc<AtomicBool> {
     poisoned
 }
 
-fn regular_file_identity(path: &Path) -> anyhow::Result<(u64, u64)> {
+fn regular_file_identity(path: &Path) -> anyhow::Result<DatabaseFileIdentity> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| anyhow::anyhow!("failed to inspect {}: {error}", path.display()))?;
+    checked_database_file_identity(&metadata, path)
+}
+
+fn opened_database_file_identity(file: &File, path: &Path) -> anyhow::Result<DatabaseFileIdentity> {
+    let metadata = file.metadata().map_err(|error| {
+        anyhow::anyhow!(
+            "failed to inspect the opened SQLite database {}: {error}",
+            path.display()
+        )
+    })?;
+    checked_database_file_identity(&metadata, path)
+}
+
+fn checked_database_file_identity(
+    metadata: &fs::Metadata,
+    path: &Path,
+) -> anyhow::Result<DatabaseFileIdentity> {
     if !metadata.file_type().is_file() {
         anyhow::bail!(
             "SQLite database path {} is not a regular file",
@@ -186,28 +309,193 @@ fn regular_file_identity(path: &Path) -> anyhow::Result<(u64, u64)> {
             path.display()
         );
     }
-    Ok((metadata.dev(), metadata.ino()))
+    Ok(DatabaseFileIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        owner_uid: metadata.uid(),
+        owner_gid: metadata.gid(),
+        mode: metadata.mode() & 0o7777,
+    })
 }
 
-fn optional_database_identity(
+fn private_database_file_identity(path: &Path) -> anyhow::Result<DatabaseFileIdentity> {
+    let identity = regular_file_identity(path)?;
+    ensure_private_database_mode(path, identity)?;
+    Ok(identity)
+}
+
+fn ensure_private_database_mode(path: &Path, identity: DatabaseFileIdentity) -> anyhow::Result<()> {
+    if identity.mode != DATABASE_FILE_MODE {
+        anyhow::bail!(
+            "SQLite database path {} must have permissions 0600, found {:04o}",
+            path.display(),
+            identity.mode
+        );
+    }
+    Ok(())
+}
+
+fn open_database_file_read_write(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+}
+
+fn verify_database_path_reopens_as(
+    path: &Path,
+    expected: DatabaseFileIdentity,
+) -> anyhow::Result<()> {
+    let reopened = open_database_file_read_write(path).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to reopen SQLite database {} after permission normalization: {error}",
+            path.display()
+        )
+    })?;
+    let reopened_identity = opened_database_file_identity(&reopened, path)?;
+    if reopened_identity != expected {
+        anyhow::bail!(
+            "SQLite database path {} did not reopen as the normalized private file",
+            path.display()
+        );
+    }
+    let final_path_identity = private_database_file_identity(path)?;
+    if final_path_identity != expected {
+        anyhow::bail!(
+            "SQLite database path {} changed after its private file was reopened",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn prepare_database_identity(
     path: &Path,
     create_if_missing: bool,
-) -> anyhow::Result<Option<DatabaseIdentity>> {
+) -> anyhow::Result<DatabaseIdentity> {
     if path == Path::new(":memory:") {
-        return Ok(Some(DatabaseIdentity::capture_path(path.to_path_buf())?));
+        return DatabaseIdentity::capture_path(path.to_path_buf());
     }
     match fs::symlink_metadata(path) {
-        Ok(_) => Ok(Some(DatabaseIdentity::capture_path(path.to_path_buf())?)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound && create_if_missing => Ok(None),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(anyhow::anyhow!(
-            "failed to open existing SQLite database {} (automatic creation is disabled): {error}",
-            path.display()
-        )),
-        Err(error) => Err(anyhow::anyhow!(
-            "failed to inspect SQLite database path {} before opening: {error}",
-            path.display()
-        )),
+        Ok(metadata) => normalize_existing_database_file(path, &metadata)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && create_if_missing => {
+            create_private_database_file(path)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(anyhow::anyhow!(
+                "failed to open existing SQLite database {} (automatic creation is disabled): {error}",
+                path.display()
+            ));
+        }
+        Err(error) => {
+            return Err(anyhow::anyhow!(
+                "failed to inspect SQLite database path {} before opening: {error}",
+                path.display()
+            ));
+        }
     }
+    DatabaseIdentity::capture_path(path.to_path_buf())
+}
+
+fn normalize_existing_database_file(
+    path: &Path,
+    initial_metadata: &fs::Metadata,
+) -> anyhow::Result<()> {
+    // Reject symlinks and hard links before changing anything. The descriptor
+    // and final pathname snapshots then ensure chmod did not cross a rename.
+    let before = checked_database_file_identity(initial_metadata, path)?;
+    let file = open_database_file_read_write(path).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to open existing SQLite database {} read-write before permission normalization: {error}",
+            path.display()
+        )
+    })?;
+    let opened_before = opened_database_file_identity(&file, path)?;
+    if opened_before != before {
+        anyhow::bail!(
+            "SQLite database path {} changed while it was being opened for permission normalization",
+            path.display()
+        );
+    }
+    if opened_before.mode != DATABASE_FILE_MODE {
+        file.set_permissions(fs::Permissions::from_mode(DATABASE_FILE_MODE))
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to set SQLite database {} permissions to 0600: {error}",
+                    path.display()
+                )
+            })?;
+    }
+    let opened_after = opened_database_file_identity(&file, path)?;
+    if opened_after.device != opened_before.device
+        || opened_after.inode != opened_before.inode
+        || opened_after.owner_uid != opened_before.owner_uid
+        || opened_after.owner_gid != opened_before.owner_gid
+    {
+        anyhow::bail!(
+            "opened SQLite database {} changed identity or owner during permission normalization",
+            path.display()
+        );
+    }
+    ensure_private_database_mode(path, opened_after)?;
+    let path_after = private_database_file_identity(path)?;
+    if path_after != opened_after {
+        anyhow::bail!(
+            "SQLite database path {} changed during permission normalization",
+            path.display()
+        );
+    }
+    verify_database_path_reopens_as(path, opened_after)?;
+    Ok(())
+}
+
+fn create_private_database_file(path: &Path) -> anyhow::Result<()> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(DATABASE_FILE_MODE)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "failed to create private SQLite database {}: {error}",
+                path.display()
+            )
+        })?;
+    let created = opened_database_file_identity(&file, path)?;
+    // Creation modes are filtered through the process umask. Normalize the
+    // already-open descriptor so even an unusually restrictive umask cannot
+    // leave the canonical database at a mode other than the required 0600.
+    file.set_permissions(fs::Permissions::from_mode(DATABASE_FILE_MODE))
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "failed to set new SQLite database {} permissions to 0600: {error}",
+                path.display()
+            )
+        })?;
+    let opened = opened_database_file_identity(&file, path)?;
+    if opened.device != created.device
+        || opened.inode != created.inode
+        || opened.owner_uid != created.owner_uid
+        || opened.owner_gid != created.owner_gid
+    {
+        anyhow::bail!(
+            "new SQLite database {} changed identity or owner during permission normalization",
+            path.display()
+        );
+    }
+    ensure_private_database_mode(path, opened)?;
+    let current = private_database_file_identity(path)?;
+    if current != opened {
+        anyhow::bail!(
+            "SQLite database path {} changed while its private file was being created",
+            path.display()
+        );
+    }
+    verify_database_path_reopens_as(path, opened)?;
+    Ok(())
 }
 
 fn pool_identity_result(
@@ -215,9 +503,12 @@ fn pool_identity_result(
 ) -> Result<(), sqlx_core::error::Error> {
     identity
         .get()
-        .map(DatabaseIdentity::verify)
-        .transpose()
-        .map(|_| ())
+        .ok_or_else(|| {
+            sqlx_core::error::Error::Protocol(
+                "SQLite database identity was not initialized before opening the pool".to_string(),
+            )
+        })?
+        .verify()
         .map_err(|error| sqlx_core::error::Error::Protocol(error.to_string()))
 }
 
@@ -227,10 +518,9 @@ async fn verify_pool_connection(
 ) -> Result<(), sqlx_core::error::Error> {
     pool_identity_result(identity_slot)?;
     let Some(identity) = identity_slot.get() else {
-        // A missing database has no identity until the one-shot bootstrap
-        // connection creates it. Production runtime pools are existing-only
-        // and always enter this hook with an installed identity.
-        return Ok(());
+        return Err(sqlx_core::error::Error::Protocol(
+            "SQLite database identity was not initialized before checking a connection".to_string(),
+        ));
     };
     if identity.is_in_memory() {
         return Ok(());
@@ -408,13 +698,15 @@ async fn connect_with_policy(
     create_if_missing: bool,
 ) -> anyhow::Result<DbPool> {
     let (options, path) = connect_options(settings, create_if_missing)?;
-    let identity_before = optional_database_identity(&path, create_if_missing)?;
+    // Establish a private, reopenable file before SQLx touches it. This keeps
+    // pool hooks active even for one-shot bootstrap creation and prevents the
+    // main file from briefly existing with broader permissions while SQLite
+    // may create its sidecars.
+    let identity_before = prepare_database_identity(&path, create_if_missing)?;
     let pool_identity = Arc::new(OnceLock::new());
-    if let Some(identity) = identity_before.as_ref() {
-        pool_identity.set(identity.clone()).map_err(|_| {
-            anyhow::anyhow!("SQLite database identity was initialized more than once")
-        })?;
-    }
+    pool_identity
+        .set(identity_before.clone())
+        .map_err(|_| anyhow::anyhow!("SQLite database identity was initialized more than once"))?;
     let before_acquire_identity = pool_identity.clone();
     let after_connect_identity = pool_identity.clone();
     let max_connections = if path == Path::new(":memory:") { 1 } else { 8 };
@@ -449,35 +741,23 @@ async fn connect_with_policy(
             }
         })?;
 
-    #[cfg(unix)]
-    if path != Path::new(":memory:") {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    }
-
     let identity_after = match DatabaseIdentity::capture_path(path.clone()) {
         Ok(identity) => identity,
         Err(error) => {
+            identity_before.invalidate();
             pool.close().await;
             return Err(error);
         }
     };
-    if let Some(identity_before) = identity_before {
-        if identity_before == identity_after {
-            return Ok(pool);
-        }
-        identity_before.invalidate();
-        pool.close().await;
-        anyhow::bail!(
-            "SQLite database path {} changed while it was being opened",
-            path.display()
-        );
+    if identity_before == identity_after {
+        return Ok(pool);
     }
-    pool_identity
-        .set(identity_after)
-        .map_err(|_| anyhow::anyhow!("SQLite database identity was initialized more than once"))?;
-
-    Ok(pool)
+    identity_before.invalidate();
+    pool.close().await;
+    anyhow::bail!(
+        "SQLite database path {} changed while it was being opened",
+        path.display()
+    );
 }
 
 /// Open the embedded runtime database, creating its file when absent.
@@ -687,7 +967,10 @@ pub fn now_epoch_micros() -> i64 {
 }
 
 pub async fn ping(pool: &DbPool, identity: &DatabaseIdentity) -> anyhow::Result<()> {
-    identity.verify()?;
+    // Existing SQLite descriptors remain usable after chmod/chown or an ACL
+    // denial. Prove once per health-cache interval that the current service
+    // credentials can reopen the same private main file read-write.
+    identity.verify_reopenable()?;
     let mut connection = pool.acquire().await?;
     verify_current_schema(&mut connection).await?;
     // Catch a rename/replacement that raced the schema query. An ABA swap can
@@ -747,6 +1030,8 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("unionc.db");
         std::fs::File::create(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(DATABASE_FILE_MODE))
+            .unwrap();
         let identity = DatabaseIdentity::capture_path(path.clone()).unwrap();
 
         let alias = directory.path().join("unexpected-alias.db");
@@ -762,6 +1047,136 @@ mod tests {
         assert!(
             identity.verify().is_err(),
             "an observed hard-link violation must remain poisoned until restart"
+        );
+    }
+
+    #[test]
+    fn database_identity_rejects_permission_changes_stickily() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unionc.db");
+        std::fs::File::create(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(DATABASE_FILE_MODE))
+            .unwrap();
+        let identity = DatabaseIdentity::capture_path(path.clone()).unwrap();
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let error = identity.verify().unwrap_err();
+        assert!(error.to_string().contains("permissions 0600"), "{error:#}");
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(DATABASE_FILE_MODE))
+            .unwrap();
+        assert!(
+            identity.verify().is_err(),
+            "restoring the mode must not revive a process that observed an unsafe database"
+        );
+    }
+
+    #[test]
+    fn transient_reopen_failure_does_not_poison_an_unchanged_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unionc.db");
+        create_private_database_file(&path).unwrap();
+        let identity = DatabaseIdentity::capture_path(path).unwrap();
+
+        let error = identity
+            .verify_reopenable_with(|_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected reopen denial",
+                ))
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("injected reopen denial"));
+        assert!(
+            identity.verify().is_ok(),
+            "a transient raw-open error must not permanently poison stable metadata"
+        );
+    }
+
+    #[test]
+    fn reopen_check_rejects_a_different_open_inode_stickily() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unionc.db");
+        let alternate = directory.path().join("alternate.db");
+        create_private_database_file(&path).unwrap();
+        create_private_database_file(&alternate).unwrap();
+        let identity = DatabaseIdentity::capture_path(path).unwrap();
+
+        let error = identity
+            .verify_reopenable_with(|_| open_database_file_read_write(&alternate))
+            .unwrap_err();
+        assert!(error.to_string().contains("does not match"), "{error:#}");
+        assert!(
+            identity.verify().is_err(),
+            "an observed reopened inode mismatch must remain poisoned"
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_normalizes_existing_permissions_before_capturing_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unionc.db");
+        std::fs::File::create(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut settings = Settings::default();
+        settings.database.url = path.display().to_string();
+
+        let pool = connect_existing(&settings).await.unwrap();
+
+        assert_eq!(
+            regular_file_identity(&path).unwrap().mode,
+            DATABASE_FILE_MODE
+        );
+        DatabaseIdentity::capture(&settings)
+            .unwrap()
+            .verify()
+            .unwrap();
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn invalid_database_is_normalized_before_sqlx_opens_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unionc.db");
+        std::fs::write(&path, b"not a SQLite database").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut settings = Settings::default();
+        settings.database.url = path.display().to_string();
+
+        let error = connect_existing(&settings).await.unwrap_err();
+
+        assert!(
+            error.to_string().contains("failed to open existing"),
+            "{error:#}"
+        );
+        assert_eq!(
+            regular_file_identity(&path).unwrap().mode,
+            DATABASE_FILE_MODE,
+            "permission normalization must happen before SQLx can reject the contents"
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_rejects_a_symlink_without_chmodding_its_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target.db");
+        let symlink = directory.path().join("unionc.db");
+        std::fs::File::create(&target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::os::unix::fs::symlink(&target, &symlink).unwrap();
+        let mut settings = Settings::default();
+        settings.database.url = symlink.display().to_string();
+
+        let error = connect_existing(&settings).await.unwrap_err();
+
+        assert!(
+            error.to_string().contains("not a regular file"),
+            "{error:#}"
+        );
+        assert_eq!(
+            regular_file_identity(&target).unwrap().mode,
+            0o644,
+            "a rejected symlink must not change its target's permissions"
         );
     }
 
@@ -856,6 +1271,12 @@ mod tests {
         let mut settings = Settings::default();
         settings.database.url = path.display().to_string();
         let pool = connect(&settings).await.unwrap();
+
+        assert_eq!(
+            regular_file_identity(&path).unwrap().mode,
+            DATABASE_FILE_MODE,
+            "a newly created database must be private before schema initialization"
+        );
 
         initialize_schema(&pool).await.unwrap();
         initialize_schema(&pool).await.unwrap();

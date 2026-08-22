@@ -53,11 +53,13 @@ UnionC 不依赖外部数据库服务。Server 二进制内嵌 SQLite，活动�
 放一份新库，旧 SQLite 连接仍可能对已经脱离 canonical 路径的旧 inode 执行成功的
 `SELECT 1`，甚至继续写入；而下次启动会打开新文件，数据就像凭空消失。
 
-因此 Server 启动时记录 canonical `unionc.db` 的 device/inode，并要求路径叶子始终是单硬链接
-普通文件，不接受符号链接或多硬链接。readiness、依赖库的管理面、Agent 数据路径以及连接池
-签出/新建连接都会核对身份；约 1 秒缓存的只是只读精确 schema 探测，不缓存路径身份。一旦
-观察到路径异常，该进程持续 fail closed，放回旧 inode 也必须重启后才能恢复。正确流程始终是
-先停 Server，再执行受支持的 restore/integrity-check，最后重启。
+因此 Server 在 SQLx 打开前先通过 `O_NOFOLLOW` 文件描述符把 canonical `unionc.db` 收紧为
+0600，再记录 device/inode 与 uid/gid，并要求路径叶子始终是单硬链接普通文件。readiness、
+依赖库的管理面、Agent 数据路径以及连接池签出/新建连接都会核对这些元数据；约 1 秒缓存的
+只是只读精确 schema 探测，不缓存路径身份。缓存刷新时还会用当前服务身份重新 `O_RDWR`
+打开并 `fstat` 同一主库，因为 Linux 不会在每次使用旧文件描述符时重新检查 chmod/chown。
+一旦观察到确定的路径、属主或权限异常，该进程持续 fail closed，恢复旧状态也必须重启。
+正确流程始终是先停 Server，再执行受支持的 restore/integrity-check，最后重启。
 
 ## 3. SQLite 运行特性
 
