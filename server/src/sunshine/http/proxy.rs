@@ -27,8 +27,14 @@ pub(crate) async fn apps_save(
         .map(|name| format!("name={}", name.trim()))
         .unwrap_or_else(|| "app payload saved".to_string());
     let host = find_host(&state, &id).await?;
-    let response = client::apps_save(&host, body).await?;
-    audit_best_effort(&state, "sunshine.app.save", &id, Some(&detail)).await;
+    let response = finish_sunshine_upstream_mutation(
+        &state,
+        "sunshine.app.save",
+        id,
+        Some(detail),
+        async move { client::apps_save(&host, body).await },
+    )
+    .await?;
     Ok(Json(response))
 }
 
@@ -36,8 +42,12 @@ pub(crate) async fn apps_close(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> AppResult<Json<Value>> {
-    let response = client::apps_close(&find_host(&state, &id).await?).await?;
-    audit_best_effort(&state, "sunshine.app.close", &id, None).await;
+    let host = find_host(&state, &id).await?;
+    let response =
+        finish_sunshine_upstream_mutation(&state, "sunshine.app.close", id, None, async move {
+            client::apps_close(&host).await
+        })
+        .await?;
     Ok(Json(response))
 }
 
@@ -47,14 +57,15 @@ pub(crate) async fn apps_delete(
 ) -> AppResult<Json<Value>> {
     validate_index(index)?;
     // `Path<(String, u32)>` 提取两个路径参数 `/hosts/{id}/apps/{index}`
-    let response = client::apps_delete(&find_host(&state, &id).await?, index).await?;
-    audit_best_effort(
+    let host = find_host(&state, &id).await?;
+    let response = finish_sunshine_upstream_mutation(
         &state,
         "sunshine.app.delete",
-        &id,
-        Some(&format!("index={index}")),
+        id,
+        Some(format!("index={index}")),
+        async move { client::apps_delete(&host, index).await },
     )
-    .await;
+    .await?;
     Ok(Json(response))
 }
 
@@ -72,15 +83,17 @@ pub(crate) async fn clients_unpair(
     Path(id): Path<String>,
     Json(p): Json<SunshineUnpairRequest>,
 ) -> AppResult<Json<Value>> {
-    let client_id = validate_client_id(&p.uuid)?;
-    let response = client::clients_unpair(&find_host(&state, &id).await?, client_id).await?;
-    audit_best_effort(
+    let client_id = validate_client_id(&p.uuid)?.to_string();
+    let detail = format!("client={client_id}");
+    let host = find_host(&state, &id).await?;
+    let response = finish_sunshine_upstream_mutation(
         &state,
         "sunshine.client.unpair",
-        &id,
-        Some(&format!("client={client_id}")),
+        id,
+        Some(detail),
+        async move { client::clients_unpair(&host, &client_id).await },
     )
-    .await;
+    .await?;
     Ok(Json(response))
 }
 
@@ -88,8 +101,15 @@ pub(crate) async fn clients_unpair_all(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> AppResult<Json<Value>> {
-    let response = client::clients_unpair_all(&find_host(&state, &id).await?).await?;
-    audit_best_effort(&state, "sunshine.client.unpair_all", &id, None).await;
+    let host = find_host(&state, &id).await?;
+    let response = finish_sunshine_upstream_mutation(
+        &state,
+        "sunshine.client.unpair_all",
+        id,
+        None,
+        async move { client::clients_unpair_all(&host).await },
+    )
+    .await?;
     Ok(Json(response))
 }
 
@@ -98,16 +118,17 @@ pub(crate) async fn clients_update(
     Path(id): Path<String>,
     Json(p): Json<SunshineClientUpdateRequest>,
 ) -> AppResult<Json<Value>> {
-    let client_id = validate_client_id(&p.uuid)?;
-    let response =
-        client::clients_update(&find_host(&state, &id).await?, client_id, p.enabled).await?;
-    audit_best_effort(
+    let client_id = validate_client_id(&p.uuid)?.to_string();
+    let detail = format!("client={client_id} enabled={}", p.enabled);
+    let host = find_host(&state, &id).await?;
+    let response = finish_sunshine_upstream_mutation(
         &state,
         "sunshine.client.update",
-        &id,
-        Some(&format!("client={client_id} enabled={}", p.enabled)),
+        id,
+        Some(detail),
+        async move { client::clients_update(&host, &client_id, p.enabled).await },
     )
-    .await;
+    .await?;
     Ok(Json(response))
 }
 
@@ -126,8 +147,15 @@ pub(crate) async fn config_save(
     Json(body): Json<Value>,
 ) -> AppResult<Json<Value>> {
     validate_proxy_json_object("Sunshine config payload", &body, 1024 * 1024)?;
-    let response = client::config_save(&find_host(&state, &id).await?, body).await?;
-    audit_best_effort(&state, "sunshine.config.save", &id, Some("config updated")).await;
+    let host = find_host(&state, &id).await?;
+    let response = finish_sunshine_upstream_mutation(
+        &state,
+        "sunshine.config.save",
+        id,
+        Some("config updated".to_string()),
+        async move { client::config_save(&host, body).await },
+    )
+    .await?;
     Ok(Json(response))
 }
 
@@ -155,14 +183,16 @@ pub(crate) async fn pin(
     Json(p): Json<SunshinePinRequest>,
 ) -> AppResult<Json<Value>> {
     let (pin, name) = validate_pin_request(&p.pin, &p.name)?;
-    let response = client::pin_pair(&find_host(&state, &id).await?, &pin, &name).await?;
-    audit_best_effort(
+    let detail = format!("name={name}");
+    let host = find_host(&state, &id).await?;
+    let response = finish_sunshine_upstream_mutation(
         &state,
         "sunshine.client.pair",
-        &id,
-        Some(&format!("name={name}")),
+        id,
+        Some(detail),
+        async move { client::pin_pair(&host, &pin, &name).await },
     )
-    .await;
+    .await?;
     Ok(Json(response))
 }
 
@@ -170,8 +200,15 @@ pub(crate) async fn restart(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> AppResult<Json<Value>> {
-    let response = client::restart(&find_host(&state, &id).await?).await?;
-    audit_best_effort(&state, "sunshine.system.restart", &id, None).await;
+    let host = find_host(&state, &id).await?;
+    let response = finish_sunshine_upstream_mutation(
+        &state,
+        "sunshine.system.restart",
+        id,
+        None,
+        async move { client::restart(&host).await },
+    )
+    .await?;
     Ok(Json(response))
 }
 
@@ -179,8 +216,12 @@ pub(crate) async fn reset_display(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> AppResult<Json<Value>> {
-    let response = client::reset_display_device(&find_host(&state, &id).await?).await?;
-    audit_best_effort(&state, "sunshine.display.reset", &id, None).await;
+    let host = find_host(&state, &id).await?;
+    let response =
+        finish_sunshine_upstream_mutation(&state, "sunshine.display.reset", id, None, async move {
+            client::reset_display_device(&host).await
+        })
+        .await?;
     Ok(Json(response))
 }
 
@@ -248,14 +289,16 @@ pub(crate) async fn cover_upload(
     Json(p): Json<SunshineCoverUploadRequest>,
 ) -> AppResult<Json<Value>> {
     let (key, url) = validate_cover_upload(&p.key, &p.url)?;
-    let response = client::cover_upload(&find_host(&state, &id).await?, &key, &url).await?;
-    audit_best_effort(
+    let detail = format!("key={key}");
+    let host = find_host(&state, &id).await?;
+    let response = finish_sunshine_upstream_mutation(
         &state,
         "sunshine.cover.upload",
-        &id,
-        Some(&format!("key={key}")),
+        id,
+        Some(detail),
+        async move { client::cover_upload(&host, &key, &url).await },
     )
-    .await;
+    .await?;
     Ok(Json(response))
 }
 

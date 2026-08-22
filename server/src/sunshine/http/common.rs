@@ -154,6 +154,57 @@ pub(crate) async fn find_host(state: &AppState, id: &str) -> AppResult<SunshineH
     Ok(host)
 }
 
+/// Run a Sunshine mutation independently from the HTTP request future.
+///
+/// Dropping a Tokio `JoinHandle` detaches its task. Therefore, once this
+/// function has spawned the mutation, client disconnects can stop waiting for
+/// the response but cannot interrupt the mutation. Tokio task-local values are
+/// not inherited by spawned tasks, so capture the authenticated identity before
+/// spawning and restore it in the child.
+pub(crate) async fn finish_sunshine_mutation<T>(
+    mutation: impl std::future::Future<Output = AppResult<T>> + Send + 'static,
+) -> AppResult<T>
+where
+    T: Send + 'static,
+{
+    let audit_context = database::current_audit_context().ok_or_else(|| {
+        AppError::Anyhow(anyhow::anyhow!(
+            "Sunshine mutation is missing its authenticated audit context"
+        ))
+    })?;
+    tokio::spawn(database::with_audit_context(audit_context, mutation))
+        .await
+        .map_err(|error| {
+            AppError::Anyhow(anyhow::anyhow!("Sunshine mutation task failed: {error}"))
+        })?
+}
+
+/// Complete one external Sunshine mutation and its audit attempt outside the
+/// request task.
+///
+/// Once the operation future starts, dropping the HTTP handler must not cancel
+/// it. If the future returns success, the same child task makes the local audit
+/// attempt before it finishes.
+pub(crate) async fn finish_sunshine_upstream_mutation<T, F>(
+    state: &AppState,
+    action: &'static str,
+    target: String,
+    detail: Option<String>,
+    mutation: F,
+) -> AppResult<T>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = AppResult<T>> + Send + 'static,
+{
+    let state = state.clone();
+    finish_sunshine_mutation(async move {
+        let response = mutation.await?;
+        audit_best_effort(&state, action, &target, detail.as_deref()).await;
+        Ok(response)
+    })
+    .await
+}
+
 /// 外部 Sunshine 操作无法与本地数据库事务原子提交。
 ///
 /// 上游已经成功后，审计 INSERT 失败不能把整个请求伪装成失败，否则前端重试会重复执行
@@ -206,8 +257,41 @@ pub(crate) fn host_info(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
     use super::*;
-    use crate::sunshine::SunshineHostSaveRequest;
+    use crate::{
+        config::{LocalConfig, Settings},
+        sunshine::SunshineHostSaveRequest,
+    };
+
+    async fn initialized_state() -> AppState {
+        let pool = database::in_memory_pool().expect("in-memory test pool");
+        database::initialize_schema(&pool)
+            .await
+            .expect("initialize test schema");
+        AppState::new(
+            Settings::default(),
+            pool,
+            "unused".into(),
+            LocalConfig {
+                application_version: env!("CARGO_PKG_VERSION").to_string(),
+                admin_username: "admin".into(),
+                admin_password_hash: "unused".into(),
+            },
+            crate::system::ResourceMonitor::frozen(Default::default()),
+        )
+    }
+
+    fn audit_context(request_id: &str) -> database::AuditContext {
+        database::AuditContext {
+            actor: "test-admin".to_string(),
+            request_id: Some(request_id.to_string()),
+        }
+    }
 
     fn request() -> SunshineHostSaveRequest {
         SunshineHostSaveRequest {
@@ -285,6 +369,121 @@ mod tests {
         assert_eq!(
             complete.connection_error.as_deref(),
             Some("Sunshine Web 端口不可达")
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_upstream_mutation_finishes_its_attributed_audit() {
+        let state = initialized_state().await;
+        let (effect_tx, effect_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let request_state = state.clone();
+        let request = tokio::spawn(database::with_audit_context(
+            audit_context("cancelled-upstream-request"),
+            async move {
+                finish_sunshine_upstream_mutation(
+                    &request_state,
+                    "sunshine.test.mutation",
+                    "test-host".to_string(),
+                    Some("safe detail".to_string()),
+                    async move {
+                        let _ = effect_tx.send(());
+                        let _ = release_rx.await;
+                        Ok(serde_json::json!({"status": true}))
+                    },
+                )
+                .await
+            },
+        ));
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), effect_rx)
+            .await
+            .expect("upstream effect barrier timed out")
+            .expect("upstream mutation stopped before its effect barrier");
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        release_tx
+            .send(())
+            .expect("detached upstream mutation stopped with its request waiter");
+
+        let audit = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let page = database::list_audit_logs(state.db().as_ref(), None, 10)
+                    .await
+                    .expect("load upstream mutation audit rows");
+                if page
+                    .entries
+                    .iter()
+                    .any(|entry| entry.action == "sunshine.test.mutation")
+                {
+                    break page;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("detached upstream mutation did not finish its audit attempt");
+        let entries = audit
+            .entries
+            .iter()
+            .filter(|entry| entry.action == "sunshine.test.mutation")
+            .collect::<Vec<_>>();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].target, "test-host");
+        assert_eq!(entries[0].detail.as_deref(), Some("safe detail"));
+        assert_eq!(entries[0].actor, "test-admin");
+        assert_eq!(
+            entries[0].request_id.as_deref(),
+            Some("cancelled-upstream-request")
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_operation_result_does_not_write_success_audit() {
+        let state = initialized_state().await;
+        let result = database::with_audit_context(
+            audit_context("failed-upstream-request"),
+            finish_sunshine_upstream_mutation(
+                &state,
+                "sunshine.test.failure",
+                "test-host".to_string(),
+                None,
+                async { Err::<serde_json::Value, _>(AppError::Upstream("expected".to_string())) },
+            ),
+        )
+        .await;
+        assert!(matches!(result, Err(AppError::Upstream(_))));
+        let audit = database::list_audit_logs(state.db().as_ref(), None, 10)
+            .await
+            .expect("load audit rows after failed upstream mutation");
+        assert!(
+            audit
+                .entries
+                .iter()
+                .all(|entry| entry.action != "sunshine.test.failure")
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_audit_context_rejects_before_polling_upstream_mutation() {
+        let state = initialized_state().await;
+        let polled = Arc::new(AtomicBool::new(false));
+        let mutation_polled = polled.clone();
+        let result = finish_sunshine_upstream_mutation(
+            &state,
+            "sunshine.test.no_context",
+            "test-host".to_string(),
+            None,
+            async move {
+                mutation_polled.store(true, Ordering::SeqCst);
+                Ok(serde_json::json!({"status": true}))
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(
+            !polled.load(Ordering::SeqCst),
+            "an unauditable upstream mutation must not start"
         );
     }
 }

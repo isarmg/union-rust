@@ -213,30 +213,6 @@ async fn delete_host_and_publish(
     Ok(axum::http::StatusCode::NO_CONTENT) // 删除成功返回 204 No Content
 }
 
-/// Run a database mutation independently from the HTTP request future.
-///
-/// Dropping a Tokio `JoinHandle` detaches its task. Therefore, once this
-/// function has spawned the mutation, client disconnects can stop waiting for
-/// the response but cannot interrupt the database-commit -> memory-publication
-/// sequence and leave the two copies out of sync.
-async fn finish_sunshine_mutation<T>(
-    mutation: impl std::future::Future<Output = AppResult<T>> + Send + 'static,
-) -> AppResult<T>
-where
-    T: Send + 'static,
-{
-    let audit_context = database::current_audit_context().ok_or_else(|| {
-        AppError::Anyhow(anyhow::anyhow!(
-            "Sunshine mutation is missing its authenticated audit context"
-        ))
-    })?;
-    tokio::spawn(database::with_audit_context(audit_context, mutation))
-        .await
-        .map_err(|error| {
-            AppError::Anyhow(anyhow::anyhow!("Sunshine mutation task failed: {error}"))
-        })?
-}
-
 // ─── 单主机状态 ───────────────────────────────────────────────────────────────
 
 /// 获取指定 Sunshine 主机的运行状态（进程状态、TCP 可达性等）。
