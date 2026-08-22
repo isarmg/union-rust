@@ -303,8 +303,10 @@ Error: encrypted secret uses key id '2025q1', which is not in the keyring
 可信反代写入，而不是任意本机进程伪造。XFF 若做成软降级，按 IP 与按账号的两层登录
 配额会**静默失效**、只剩全局兜底。
 
-按 IP 的限流取 XFF 的**最右**一项（离本服务最近的可信代理写入的那个）。该实现假定
-前面恰好有一层可信反代；若再叠加 CDN，必须相应调整，否则取到的是内网地址。
+按 IP 的限流取最后一个 XFF 头的**最右**一项（离本服务最近的可信代理写入的那个）。
+该项必须是可直接解析的裸 IP；非法、为空或携带端口都会返回 421，不能向左回退到客户端
+可控值。该实现假定前面恰好有一层可信反代；若再叠加 CDN，必须相应调整，否则取到的是
+内网地址。
 管理台域名的反代配置见 `docs/examples/caddy/Caddyfile.console.example`（含静态前端托管与 SSE 缓冲设置）；
 需要独立 Agent 域名和 mTLS 时，可从 `docs/examples/caddy/Caddyfile.agent-api.example` 开始。
 

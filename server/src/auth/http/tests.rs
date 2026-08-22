@@ -265,12 +265,20 @@ mod tests {
         );
     }
 
-    /// 伪造项无法通过"不可解析"把取值挤回上一项。
+    /// 最右项由最近的可信代理负责，非法时必须拒绝整个头，不能向左回退到攻击者值。
     #[test]
-    fn unparseable_entries_are_skipped_within_the_trusted_header() {
+    fn an_unparseable_rightmost_entry_rejects_the_entire_header() {
+        for value in [
+            "198.51.100.1, not-an-ip",
+            "198.51.100.1,",
+            "198.51.100.1, 203.0.113.9:443",
+        ] {
+            assert_eq!(client_ip(&headers(&[value])), None, "accepted {value:?}");
+        }
         assert_eq!(
-            client_ip(&headers(&["1.2.3.4", "203.0.113.9, not-an-ip"])),
-            Some(ip("203.0.113.9"))
+            client_ip(&headers(&["198.51.100.1", "not-an-ip"])),
+            None,
+            "an invalid final header must not expose the preceding client-controlled header"
         );
     }
 
@@ -281,8 +289,7 @@ mod tests {
         assert_eq!(client_ip(&headers(&[""])), None);
     }
 
-    /// IPv6 与带端口的写法。带端口的项不可解析为 `IpAddr`，会被跳过——
-    /// 这是刻意的：宁可取不到来源、退回全局桶，也不要把端口误当作地址的一部分。
+    /// 裸 IPv6 可解析；带端口的最右项由上一测试证明会拒绝整个 XFF。
     #[test]
     fn ipv6_entries_are_parsed() {
         assert_eq!(

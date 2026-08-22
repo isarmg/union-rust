@@ -254,6 +254,51 @@ async fn production_login_requires_forwarded_for_not_just_forwarded_proto() {
 }
 
 #[tokio::test]
+async fn production_rejects_an_unparseable_rightmost_forwarded_for_entry() {
+    let settings = Settings {
+        production: true,
+        server: unionc::config::ServerSettings {
+            proxy_secret: TEST_PROXY_SECRET.to_string(),
+            ..unionc::config::ServerSettings::default()
+        },
+        ..Settings::default()
+    };
+    let app = http::router(test_state_with_settings(settings).await);
+
+    for forwarded_for in [
+        "198.51.100.1, not-an-ip",
+        "198.51.100.1,",
+        "198.51.100.1, 203.0.113.9:443",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/auth/login")
+                    .header("content-type", "application/json")
+                    .header("x-forwarded-proto", "https")
+                    .header("x-forwarded-for", forwarded_for)
+                    .header("x-unionc-proxy-secret", TEST_PROXY_SECRET)
+                    .body(Body::from(
+                        r#"{"username":"admin","password":"irrelevant"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::MISDIRECTED_REQUEST,
+            "invalid trusted XFF suffix reached authentication: {forwarded_for:?}"
+        );
+        let payload: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["code"], "misdirected_request");
+    }
+}
+
+#[tokio::test]
 async fn production_rejects_spoofable_forwarding_headers_without_proxy_proof() {
     let settings = Settings {
         production: true,

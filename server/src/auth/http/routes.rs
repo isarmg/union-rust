@@ -72,6 +72,8 @@ pub(crate) fn extract_token(headers: &HeaderMap) -> Option<String> {
 ///
 /// 因此改用 `get_all()` 取**最后一个** header value，再在其中取最右项——
 /// 两种写法下拿到的都是离本服务最近的那一跳写入的地址。
+/// 最右项必须自身就是可解析的裸 IP；若它非法、为空或携带端口，整个解析失败，不能
+/// 继续向左寻找攻击者可控的候选值。生产模式会据此返回 421，直接暴露反代配置错误。
 ///
 /// # 前提假设
 ///
@@ -86,7 +88,10 @@ pub(crate) fn client_ip(headers: &HeaderMap) -> Option<std::net::IpAddr> {
         .to_str()
         .ok()?
         .rsplit(',')
-        .find_map(|entry| entry.trim().parse::<std::net::IpAddr>().ok())
+        .next()?
+        .trim()
+        .parse::<std::net::IpAddr>()
+        .ok()
 }
 
 /// 校验请求确实经由预期的反向代理链路抵达，并返回解析出的客户端 IP。
