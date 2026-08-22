@@ -69,6 +69,9 @@ pub enum AppError {
     /// 请求过于频繁，返回 429。
     #[error("{0}")]
     TooManyRequests(String),
+    /// 请求体未在服务器规定的总时限内传完，返回 408。
+    #[error("{0}")]
+    RequestTimeout(String),
     /// 本地持久层暂不可用，业务接口暂不可用，返回 503。
     #[error("{0}")]
     ServiceUnavailable(String),
@@ -108,6 +111,7 @@ impl IntoResponse for AppError {
             AppError::Gone(_) => StatusCode::GONE,
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+            AppError::RequestTimeout(_) => StatusCode::REQUEST_TIMEOUT,
             AppError::ServiceUnavailable(_) | AppError::DatabaseUnavailable(_) => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
@@ -134,6 +138,7 @@ impl IntoResponse for AppError {
             AppError::Gone(msg) => msg.clone(),
             AppError::Conflict(msg) => msg.clone(),
             AppError::TooManyRequests(msg) => msg.clone(),
+            AppError::RequestTimeout(msg) => msg.clone(),
             AppError::ServiceUnavailable(msg) => msg.clone(),
             AppError::DatabaseUnavailable(msg) => msg.clone(),
             AppError::Process(_) => "upstream service error".to_string(),
@@ -174,6 +179,7 @@ impl AppError {
             Self::Gone(_) => "gone",
             Self::Conflict(_) => "conflict",
             Self::TooManyRequests(_) => "too_many_requests",
+            Self::RequestTimeout(_) => "request_timeout",
             Self::ServiceUnavailable(_) => "service_unavailable",
             Self::DatabaseUnavailable(_) => "database_unavailable",
             Self::Process(_) => "process_error",

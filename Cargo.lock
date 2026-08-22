@@ -2513,6 +2513,7 @@ dependencies = [
  "bcrypt",
  "chrono",
  "futures-util",
+ "http-body",
  "mime",
  "reqwest",
  "serde",

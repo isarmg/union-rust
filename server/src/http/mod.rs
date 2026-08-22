@@ -19,6 +19,7 @@
 //! ```
 
 mod access_control;
+mod request_body_deadline;
 mod security_headers;
 
 pub(crate) use access_control::database_available;
@@ -45,6 +46,10 @@ fn console_routes() -> Router<AppState> {
 
 /// 构造整个 HTTP API 路由树。
 pub fn router(state: AppState) -> Router {
+    router_with_body_deadline(state, request_body_deadline::REQUEST_BODY_DEADLINE)
+}
+
+fn router_with_body_deadline(state: AppState, body_deadline: std::time::Duration) -> Router {
     let console = console_routes().layer(middleware::from_fn_with_state(
         state.clone(),
         access_control::require_auth,
@@ -57,6 +62,13 @@ pub fn router(state: AppState) -> Router {
         // contract. The largest supported console payload is Sunshine config
         // at 1 MiB; auth and Agent routers override this with tighter limits.
         .layer(DefaultBodyLimit::max(1024 * 1024))
+        // Bound the total upload time, not merely the idle gap between chunks. This layer only
+        // watches until the request body finishes, so long handler work and SSE responses are not
+        // subject to the upload deadline.
+        .layer(middleware::from_fn_with_state(
+            body_deadline,
+            request_body_deadline::enforce,
+        ))
         // 安全头包住完整业务路由，因此鉴权失败和 handler 错误响应同样会携带这些头。
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -80,4 +92,56 @@ async fn assign_request_id(mut request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     response.headers_mut().insert(REQUEST_ID.clone(), value);
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{body::Body, http::StatusCode};
+    use futures_util::stream;
+    use tower::ServiceExt;
+
+    fn state() -> AppState {
+        AppState::new(
+            crate::config::Settings::default(),
+            crate::infra::database::in_memory_pool().expect("in-memory test pool"),
+            "unused".to_string(),
+            crate::config::LocalConfig {
+                application_version: env!("CARGO_PKG_VERSION").to_string(),
+                admin_username: "admin".to_string(),
+                admin_password_hash: "unused".to_string(),
+            },
+            crate::system::ResourceMonitor::frozen(Default::default()),
+        )
+    }
+
+    #[tokio::test]
+    async fn complete_router_times_out_an_unfinished_body_with_global_headers() {
+        let body =
+            Body::from_stream(stream::pending::<Result<axum::body::Bytes, std::io::Error>>());
+        let response = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            router_with_body_deadline(state(), std::time::Duration::from_millis(20)).oneshot(
+                Request::post("/api/auth/login")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(body)
+                    .expect("build unfinished login request"),
+            ),
+        )
+        .await
+        .expect("global request-body deadline did not fire")
+        .expect("run complete router");
+
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(response.headers()["connection"], "close");
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+        assert!(response.headers().contains_key("x-request-id"));
+        let payload: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .expect("read request-timeout body"),
+        )
+        .expect("decode request-timeout body");
+        assert_eq!(payload["code"], "request_timeout");
+    }
 }
