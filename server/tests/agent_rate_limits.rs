@@ -27,8 +27,10 @@ const _: () = assert!(TokenBucket::REFILL_PER_SECOND > 10.0);
 const _: () = assert!(TokenBucket::CAPACITY >= 32.0);
 
 fn state() -> AppState {
+    let mut settings = Settings::default();
+    settings.database.url = ":memory:".to_string();
     AppState::new(
-        Settings::default(),
+        settings,
         database::in_memory_pool().expect("in-memory test pool"),
         "unused".into(),
         LocalConfig {
@@ -38,6 +40,7 @@ fn state() -> AppState {
         },
         unionc::system::ResourceMonitor::frozen(Default::default()),
     )
+    .expect("capture in-memory database identity")
 }
 
 // ─── 上报令牌桶 ──────────────────────────────────────────────────────────────

@@ -14,10 +14,16 @@ pub use settings::*;
 
 use std::{
     borrow::Cow,
+    collections::HashMap,
+    fs,
     ops::{Deref, DerefMut},
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     str::FromStr,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, Mutex as StdMutex, OnceLock, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -45,6 +51,167 @@ pub type DbPool = SqlitePool;
 /// making in-process requests compete through `SQLITE_BUSY`; `BEGIN IMMEDIATE`
 /// remains the cross-process correctness boundary.
 static WRITE_GATE: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
+static EXPECTED_SCHEMA_OBJECTS: tokio::sync::OnceCell<Vec<SchemaObject>> =
+    tokio::sync::OnceCell::const_new();
+/// Pool hooks capture the identity before `AppState` exists. This weak registry
+/// makes later captures for the same canonical inode share one sticky poison
+/// bit without keeping completed pools or test databases alive forever.
+static DATABASE_IDENTITY_POISONS: OnceLock<StdMutex<IdentityPoisonRegistry>> = OnceLock::new();
+
+type SchemaObject = (String, String, String, Option<String>);
+type IdentityPoisonKey = (PathBuf, u64, u64);
+type IdentityPoisonRegistry = HashMap<IdentityPoisonKey, Weak<AtomicBool>>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DatabaseIdentityKind {
+    InMemory,
+    File { device: u64, inode: u64 },
+}
+
+/// The canonical runtime database path and the filesystem object opened at
+/// startup. SQLite keeps an unlinked file usable through its existing file
+/// descriptor, so a SQL-only health query cannot detect that future restarts
+/// would open a different (or missing) database.
+#[derive(Clone, Debug)]
+pub struct DatabaseIdentity {
+    path: PathBuf,
+    kind: DatabaseIdentityKind,
+    poisoned: Arc<AtomicBool>,
+}
+
+impl PartialEq for DatabaseIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path && self.kind == other.kind
+    }
+}
+
+impl Eq for DatabaseIdentity {}
+
+impl DatabaseIdentity {
+    pub fn capture(settings: &Settings) -> anyhow::Result<Self> {
+        let identity = Self::capture_path(database_path(settings)?)?;
+        identity.verify()?;
+        Ok(identity)
+    }
+
+    fn capture_path(path: PathBuf) -> anyhow::Result<Self> {
+        if path == Path::new(":memory:") {
+            return Ok(Self {
+                path,
+                kind: DatabaseIdentityKind::InMemory,
+                poisoned: Arc::new(AtomicBool::new(false)),
+            });
+        }
+        let (device, inode) = regular_file_identity(&path)?;
+        Ok(Self {
+            poisoned: identity_poison(&path, device, inode),
+            path,
+            kind: DatabaseIdentityKind::File { device, inode },
+        })
+    }
+
+    /// Ensure the configured path still names the exact database file that
+    /// was present when application state was constructed.
+    pub fn verify(&self) -> anyhow::Result<()> {
+        if self.poisoned.load(Ordering::SeqCst) {
+            anyhow::bail!(
+                "runtime SQLite database identity was previously invalidated; restart is required"
+            );
+        }
+        let DatabaseIdentityKind::File { device, inode } = self.kind else {
+            return Ok(());
+        };
+        let current = regular_file_identity(&self.path).map_err(|error| {
+            anyhow::anyhow!(
+                "runtime SQLite database path {} is unavailable: {error:#}",
+                self.path.display()
+            )
+        });
+        let current = match current {
+            Ok(current) => current,
+            Err(error) => {
+                self.poisoned.store(true, Ordering::SeqCst);
+                return Err(error);
+            }
+        };
+        if current != (device, inode) {
+            self.poisoned.store(true, Ordering::SeqCst);
+            anyhow::bail!(
+                "runtime SQLite database path {} no longer identifies the file opened at startup",
+                self.path.display()
+            );
+        }
+        if self.poisoned.load(Ordering::SeqCst) {
+            anyhow::bail!(
+                "runtime SQLite database identity was invalidated concurrently; restart is required"
+            );
+        }
+        Ok(())
+    }
+}
+
+fn identity_poison(path: &Path, device: u64, inode: u64) -> Arc<AtomicBool> {
+    let registry = DATABASE_IDENTITY_POISONS.get_or_init(|| StdMutex::new(HashMap::new()));
+    let mut registry = registry.lock().unwrap_or_else(|error| error.into_inner());
+    registry.retain(|_, poison| poison.strong_count() > 0);
+    let key = (path.to_path_buf(), device, inode);
+    if let Some(poisoned) = registry.get(&key).and_then(Weak::upgrade) {
+        return poisoned;
+    }
+    let poisoned = Arc::new(AtomicBool::new(false));
+    registry.insert(key, Arc::downgrade(&poisoned));
+    poisoned
+}
+
+fn regular_file_identity(path: &Path) -> anyhow::Result<(u64, u64)> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| anyhow::anyhow!("failed to inspect {}: {error}", path.display()))?;
+    if !metadata.file_type().is_file() {
+        anyhow::bail!(
+            "SQLite database path {} is not a regular file",
+            path.display()
+        );
+    }
+    if metadata.nlink() != 1 {
+        anyhow::bail!(
+            "SQLite database path {} must have exactly one hard link",
+            path.display()
+        );
+    }
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+fn optional_database_identity(
+    path: &Path,
+    create_if_missing: bool,
+) -> anyhow::Result<Option<DatabaseIdentity>> {
+    if path == Path::new(":memory:") {
+        return Ok(Some(DatabaseIdentity::capture_path(path.to_path_buf())?));
+    }
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(Some(DatabaseIdentity::capture_path(path.to_path_buf())?)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && create_if_missing => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(anyhow::anyhow!(
+            "failed to open existing SQLite database {} (automatic creation is disabled): {error}",
+            path.display()
+        )),
+        Err(error) => Err(anyhow::anyhow!(
+            "failed to inspect SQLite database path {} before opening: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn pool_identity_result(
+    identity: &OnceLock<DatabaseIdentity>,
+) -> Result<(), sqlx_core::error::Error> {
+    identity
+        .get()
+        .map(DatabaseIdentity::verify)
+        .transpose()
+        .map(|_| ())
+        .map_err(|error| sqlx_core::error::Error::Protocol(error.to_string()))
+}
 
 fn write_gate() -> Arc<Mutex<()>> {
     WRITE_GATE.get_or_init(|| Arc::new(Mutex::new(()))).clone()
@@ -187,6 +354,10 @@ async fn connect_with_policy(
     create_if_missing: bool,
 ) -> anyhow::Result<DbPool> {
     let (options, path) = connect_options(settings, create_if_missing)?;
+    let identity_before = optional_database_identity(&path, create_if_missing)?;
+    let pool_identity = Arc::new(OnceLock::new());
+    let before_acquire_identity = pool_identity.clone();
+    let after_connect_identity = pool_identity.clone();
     let max_connections = if path == Path::new(":memory:") { 1 } else { 8 };
     let pool = SqlitePoolOptions::new()
         .max_connections(max_connections)
@@ -194,6 +365,14 @@ async fn connect_with_policy(
         .acquire_timeout(Duration::from_secs(10))
         .idle_timeout(Duration::from_secs(300))
         .max_lifetime(Duration::from_secs(1800))
+        .before_acquire(move |_connection, _metadata| {
+            let result = pool_identity_result(before_acquire_identity.as_ref()).map(|()| true);
+            Box::pin(async move { result })
+        })
+        .after_connect(move |_connection, _metadata| {
+            let result = pool_identity_result(after_connect_identity.as_ref());
+            Box::pin(async move { result })
+        })
         .connect_with(options)
         .await
         .map_err(|error| {
@@ -212,6 +391,20 @@ async fn connect_with_policy(
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     }
+
+    let identity_after = DatabaseIdentity::capture_path(path.clone())?;
+    if let Some(identity_before) = identity_before
+        && identity_before != identity_after
+    {
+        pool.close().await;
+        anyhow::bail!(
+            "SQLite database path {} changed while it was being opened",
+            path.display()
+        );
+    }
+    pool_identity
+        .set(identity_after)
+        .map_err(|_| anyhow::anyhow!("SQLite database identity was initialized more than once"))?;
 
     Ok(pool)
 }
@@ -340,22 +533,29 @@ async fn verify_current_schema(connection: &mut SqliteConnection) -> anyhow::Res
     }
 
     let actual = schema_objects(connection).await?;
-    let options = SqliteConnectOptions::new()
-        .in_memory(true)
-        .foreign_keys(true);
-    let mut reference = SqliteConnection::connect_with(&options).await?;
-    install_current_schema(&mut reference).await?;
-    let expected = schema_objects(&mut reference).await?;
-    reference.close().await?;
-    if actual != expected {
+    let expected = expected_schema_objects().await?;
+    if actual.as_slice() != expected.as_slice() {
         anyhow::bail!("database is not the exact current UnionC SQLite schema");
     }
     Ok(())
 }
 
-async fn schema_objects(
-    connection: &mut SqliteConnection,
-) -> anyhow::Result<Vec<(String, String, String, Option<String>)>> {
+async fn expected_schema_objects() -> anyhow::Result<&'static Vec<SchemaObject>> {
+    EXPECTED_SCHEMA_OBJECTS
+        .get_or_try_init(|| async {
+            let options = SqliteConnectOptions::new()
+                .in_memory(true)
+                .foreign_keys(true);
+            let mut reference = SqliteConnection::connect_with(&options).await?;
+            install_current_schema(&mut reference).await?;
+            let expected = schema_objects(&mut reference).await?;
+            reference.close().await?;
+            Ok(expected)
+        })
+        .await
+}
+
+async fn schema_objects(connection: &mut SqliteConnection) -> anyhow::Result<Vec<SchemaObject>> {
     query(
         r#"
         SELECT type,name,tbl_name,sql
@@ -415,9 +615,13 @@ pub fn now_epoch_micros() -> i64 {
     to_epoch_micros(Utc::now())
 }
 
-pub async fn ping(pool: &DbPool) -> anyhow::Result<()> {
-    query("SELECT 1").execute(pool).await?;
-    Ok(())
+pub async fn ping(pool: &DbPool, identity: &DatabaseIdentity) -> anyhow::Result<()> {
+    identity.verify()?;
+    let mut connection = pool.acquire().await?;
+    verify_current_schema(&mut connection).await?;
+    // Catch a rename/replacement that raced the schema query. An ABA swap can
+    // only evade this by restoring the same inode and therefore the same file.
+    identity.verify()
 }
 
 #[cfg(test)]
@@ -439,6 +643,88 @@ mod tests {
         let path = absolutize_database_path(Path::new("tmp/test.db")).unwrap();
         assert!(path.is_absolute());
         assert!(path.ends_with("tmp/test.db"));
+    }
+
+    #[test]
+    fn database_identity_rejects_aliases_of_the_canonical_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unionc.db");
+        std::fs::File::create(&path).unwrap();
+
+        let hard_link = directory.path().join("unionc-hard-link.db");
+        std::fs::hard_link(&path, &hard_link).unwrap();
+        let hard_link_error = DatabaseIdentity::capture_path(path.clone()).unwrap_err();
+        assert!(
+            hard_link_error
+                .to_string()
+                .contains("must have exactly one hard link"),
+            "{hard_link_error:#}"
+        );
+
+        std::fs::remove_file(&hard_link).unwrap();
+        let symlink = directory.path().join("unionc-symlink.db");
+        std::os::unix::fs::symlink(&path, &symlink).unwrap();
+        let symlink_error = DatabaseIdentity::capture_path(symlink).unwrap_err();
+        assert!(
+            symlink_error.to_string().contains("is not a regular file"),
+            "{symlink_error:#}"
+        );
+    }
+
+    #[test]
+    fn database_identity_rejects_a_hard_link_added_after_capture() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unionc.db");
+        std::fs::File::create(&path).unwrap();
+        let identity = DatabaseIdentity::capture_path(path.clone()).unwrap();
+
+        let alias = directory.path().join("unexpected-alias.db");
+        std::fs::hard_link(&path, &alias).unwrap();
+        let error = identity.verify().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("must have exactly one hard link"),
+            "{error:#}"
+        );
+        std::fs::remove_file(alias).unwrap();
+        assert!(
+            identity.verify().is_err(),
+            "an observed hard-link violation must remain poisoned until restart"
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_pool_rejects_sql_after_the_database_is_replaced() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unionc.db");
+        let replacement = directory.path().join("replacement.db");
+        let displaced = directory.path().join("displaced.db");
+
+        let mut settings = Settings::default();
+        settings.database.url = path.display().to_string();
+        let pool = connect(&settings).await.unwrap();
+        initialize_schema(&pool).await.unwrap();
+
+        let mut replacement_settings = Settings::default();
+        replacement_settings.database.url = replacement.display().to_string();
+        let replacement_pool = connect(&replacement_settings).await.unwrap();
+        initialize_schema(&replacement_pool).await.unwrap();
+        replacement_pool.close().await;
+
+        std::fs::rename(&path, &displaced).unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+        let write = tokio::time::timeout(
+            Duration::from_millis(250),
+            query("INSERT INTO audit_logs(action,target) VALUES('test.replaced','database')")
+                .execute(&pool),
+        )
+        .await;
+        assert!(
+            !matches!(write, Ok(Ok(_))),
+            "no pooled connection may adopt or keep using a replaced database path"
+        );
+        pool.close().await;
     }
 
     #[tokio::test]

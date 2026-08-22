@@ -38,7 +38,8 @@ async fn app_with_database(url: String) -> (axum::Router, database::DbPool) {
             admin_password_hash: "unused".to_string(),
         },
         unionc::system::ResourceMonitor::frozen(Default::default()),
-    );
+    )
+    .expect("capture test database identity");
     state.auth.sessions.write().await.insert(
         SESSION.to_string(),
         LocalSession {

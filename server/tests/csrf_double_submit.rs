@@ -26,8 +26,10 @@ const ADMIN_HASH: &str = "$2b$04$IHGexj5MjQyIveMqHnWkyej6tgcrDQL/ku/UBIHvU.cPVbj
 const ADMIN_PASSWORD: &str = "correct-horse-battery-staple";
 
 fn state_with_session() -> AppState {
+    let mut settings = Settings::default();
+    settings.database.url = ":memory:".to_string();
     let state = AppState::new(
-        Settings::default(),
+        settings,
         database::in_memory_pool().expect("in-memory test pool"),
         "unused".into(),
         LocalConfig {
@@ -36,7 +38,8 @@ fn state_with_session() -> AppState {
             admin_password_hash: "unused".into(),
         },
         unionc::system::ResourceMonitor::frozen(Default::default()),
-    );
+    )
+    .expect("capture in-memory database identity");
     let sessions = state.auth.sessions.clone();
     tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(async {
@@ -134,8 +137,10 @@ async fn read_only_requests_do_not_require_a_token() {
 /// 所有写操作都会 403——这是改造中最容易搞错的一处，因此对真实登录响应做断言。
 #[tokio::test(flavor = "multi_thread")]
 async fn login_issues_a_readable_csrf_cookie_and_an_http_only_session_cookie() {
+    let mut settings = Settings::default();
+    settings.database.url = ":memory:".to_string();
     let state = AppState::new(
-        Settings::default(),
+        settings,
         database::in_memory_pool().expect("in-memory test pool"),
         ADMIN_HASH.into(),
         LocalConfig {
@@ -144,7 +149,8 @@ async fn login_issues_a_readable_csrf_cookie_and_an_http_only_session_cookie() {
             admin_password_hash: ADMIN_HASH.into(),
         },
         unionc::system::ResourceMonitor::frozen(Default::default()),
-    );
+    )
+    .expect("capture in-memory database identity");
     let response = http::router(state)
         .oneshot(
             Request::post("/api/auth/login")

@@ -216,6 +216,7 @@ mod health_snapshot_tests {
 
     fn state_with_host(host: SunshineHostConfig) -> AppState {
         let mut settings = Settings::default();
+        settings.database.url = ":memory:".to_string();
         settings.sunshine.hosts = vec![host];
         AppState::new(
             settings,
@@ -228,6 +229,7 @@ mod health_snapshot_tests {
             },
             crate::system::ResourceMonitor::frozen(Default::default()),
         )
+        .expect("capture in-memory database identity")
     }
 
     #[tokio::test]

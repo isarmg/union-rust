@@ -102,8 +102,10 @@ mod tests {
     use tower::ServiceExt;
 
     fn state() -> AppState {
+        let mut settings = crate::config::Settings::default();
+        settings.database.url = ":memory:".to_string();
         AppState::new(
-            crate::config::Settings::default(),
+            settings,
             crate::infra::database::in_memory_pool().expect("in-memory test pool"),
             "unused".to_string(),
             crate::config::LocalConfig {
@@ -113,6 +115,7 @@ mod tests {
             },
             crate::system::ResourceMonitor::frozen(Default::default()),
         )
+        .expect("capture in-memory database identity")
     }
 
     #[tokio::test]

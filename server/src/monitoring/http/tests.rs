@@ -17,8 +17,10 @@ mod tests {
     use unionc_protocol::AGENT_REPORT_MAX_BODY_BYTES;
 
     fn state_with_pool(pool: database::DbPool) -> AppState {
+        let mut settings = Settings::default();
+        settings.database.url = ":memory:".to_string();
         AppState::new(
-            Settings::default(),
+            settings,
             pool,
             "unused".to_string(),
             LocalConfig {
@@ -28,13 +30,15 @@ mod tests {
             },
             crate::system::ResourceMonitor::frozen(Default::default()),
         )
+        .expect("capture in-memory database identity")
     }
 
     fn state() -> AppState {
         state_with_pool(database::in_memory_pool().expect("in-memory test pool"))
     }
 
-    fn state_with_settings(settings: Settings) -> AppState {
+    fn state_with_settings(mut settings: Settings) -> AppState {
+        settings.database.url = ":memory:".to_string();
         AppState::new(
             settings,
             database::in_memory_pool().expect("in-memory test pool"),
@@ -46,6 +50,7 @@ mod tests {
             },
             crate::system::ResourceMonitor::frozen(Default::default()),
         )
+        .expect("capture in-memory database identity")
     }
 
     async fn authenticated_report_state() -> (AppState, &'static str) {
@@ -87,6 +92,48 @@ mod tests {
         .expect("insert report credential fixture");
         transaction.commit().await.expect("commit report fixture");
         (state_with_pool(pool), TOKEN)
+    }
+
+    async fn state_with_replaced_database() -> (tempfile::TempDir, AppState) {
+        let directory = tempfile::tempdir().expect("temporary database directory");
+        let path = directory.path().join("unionc.db");
+        let replacement = directory.path().join("replacement.db");
+        let displaced = directory.path().join("displaced.db");
+
+        let mut settings = Settings::default();
+        settings.database.url = path.display().to_string();
+        let pool = database::connect(&settings)
+            .await
+            .expect("connect runtime database");
+        database::initialize_schema(&pool)
+            .await
+            .expect("initialize runtime database");
+
+        let mut replacement_settings = Settings::default();
+        replacement_settings.database.url = replacement.display().to_string();
+        let replacement_pool = database::connect(&replacement_settings)
+            .await
+            .expect("connect replacement database");
+        database::initialize_schema(&replacement_pool)
+            .await
+            .expect("initialize replacement database");
+        replacement_pool.close().await;
+
+        let state = AppState::new(
+            settings,
+            pool,
+            "unused".to_string(),
+            LocalConfig {
+                application_version: env!("CARGO_PKG_VERSION").to_string(),
+                admin_username: "admin".to_string(),
+                admin_password_hash: "unused".to_string(),
+            },
+            crate::system::ResourceMonitor::frozen(Default::default()),
+        )
+        .expect("capture runtime database identity");
+        std::fs::rename(&path, displaced).expect("displace runtime database");
+        std::fs::rename(replacement, path).expect("replace runtime database");
+        (directory, state)
     }
 
     fn observed_body(polled: Arc<AtomicBool>) -> Body {
@@ -302,6 +349,47 @@ mod tests {
                 "an unsupported media type on {path} polled its body"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn agent_pairing_and_reporting_fail_closed_before_polling_after_database_replacement() {
+        let (_directory, state) = state_with_replaced_database().await;
+        let app = agent_router().with_state(state.clone());
+
+        let pairing_polled = Arc::new(AtomicBool::new(false));
+        let pairing = app
+            .clone()
+            .oneshot(
+                Request::post("/api/agent/v2/pairing-requests")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(observed_body(pairing_polled.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(pairing.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            !pairing_polled.load(Ordering::SeqCst),
+            "database admission must reject pairing before polling the body"
+        );
+
+        let report_polled = Arc::new(AtomicBool::new(false));
+        let report = app
+            .oneshot(
+                Request::post("/api/agent/v1/report")
+                    .header(header::AUTHORIZATION, "Bearer unknown-token")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(observed_body(report_polled.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(report.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            !report_polled.load(Ordering::SeqCst),
+            "database admission must reject reporting before polling the body"
+        );
+        state.db().close().await;
     }
 
     #[test]

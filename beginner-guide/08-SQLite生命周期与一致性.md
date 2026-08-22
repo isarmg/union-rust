@@ -46,6 +46,19 @@ UnionC 不依赖外部数据库服务。Server 二进制内嵌 SQLite，活动�
 `backup`、`integrity-check` 和 `rekey` 都要求既有当前库；尤其 `rekey` 不会创建空库后报告
 “重加密 0 台”。首次部署完成后必须移除 bootstrap 开关。
 
+### 2.1 路径、文件描述符与 inode
+
+小白最容易误解的一点是：“目录里看不到原文件”不等于“进程已经不再使用它”。Linux 打开
+文件后，连接持有的是指向 inode 的文件描述符。此时把 `unionc.db` 重命名或删除，再在同一路径
+放一份新库，旧 SQLite 连接仍可能对已经脱离 canonical 路径的旧 inode 执行成功的
+`SELECT 1`，甚至继续写入；而下次启动会打开新文件，数据就像凭空消失。
+
+因此 Server 启动时记录 canonical `unionc.db` 的 device/inode，并要求路径叶子始终是单硬链接
+普通文件，不接受符号链接或多硬链接。readiness、依赖库的管理面、Agent 数据路径以及连接池
+签出/新建连接都会核对身份；约 1 秒缓存的只是只读精确 schema 探测，不缓存路径身份。一旦
+观察到路径异常，该进程持续 fail closed，放回旧 inode 也必须重启后才能恢复。正确流程始终是
+先停 Server，再执行受支持的 restore/integrity-check，最后重启。
+
 ## 3. SQLite 运行特性
 
 数据库连接会启用：
@@ -251,7 +264,9 @@ manifest 包含应用版本、schema、key ID 和快照 SHA-256。两者必须�
 
 ### 恢复
 
-恢复会替换活动库，必须停止 Server。`--force` 只允许替换已存在目标，不跳过 checksum、版本、schema、外键、完整性与密文可解性校验。
+恢复会替换活动库，必须停止 Server。不得在运行中 rename、unlink、替换或硬链接
+`unionc.db`。`--force` 只允许替换已存在目标，不跳过 checksum、版本、schema、外键、完整性
+与密文可解性校验；恢复完成后必须重启，让新进程重新捕获数据库身份。
 
 替换前的活动库若健康，命令会留下可再次交给 `restore` 的 `unionc.pre-restore-*.db` 与 manifest。若旧库已损坏且没有 WAL/SHM，可能只留下无 manifest、不能直接 `restore` 的 `unverified` 取证副本，然后继续替换；若损坏库仍有 WAL/SHM，命令会保留 main/WAL/SHM 完整文件族并拒绝替换，避免丢掉未 checkpoint 页。这些恢复点/取证文件不会自动清理；确认演练成功且已有异机备份后，再按类型成对或成组清理。
 
@@ -269,6 +284,8 @@ manifest 包含应用版本、schema、key ID 和快照 SHA-256。两者必须�
 - 内存快照刷新。
 
 调试应先使用 API、测试临时库、内置 integrity-check 和备份副本。即使安装了 `sqlite3` CLI，也不要在运行中的生产库试验写语句。
+也不要在运行中删除、重命名、替换或为 `unionc.db` 新增硬链接；旧连接可能仍写旧 inode，
+而 Server 一旦观察到身份异常会持续拒绝数据库流量直到重启。
 
 ## 14. 相关测试
 

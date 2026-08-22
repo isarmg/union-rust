@@ -41,6 +41,12 @@ Proxmox VE、静态博客、文件服务及其路由、模型、进程管理和�
 Server 本机磁盘，
 不支持把活动数据库放在 NFS、SMB 或其他网络文件系统，也不提供多 Server 共享写入。
 
+`unionc.db` 的路径叶子必须是单硬链接普通文件。Server 启动时固定它的 device/inode；路径
+消失、被另一个文件替换、变成符号链接或新增硬链接后，readiness、依赖数据库的管理面与
+Agent 接口都会 fail closed，连接池也不再签出旧 inode。首次观察到身份异常后，本进程不会
+因原文件被放回而自动恢复。不要运行中热替换数据库；停服完成受支持的恢复后必须重启，让
+Server 重新校验 schema、密文并捕获新文件身份。
+
 `tools/dev-server.sh` 会解析仓库根目录、创建 `.runtime/server`，导出绝对
 `UNIONC_DATA_DIR` 后从根 manifest 启动 Server；即使从其他目录调用也不会改变数据位置。
 程序不会自动迁移以前生成的 `unionc/data` 或 `server/unionc/data`；需要保留的数据应先停止
@@ -196,6 +202,9 @@ sudo systemd-run --quiet --wait --pipe --collect \
   /usr/bin/unionc integrity-check
 sudo systemctl start unionc
 ```
+
+最后的启动不是可选步骤：运行中的连接固定启动时的数据库身份，不会把 restore 或手工替换
+出的新 inode 当作热更新接管。
 
 替换前，`restore` 会处理当前活动 SQLite 库：若它通过校验，会输出一个
 `unionc.pre-restore-*.db` 及配套 manifest，可再次交给 `restore --input` 回退。若当前库已损坏

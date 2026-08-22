@@ -75,7 +75,7 @@ pub enum AppError {
     /// 本地持久层暂不可用，业务接口暂不可用，返回 503。
     #[error("{0}")]
     ServiceUnavailable(String),
-    /// 内嵌 SQLite 当前无法完成最小查询。
+    /// 内嵌 SQLite 的固定文件身份或精确当前 schema 当前不可用。
     #[error("{0}")]
     DatabaseUnavailable(String),
     /// 外部进程或依赖服务出错，返回 502。

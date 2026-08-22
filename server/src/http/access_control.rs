@@ -110,17 +110,33 @@ async fn authenticate_sse(
 async fn ensure_database_available(state: &AppState, path: &str) -> Result<(), AppError> {
     if requires_database(path) && !database_available(state).await {
         return Err(AppError::DatabaseUnavailable(
-            "本地数据库暂不可用，请检查数据目录、磁盘空间和文件权限".to_string(),
+            "本地数据库暂不可用，请检查数据目录、数据库文件身份、schema、I/O 和文件权限"
+                .to_string(),
         ));
     }
     Ok(())
 }
 
 pub(crate) async fn database_available(state: &AppState) -> bool {
-    cached_database_available_with(state.database_health.as_ref(), || async {
-        database::ping(state.db().as_ref()).await.is_ok()
+    // A cached successful SQL probe must never hide that the canonical path
+    // was unlinked or atomically replaced while SQLite kept the old inode
+    // open. Check around the cache lookup and invalidate on either mismatch so
+    // restoring the old inode cannot revive a stale success snapshot.
+    if state.database_identity().verify().is_err() {
+        *state.database_health.lock().await = None;
+        return false;
+    }
+    let available = cached_database_available_with(state.database_health.as_ref(), || async {
+        database::ping(state.db().as_ref(), state.database_identity())
+            .await
+            .is_ok()
     })
-    .await
+    .await;
+    if state.database_identity().verify().is_err() {
+        *state.database_health.lock().await = None;
+        return false;
+    }
+    available
 }
 
 async fn cached_database_available_with<Probe, ProbeFuture>(
@@ -193,7 +209,84 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
+    use sqlx_core::query::query;
+
     use super::*;
+
+    async fn file_backed_state() -> (tempfile::TempDir, std::path::PathBuf, AppState) {
+        let directory = tempfile::tempdir().expect("temporary database directory");
+        let path = directory.path().join("unionc.db");
+        let mut settings = crate::config::Settings::default();
+        settings.database.url = path.display().to_string();
+        let pool = database::connect(&settings)
+            .await
+            .expect("connect database");
+        database::initialize_schema(&pool)
+            .await
+            .expect("initialize schema");
+        let state = AppState::new(
+            settings,
+            pool,
+            "unused".to_string(),
+            crate::config::LocalConfig {
+                application_version: env!("CARGO_PKG_VERSION").to_string(),
+                admin_username: "admin".to_string(),
+                admin_password_hash: "unused".to_string(),
+            },
+            crate::system::ResourceMonitor::frozen(Default::default()),
+        )
+        .expect("capture file database identity");
+        (directory, path, state)
+    }
+
+    #[tokio::test]
+    async fn fresh_success_cache_cannot_hide_a_replaced_database_file() {
+        let (_directory, path, state) = file_backed_state().await;
+        assert!(database_available(&state).await, "prime healthy cache");
+        let displaced = path.with_extension("displaced");
+        std::fs::rename(&path, &displaced).expect("displace live database path");
+        std::fs::File::create(&path).expect("install different file at canonical path");
+
+        assert!(
+            !database_available(&state).await,
+            "a fresh SQL success snapshot must not hide an inode replacement"
+        );
+        assert!(
+            state.database_health.lock().await.is_none(),
+            "identity mismatch must invalidate the SQL health snapshot"
+        );
+
+        std::fs::remove_file(&path).expect("remove replacement file");
+        std::fs::rename(&displaced, &path).expect("restore original inode");
+        assert!(
+            !database_available(&state).await,
+            "an observed live-file replacement must require a full restart"
+        );
+        let pool = state.db();
+        let acquisition = tokio::time::timeout(Duration::from_millis(250), pool.acquire()).await;
+        assert!(
+            !matches!(acquisition, Ok(Ok(_))),
+            "the pool and AppState must share sticky invalidation"
+        );
+        state.db().close().await;
+    }
+
+    #[tokio::test]
+    async fn stale_probe_rejects_schema_changes_that_leave_metadata_untouched() {
+        let (_directory, _path, state) = file_backed_state().await;
+        assert!(database_available(&state).await, "prime healthy cache");
+        query("DROP INDEX idx_audit_logs_created_at")
+            .execute(state.db().as_ref())
+            .await
+            .expect("alter schema without changing metadata");
+        *state.database_health.lock().await = None;
+
+        assert!(
+            !database_available(&state).await,
+            "the runtime probe must verify the exact schema, not SELECT 1 or metadata alone"
+        );
+        state.db().close().await;
+    }
 
     #[tokio::test]
     async fn stale_database_health_probe_is_single_flight() {

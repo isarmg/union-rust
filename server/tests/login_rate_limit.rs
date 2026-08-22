@@ -19,7 +19,8 @@ use unionc::{
 const ADMIN_HASH: &str = "$2b$04$Qh0BwRWlZBqZ9lNPQTWvVeXGxKPLYlBP8YJ8yYqTfKZ1kKQmXHFvy";
 
 fn test_state() -> AppState {
-    let settings = Settings::default();
+    let mut settings = Settings::default();
+    settings.database.url = ":memory:".to_string();
     AppState::new(
         settings,
         database::in_memory_pool().expect("in-memory test pool"),
@@ -31,6 +32,7 @@ fn test_state() -> AppState {
         },
         unionc::system::ResourceMonitor::frozen(Default::default()),
     )
+    .expect("capture in-memory database identity")
 }
 
 #[tokio::test]

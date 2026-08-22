@@ -269,12 +269,14 @@ mod tests {
     };
 
     async fn initialized_state() -> AppState {
+        let mut settings = Settings::default();
+        settings.database.url = ":memory:".to_string();
         let pool = database::in_memory_pool().expect("in-memory test pool");
         database::initialize_schema(&pool)
             .await
             .expect("initialize test schema");
         AppState::new(
-            Settings::default(),
+            settings,
             pool,
             "unused".into(),
             LocalConfig {
@@ -284,6 +286,7 @@ mod tests {
             },
             crate::system::ResourceMonitor::frozen(Default::default()),
         )
+        .expect("capture in-memory database identity")
     }
 
     fn audit_context(request_id: &str) -> database::AuditContext {

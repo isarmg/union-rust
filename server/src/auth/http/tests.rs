@@ -8,8 +8,9 @@ mod tests {
 
     async fn password_state_with_settings(
         password_hash: String,
-        settings: crate::config::Settings,
+        mut settings: crate::config::Settings,
     ) -> AppState {
+        settings.database.url = ":memory:".to_string();
         let pool = crate::infra::database::in_memory_pool().expect("in-memory database");
         crate::infra::database::initialize_schema(&pool)
             .await
@@ -25,6 +26,7 @@ mod tests {
             },
             crate::system::ResourceMonitor::frozen(Default::default()),
         )
+        .expect("capture in-memory database identity")
     }
 
     fn observed_login_body(polled: std::sync::Arc<std::sync::atomic::AtomicBool>) -> axum::body::Body {

@@ -225,6 +225,9 @@ Agent 支持系统信任库、额外私有 CA 和可选客户端证书。若启�
 
 - SQLite 是 Server 内嵌的唯一持久层，不提供内存替代实现；
 - 活动库固定在本机数据目录，不支持网络文件系统、多 Server 共享写入或水平扩展；
+- canonical `unionc.db` 必须是单硬链接普通文件；Server 固定启动时的 device/inode，路径身份
+  或精确 schema 异常会让 readiness、依赖库的管理面和 Agent 数据路由 fail closed；首次观察
+  到身份异常后只能停服检查并重启，不热采用替换文件；
 - WAL 允许读取与一个写事务并行，但写入仍按数据库级串行；当前默认面向单 Server、约 20 台
   主机，断线集中补传和更大规模必须先做容量压测；
 - 空库由二进制内嵌的唯一当前基线初始化，已有库必须与当前 schema 精确一致；
@@ -458,7 +461,8 @@ Sunshine 管理是 Server 直接访问管理员显式配置的 Sunshine API，�
 | 故障 | 主要行为 | 是否影响核心监控 |
 |---|---|---|
 | Agent 到 Server 网络中断 | 本地 spool + 退避，恢复后补传 | 暂时不可见，不丢失配额内数据 |
-| SQLite 文件不可读写、磁盘满或损坏 | readiness 失败，依赖持久层的接口不可用 | 是 |
+| SQLite 路径身份、schema 或读取 I/O 异常 | readiness 失败，依赖持久层的管理面与 Agent 接口 503；身份异常持续到重启 | 是 |
+| SQLite 写入遇到磁盘/配额耗尽或只读挂载 | 当前写请求失败；只读 readiness 不充当磁盘空间探针 | 是 |
 | OTLP 接收端不可用 | 告警、可选队列丢弃 | 否 |
 | Sunshine 主机不可达 | 该主机状态异常，其他主机继续 | 否 |
 | SSE 断线 | Web 回落轮询 | 否 |
@@ -522,7 +526,8 @@ Sunshine 管理是 Server 直接访问管理员显式配置的 Sunshine API，�
 7. 缺失指标用 capability/`null` 表达，不用 `0` 冒充；
 8. 可选集成失败不能阻塞核心上报；
 9. 正常生产启动及 `backup`、`integrity-check`、`rekey` 只打开已存在且与当前唯一 schema
-   精确一致的数据库；开发环境或显式生产 bootstrap 可新建，`restore` 只发布已验证备份；
+   精确一致的数据库；活动 canonical 文件必须保持启动时的单硬链接普通文件身份，运行中不热
+   替换；开发环境或显式生产 bootstrap 可新建，`restore` 只在停服时发布已验证备份；
 10. 软件安装与更新不经管理台或 Agent 数据面完成。
 
 ## 15. 功能入口与交付状态

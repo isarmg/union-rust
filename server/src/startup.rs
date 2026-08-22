@@ -45,7 +45,7 @@ pub async fn initialize() -> anyhow::Result<InitializedApp> {
     let dummy_password_hash = hash_password(uuid::Uuid::new_v4().to_string()).await?;
     // 建立差值采样基线并启动唯一的采样循环，使首个请求即返回有效读数。
     let resources = crate::system::ResourceMonitor::start().await;
-    let state = AppState::new(settings, db, dummy_password_hash, local_config, resources);
+    let state = AppState::new(settings, db, dummy_password_hash, local_config, resources)?;
     start_service_status_probe(state.clone());
     // 内存态和持久历史分别回收；SQLite 在 HTTP 服务启动前已经完成打开与校验，因此
     // 保留期任务在每次正常启动中都存在，不会出现“配置数据库后忘记重启而不清理”的窗口。
@@ -191,9 +191,16 @@ async fn prepare_database(
     allow_bootstrap: bool,
 ) -> anyhow::Result<(Settings, database::DbPool)> {
     let db = if allow_bootstrap {
-        let db = database::connect(&bootstrap).await?;
-        database::initialize_schema(&db).await?;
-        db
+        // Creation is a one-shot bootstrap privilege, not a lifetime pool
+        // option. Close the create-enabled pool after initialization and use
+        // an existing-only pool for every runtime acquisition so unlinking the
+        // canonical path can never manufacture a plausible empty database.
+        let bootstrap_db = database::connect(&bootstrap).await?;
+        database::initialize_schema(&bootstrap_db).await?;
+        bootstrap_db.close().await;
+        let runtime_db = database::connect_existing(&bootstrap).await?;
+        database::verify_schema(&runtime_db).await?;
+        runtime_db
     } else {
         let db = database::connect_existing(&bootstrap).await?;
         database::verify_schema(&db).await?;
@@ -496,6 +503,20 @@ mod password_reset_tests {
             .await
             .expect("normal production startup reopens the current database");
         database::verify_schema(&normal_pool).await.unwrap();
+
+        let displaced = path.with_extension("displaced");
+        std::fs::rename(&path, &displaced).expect("displace the runtime database");
+        let acquisition =
+            tokio::time::timeout(std::time::Duration::from_millis(250), normal_pool.acquire())
+                .await;
+        assert!(
+            !matches!(acquisition, Ok(Ok(_))),
+            "the runtime pool must reject the displaced database identity"
+        );
+        assert!(
+            !path.exists(),
+            "a runtime pool must not retain bootstrap creation privileges"
+        );
         normal_pool.close().await;
     }
 

@@ -252,6 +252,7 @@ mod tests {
 
     fn state_with_host(host: SunshineHostConfig) -> AppState {
         let mut settings = Settings::default();
+        settings.database.url = ":memory:".to_string();
         settings.sunshine.hosts = vec![host];
         AppState::new(
             settings,
@@ -264,10 +265,12 @@ mod tests {
             },
             crate::system::ResourceMonitor::frozen(Default::default()),
         )
+        .expect("capture in-memory database identity")
     }
 
     async fn initialized_state() -> AppState {
-        let settings = Settings::default();
+        let mut settings = Settings::default();
+        settings.database.url = ":memory:".to_string();
         let pool = database::in_memory_pool().expect("in-memory test pool");
         database::initialize_schema(&pool)
             .await
@@ -283,6 +286,7 @@ mod tests {
             },
             crate::system::ResourceMonitor::frozen(Default::default()),
         )
+        .expect("capture in-memory database identity")
     }
 
     fn commit_pause() -> (

@@ -11,13 +11,14 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::{
     config::{LocalConfig, Settings, SunshineHostConfig},
-    infra::database::DbPool,
+    infra::database::{DatabaseIdentity, DbPool},
 };
 
 #[derive(Clone)]
 pub struct AppState {
     pub settings: Arc<Settings>,
     database: Arc<DbPool>,
+    database_identity: Arc<DatabaseIdentity>,
     shutdown: tokio::sync::watch::Sender<bool>,
     pub database_health: Arc<Mutex<Option<DatabaseHealthSnapshot>>>,
     pub started_at: DateTime<Utc>,
@@ -331,12 +332,14 @@ impl AppState {
         dummy_password_hash: String,
         local_config: LocalConfig,
         resources: crate::system::ResourceMonitor,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
+        let database_identity = DatabaseIdentity::capture(&settings)?;
         let sunshine_hosts = settings.sunshine.hosts.clone();
         let (shutdown, _) = tokio::sync::watch::channel(false);
-        Self {
+        Ok(Self {
             settings: Arc::new(settings),
             database: Arc::new(db),
+            database_identity: Arc::new(database_identity),
             shutdown,
             database_health: Arc::new(Mutex::new(None)),
             started_at: Utc::now(),
@@ -366,7 +369,11 @@ impl AppState {
             },
             services: ServiceStatusState::new(),
             resources,
-        }
+        })
+    }
+
+    pub fn database_identity(&self) -> &DatabaseIdentity {
+        self.database_identity.as_ref()
     }
 
     pub fn db(&self) -> Arc<DbPool> {

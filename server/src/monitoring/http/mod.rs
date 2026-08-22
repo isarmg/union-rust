@@ -21,7 +21,6 @@ use crate::monitoring::{
 };
 use crate::{
     error::{AppError, AppResult},
-    infra::database,
     state::AppState,
 };
 
@@ -48,6 +47,7 @@ impl FromRequestParts<AppState> for AnonymousPairingWrite {
         let client = require_agent_reverse_proxy(state, &parts.headers)?;
         check_pairing_rate(state, client).await?;
         require_json_content_type(&parts.headers)?;
+        require_database(state).await?;
         Ok(Self)
     }
 }
@@ -63,6 +63,7 @@ impl FromRequestParts<AppState> for AuthenticatedReport {
         check_report_auth_rate(state, client).await?;
         let credential = bearer_token(&parts.headers).ok_or(AppError::Unauthorized)?;
         let credential_hash = token_hash(credential);
+        require_database(state).await?;
         let host_id = match crate::monitoring::store::monitoring_host_for_token(
             state.db().as_ref(),
             &credential_hash,
@@ -252,6 +253,7 @@ async fn public_pairing_request(
     let client = require_agent_reverse_proxy(&state, &headers)?;
     check_pairing_rate(&state, client).await?;
     let request_id = validate_uuid(&request_id, "pairing request id")?;
+    require_database(&state).await?;
     let summary =
         crate::monitoring::store::public_agent_pairing_request(state.db().as_ref(), &request_id)
             .await
@@ -278,6 +280,7 @@ async fn pairing_request_status(
         return Err(AppError::Unauthorized);
     }
     let request_id = validate_uuid(&request_id, "pairing request id")?;
+    require_database(&state).await?;
     let status = crate::monitoring::store::agent_pairing_status(
         state.db().as_ref(),
         &request_id,
@@ -552,9 +555,14 @@ fn host_status(last_seen: chrono::DateTime<Utc>, interval: Option<f64>) -> Strin
 }
 
 async fn require_database(state: &AppState) -> AppResult<()> {
-    database::ping(state.db().as_ref())
-        .await
-        .map_err(|error| agent_database_unavailable("check database health", error))
+    if crate::http::database_available(state).await {
+        Ok(())
+    } else {
+        tracing::warn!("Agent database health check failed");
+        Err(AppError::DatabaseUnavailable(
+            "database is unavailable".to_string(),
+        ))
+    }
 }
 
 fn agent_database_unavailable(operation: &str, error: impl std::fmt::Display) -> AppError {

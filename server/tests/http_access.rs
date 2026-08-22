@@ -35,6 +35,7 @@ async fn test_state_with_settings(mut settings: Settings) -> AppState {
         },
         unionc::system::ResourceMonitor::frozen(Default::default()),
     )
+    .expect("capture in-memory database identity")
 }
 
 /// 会话绑定的 CSRF 令牌。改为双提交模式后，固定值 "1" 不再被接受。
@@ -108,6 +109,69 @@ async fn ready_reuses_a_fresh_database_health_snapshot() {
     let payload: serde_json::Value =
         serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap()).unwrap();
     assert_eq!(payload["database"], false);
+}
+
+#[tokio::test]
+async fn ready_invalidates_a_fresh_success_after_database_replacement() {
+    let directory = tempfile::tempdir().expect("temporary database directory");
+    let path = directory.path().join("unionc.db");
+    let replacement = directory.path().join("replacement.db");
+    let displaced = directory.path().join("displaced.db");
+
+    let mut settings = Settings::default();
+    settings.database.url = path.display().to_string();
+    let pool = database::connect(&settings)
+        .await
+        .expect("connect runtime database");
+    database::initialize_schema(&pool)
+        .await
+        .expect("initialize runtime database");
+
+    let mut replacement_settings = Settings::default();
+    replacement_settings.database.url = replacement.display().to_string();
+    let replacement_pool = database::connect(&replacement_settings)
+        .await
+        .expect("connect replacement database");
+    database::initialize_schema(&replacement_pool)
+        .await
+        .expect("initialize replacement database");
+    replacement_pool.close().await;
+
+    let test_password_hash = bcrypt::hash("test-password", 4).expect("test bcrypt hash");
+    let state = AppState::new(
+        settings,
+        pool,
+        test_password_hash.clone(),
+        LocalConfig {
+            application_version: env!("CARGO_PKG_VERSION").to_string(),
+            admin_username: "admin".to_string(),
+            admin_password_hash: test_password_hash,
+        },
+        unionc::system::ResourceMonitor::frozen(Default::default()),
+    )
+    .expect("capture runtime database identity");
+    let app = http::router(state.clone());
+
+    let healthy = app
+        .clone()
+        .oneshot(Request::get("/api/ready").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let healthy_payload: serde_json::Value =
+        serde_json::from_slice(&to_bytes(healthy.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    assert_eq!(healthy_payload["database"], true);
+
+    std::fs::rename(&path, displaced).expect("displace runtime database");
+    std::fs::rename(replacement, path).expect("replace runtime database");
+    let replaced = app
+        .oneshot(Request::get("/api/ready").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(replaced.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let replaced_payload: serde_json::Value =
+        serde_json::from_slice(&to_bytes(replaced.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    assert_eq!(replaced_payload["database"], false);
+    state.db().close().await;
 }
 
 #[tokio::test]

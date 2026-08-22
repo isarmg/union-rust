@@ -73,7 +73,8 @@ async fn crud_returns_pending_snapshots_without_waiting_for_health_probe() {
             admin_password_hash: "unused".into(),
         },
         ResourceMonitor::frozen(Default::default()),
-    );
+    )
+    .expect("capture test database identity");
     state.auth.sessions.write().await.insert(
         SESSION.into(),
         LocalSession {

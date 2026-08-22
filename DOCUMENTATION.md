@@ -135,12 +135,17 @@ Agent 的权限模型即由此而来：它只需要读权限，systemd unit 里 
                  │    ├─ 其余：会话 Cookie → 读锁查会话 → 数据库可用性 → CSRF
                  │    └─ 建立审计上下文（操作者 + 服务端 request id）后进入 handler
                  └─ Agent 路由 ─ 不走会话中间件
-                      └─ 反代契约 → 匿名限流 → 凭据校验 → 才解析 body
+                      ├─ 配对：反代契约 → 匿名限流 → Content-Type → 数据库可用性 → body
+                      └─ 上报：反代契约 → 匿名限流 → Bearer 语法 → 数据库可用性
+                                 → 凭据/主机限流 → Content-Type → body
 ```
 
-数据库可用性检查带 1 秒 TTL 的单航缓存，避免每个请求都往库里打一次 `SELECT 1`；
-过期时并发请求只触发一个探测，其余等待并复用结果。它供公开的 `/api/ready` 与确实需要库
-的管理面路径（`/api/services`、`/api/monitoring`、`/api/events`、`/api/audit-logs`）共享。
+数据库可用性不是简单的 `SELECT 1`。Server 启动时记录 canonical `unionc.db` 的 device/inode，
+每次检查都在缓存前后确认路径仍指向这个单硬链接普通文件；只读的精确当前 schema 比对带约
+1 秒 TTL 的单航缓存，过期时并发请求只触发一个探测。连接池复用旧连接或建立新连接时也会
+核对同一身份。公开 `/api/ready`、需要库的管理面路径以及 Agent 配对/上报共同使用这条边界。
+一旦运行期观察到路径缺失、替换、符号链接或多硬链接，该进程会永久把数据库标为不可用并
+返回 503；即使原 inode 随后被放回，也必须停服检查并重启，不能热切换或自动恢复。
 
 ---
 
@@ -348,8 +353,10 @@ React 19 + TypeScript + Vite + TanStack Query，按业务功能聚合源码和�
 **视图懒加载**：首屏只需要 Overview，其余四个视图用 `React.lazy` 按需加载，
 由 `Suspense` 兜住切换时的空窗。
 
-SQLite 无需浏览器配置。若启动时数据库无法创建或不符合当前 schema，Server 直接启动失败；运行中本地
-磁盘或文件异常会使 `/api/ready` 返回 503，各业务请求返回明确的持久层错误。
+SQLite 无需浏览器配置。若启动时数据库无法创建或不符合当前 schema，Server 直接启动失败；
+运行中文件身份、读取 I/O 或 schema 异常会使 `/api/ready` 返回 503，各业务请求返回明确的
+持久层错误。ready 的探测是只读的，不写 heartbeat，也不预留磁盘空间；磁盘满可能先由某个
+写请求发现，因此仍须独立监控容量。
 
 ### 3.4 可选的 OTLP 导出
 
@@ -604,7 +611,9 @@ deferred transaction 升级死锁。
 1 000 行并在批间主动让出调度。两者都让每批独立提交并累计精确删除数，目的是缩短独占
 写入时段，让 Agent 上报和配置写入可以在批次之间进入。删除后的页进入 SQLite freelist，
 不承诺活动数据库文件立即缩小；`backup --output` 通过 `VACUUM INTO` 生成紧凑且一致的快照。
-不得在运行中裸复制 `unionc.db`，也不得手工删除相邻的 `-wal`/`-shm` 文件。
+活动 `unionc.db` 的叶子必须是单硬链接普通文件。不得在运行中裸复制、删除、重命名、替换或
+给它新增硬链接，也不得手工删除相邻的 `-wal`/`-shm` 文件；SQLite 的旧文件描述符即使在
+目录项被替换后仍可能可写，Server 因此不会热采用新文件，观察到异常后须停服恢复并重启。
 
 这一设计面向单 Server、小规模自托管部署。当前产品目标约 20 台主机；若需要多 Server
 共享写入、网络文件系统、PITR/流复制，或持续几十次写入每秒与数千万历史行，应使用独立的
@@ -623,7 +632,7 @@ deferred transaction 升级死锁。
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/health` | 存活探针：状态、版本、运行时长 |
-| GET | `/api/ready` | 就绪探针：内嵌数据库与数据目录都可用才返回 200 |
+| GET | `/api/ready` | 就绪探针：数据目录、启动时同一数据库文件身份与精确当前 schema 都可用才返回 200 |
 | POST | `/api/auth/login` | JSON 登录 |
 | GET | `/api/agent/v2/pairing-requests/{id}` | 激活页核对有限设备摘要，不返回任何 credential |
 | POST | `/api/agent/v2/activate` | 用一次性激活码把待激活实例绑定到 Agent pairing request |
@@ -754,7 +763,7 @@ Agent 可以把配额全部塞进任意一个不限长的字符串，而这些�
 | `not_found` | 404 | 资源不存在 |
 | `conflict` | 409 | 状态冲突（如邀请/配对状态冲突、report_id 属于别的主机） |
 | `too_many_requests` | 429 | 触发限流 |
-| `service_unavailable` / `database_unavailable` | 503 | 服务尚未就绪，或本地数据库因磁盘/权限/损坏暂不可用 |
+| `service_unavailable` / `database_unavailable` | 503 | 服务尚未就绪，或本地数据库因身份/schema/I/O/权限/容量问题不可用 |
 | `process_error` / `upstream_error` | 502 | 上游 Sunshine 主机出错 |
 | `storage_error` / `database_error` / `internal_error` | 500 | 内部错误 |
 
@@ -1248,7 +1257,8 @@ sudo systemd-run --quiet --wait --pipe --collect \
 快照和清单必须成对复制与保留。`--force` 只表示允许覆盖现有活动库，不会绕过清单校验。
 恢复始终要求清单存在，并执行 SHA-256、SQLite 完整性、外键、schema 与密文可解性检查。
 
-恢复必须停服，先保留当前数据库，再显式授权覆盖并做完整性检查：
+恢复必须停服，先保留当前数据库，再显式授权覆盖并做完整性检查；运行中的 Server 不会热
+采用替换文件，恢复完成后必须重新启动以捕获新数据库身份：
 
 ```bash
 sudo systemctl stop unionc
@@ -1299,7 +1309,8 @@ schema 生成的快照；它会精确校验基线指纹和 schema，不接受版
 | 启动报 `production unionc must bind to a loopback address` | 生产环境配了非回环绑定 | 改回 `127.0.0.1`，对外由反代暴露 |
 | 主机一直 offline | Agent 未上报 | 见 [10.3](#103-排查主机不上报) |
 | 资源读数为 0 | 采样任务异常退出 | 查日志 `系统资源采样任务异常退出` |
-| `/api/ready` 报数据库不可用 | 数据目录权限、磁盘满、I/O 错误或数据库损坏 | 停止写入，查日志并运行 `integrity-check`；必要时从一致性快照恢复 |
+| `/api/ready` 报数据库不可用 | 数据目录权限、读取 I/O、schema 漂移，或 `unionc.db` 路径缺失/换 inode/出现符号链接或多硬链接 | 停服并核对 canonical 路径；用受支持的 `integrity-check`/`restore` 处理，随后重启。进程观察到文件身份异常后不会自动恢复 |
+| 写接口报数据库不可用但 `/api/ready` 仍可能成功 | 磁盘/配额耗尽或只读挂载先在写入时暴露；ready 不执行写 heartbeat | 停止写入并检查容量、配额、挂载与 SQLite 日志；不要把 ready 当剩余空间监控 |
 
 ---
 

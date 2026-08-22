@@ -16,6 +16,7 @@ use unionc::{
 
 fn state_with_configured_hosts(count: usize) -> AppState {
     let mut settings = Settings::default();
+    settings.database.url = ":memory:".to_string();
     settings.sunshine.hosts = (0..count)
         .map(|index| SunshineHostConfig {
             id: format!("host-{index}"),
@@ -37,6 +38,7 @@ fn state_with_configured_hosts(count: usize) -> AppState {
         },
         unionc::system::ResourceMonitor::frozen(Default::default()),
     )
+    .expect("capture in-memory database identity")
 }
 
 /// 读路径必须只消费快照，不得触发任何网络探测。

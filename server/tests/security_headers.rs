@@ -21,20 +21,25 @@ use unionc::{
 };
 
 fn app(production: bool) -> axum::Router {
-    http::router(AppState::new(
-        Settings {
-            production,
-            ..Settings::default()
-        },
-        database::in_memory_pool().expect("in-memory test pool"),
-        "$2b$12$C6UzMDM.H6dfI/f/IKcEe.4n3W4O4L2hS2T/1B1Q6VYF2M9mV0X5K".into(),
-        LocalConfig {
-            application_version: env!("CARGO_PKG_VERSION").to_string(),
-            admin_username: "admin".into(),
-            admin_password_hash: "unused".into(),
-        },
-        unionc::system::ResourceMonitor::frozen(Default::default()),
-    ))
+    let mut settings = Settings {
+        production,
+        ..Settings::default()
+    };
+    settings.database.url = ":memory:".to_string();
+    http::router(
+        AppState::new(
+            settings,
+            database::in_memory_pool().expect("in-memory test pool"),
+            "$2b$12$C6UzMDM.H6dfI/f/IKcEe.4n3W4O4L2hS2T/1B1Q6VYF2M9mV0X5K".into(),
+            LocalConfig {
+                application_version: env!("CARGO_PKG_VERSION").to_string(),
+                admin_username: "admin".into(),
+                admin_password_hash: "unused".into(),
+            },
+            unionc::system::ResourceMonitor::frozen(Default::default()),
+        )
+        .expect("capture in-memory database identity"),
+    )
 }
 
 async fn headers_of(app: axum::Router, uri: &str) -> axum::http::HeaderMap {
