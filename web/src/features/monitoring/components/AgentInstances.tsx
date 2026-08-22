@@ -56,7 +56,7 @@ export function HostRegistration({ host }: { host: MonitoringHostSummary }) {
   const [created, setCreated] = useState<CreatedAgentInstance | null>(null);
   const instancesQuery = useQuery({
     queryKey: queryKeys.monitoring.agentInstances,
-    queryFn: api.monitoringAgentInstances,
+    queryFn: ({ signal }) => api.monitoringAgentInstances(signal),
     refetchInterval: 10_000,
   });
   const rePairMutation = useMutation({
@@ -145,7 +145,7 @@ export function AgentInstances({ activeHostIds }: { activeHostIds: ReadonlySet<s
   } | null>(null);
   const instancesQuery = useQuery({
     queryKey: queryKeys.monitoring.agentInstances,
-    queryFn: api.monitoringAgentInstances,
+    queryFn: ({ signal }) => api.monitoringAgentInstances(signal),
     refetchInterval: 10_000,
   });
   const createMutation = useMutation({

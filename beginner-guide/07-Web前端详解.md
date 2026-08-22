@@ -104,6 +104,10 @@ web/index.html
 
 为什么不能只写 `if (response.ok)`？因为真实 Web 契约中，创建邀请或 Sunshine 主机返回 201，logout、取消邀请、删除 Sunshine 主机和 revoke 返回 204，普通查询返回 200；某些 DELETE 操作（如删除 Sunshine app）也会按各自契约返回 200 JSON。代理错误返回 200 HTML 也不能被当作成功 JSON。
 
+TanStack Query 会把 `AbortSignal` 交给 `queryFn`。功能 API 还必须接收该 signal 并传给
+`request`；否则最后一个 observer 卸载后只是清除了轮询 timer，已经在途的 HTTP 请求仍会
+跑完并写入旧缓存。监控邀请列表与 Sunshine 查询都遵守这条完整传递链。
+
 ## 6. URL、类型和缓存键
 
 ### 6.1 `shared/api/paths.ts`

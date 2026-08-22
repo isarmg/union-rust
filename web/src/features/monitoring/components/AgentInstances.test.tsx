@@ -158,3 +158,27 @@ describe("Agent activation-code lifetime", () => {
     await waitFor(() => expect(activationCodes(queryClient)).not.toContain(created.activation_code));
   }, 15_000);
 });
+
+describe("Agent invitation request lifetime", () => {
+  it.each([
+    ["creation panel", <AgentInstances activeHostIds={new Set()} />],
+    ["host registration panel", <HostRegistration host={host} />],
+  ])("aborts the in-flight list request when the %s unmounts", async (_name, panel) => {
+    let requestSignal: AbortSignal | undefined;
+    vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => (
+      new Promise<Response>((_resolve, reject) => {
+        requestSignal = init?.signal ?? undefined;
+        requestSignal?.addEventListener("abort", () => {
+          reject(new DOMException("aborted", "AbortError"));
+        }, { once: true });
+      })
+    ));
+    const { unmount } = renderWithClient(panel);
+    await waitFor(() => expect(requestSignal).toBeDefined());
+
+    unmount();
+
+    expect(requestSignal?.aborted).toBe(true);
+    await act(async () => { await Promise.resolve(); });
+  });
+});

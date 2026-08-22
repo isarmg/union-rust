@@ -23,7 +23,10 @@ export const monitoringApi = {
     `${monitoringHostPath(id)}/revoke`,
     { method: "POST", expectedStatus: 204 },
   ),
-  monitoringAgentInstances: () => request<AgentInstanceSummary[]>("/api/monitoring/agent-instances"),
+  monitoringAgentInstances: (signal?: AbortSignal) => request<AgentInstanceSummary[]>(
+    "/api/monitoring/agent-instances",
+    { signal },
+  ),
   monitoringCreateAgentInstance: (display_name: string, expires_in_minutes: number, instance_id?: string) =>
     request<CreatedAgentInstance>("/api/monitoring/agent-instances", {
       method: "POST",
