@@ -130,7 +130,7 @@ case "$path" in
     metadata="${STAT_OWNERSHIP_DIR:-0:0:700}"
     ;;
   "$CASE_ROOT/var/db/unionc-agent/account-ownership"|\
-  "$CASE_ROOT/var/db/unionc-agent/install-recovery")
+  "$CASE_ROOT/var/db/unionc-agent"/.account-ownership.*)
     metadata="${STAT_OWNERSHIP_MARKER:-0:0:600}"
     ;;
   "$CASE_ROOT/Library/Application Support/UnionC Agent")
@@ -166,11 +166,75 @@ case "$path" in
     ;;
   *) exit 65 ;;
 esac
-uid="${metadata%%:*}"
-remainder="${metadata#*:}"
-gid="${remainder%%:*}"
-mode="${remainder#*:}"
-printf '%s:%s:%s:%s\n' "$uid" "$gid" "${STAT_SPECIAL_MODE:-0}" "$mode"
+case "$metadata" in
+  *:*:*:*) printf '%s\n' "$metadata" ;;
+  *)
+    uid="${metadata%%:*}"
+    remainder="${metadata#*:}"
+    gid="${remainder%%:*}"
+    mode="${remainder#*:}"
+    printf '%s:%s:%s:%s\n' "$uid" "$gid" "${STAT_SPECIAL_MODE:-0}" "$mode"
+    ;;
+esac
+EOF
+
+  cat >"$case_bin/ls" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" != -lde ] || [ "$#" -ne 2 ]; then
+  exec /bin/ls "$@"
+fi
+path="$2"
+acl_key=
+permissions=-rw-------
+case "$path" in
+  "$CASE_ROOT/var/db/unionc-agent")
+    acl_key=ownership-dir
+    permissions=drwx------
+    acl_requested="${ACL_OWNERSHIP_DIR:-0}"
+    ls_failure="${FAIL_LS_OWNERSHIP_DIR:-0}"
+    ;;
+  "$CASE_ROOT/var/db/unionc-agent/account-ownership")
+    acl_key=ownership-marker
+    acl_requested="${ACL_OWNERSHIP_MARKER:-0}"
+    ls_failure="${FAIL_LS_OWNERSHIP_MARKER:-0}"
+    ;;
+  "$CASE_ROOT/var/db/unionc-agent"/.account-ownership.*)
+    acl_key=ownership-temp
+    acl_requested="${ACL_OWNERSHIP_TEMP:-0}"
+    ls_failure="${FAIL_LS_OWNERSHIP_TEMP:-0}"
+    ;;
+  *) exit 65 ;;
+esac
+[ "$ls_failure" -eq 0 ] || exit 71
+if [ "$acl_requested" -eq 1 ] && [ ! -e "$FILE_STATE/acl-cleared.$acl_key" ]; then
+  printf '%s+ 1 root wheel 0 Jan 1 00:00 %s\n' "$permissions" "$path"
+  printf ' 0: user:untrusted allow read,write\n'
+else
+  printf '%s 1 root wheel 0 Jan 1 00:00 %s\n' "$permissions" "$path"
+fi
+EOF
+
+  cat >"$case_bin/chmod" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" != -N ]; then
+  exec /bin/chmod "$@"
+fi
+count=0
+if [ -f "$FILE_STATE/chmod-n-count" ]; then
+  IFS= read -r count <"$FILE_STATE/chmod-n-count"
+fi
+count=$((count + 1))
+printf '%s\n' "$count" >"$FILE_STATE/chmod-n-count"
+if [ -n "${FAIL_CHMOD_N_AT:-}" ] && [ "$count" -eq "$FAIL_CHMOD_N_AT" ]; then
+  exit 72
+fi
+case "$2" in
+  "$CASE_ROOT/var/db/unionc-agent") acl_key=ownership-dir ;;
+  "$CASE_ROOT/var/db/unionc-agent/account-ownership") acl_key=ownership-marker ;;
+  "$CASE_ROOT/var/db/unionc-agent"/.account-ownership.*) acl_key=ownership-temp ;;
+  *) exit 65 ;;
+esac
+: >"$FILE_STATE/acl-cleared.$acl_key"
 EOF
 
   cat >"$case_bin/plutil" <<'EOF'
@@ -316,7 +380,8 @@ case "${1:-}" in
 esac
 EOF
 
-  chmod +x "$case_bin/id" "$case_bin/install" "$case_bin/stat" "$case_bin/chown" \
+  chmod +x "$case_bin/id" "$case_bin/install" "$case_bin/stat" "$case_bin/ls" \
+    "$case_bin/chmod" "$case_bin/chown" \
     "$case_bin/dscl" "$case_bin/launchctl" "$case_bin/pkgutil" "$case_bin/plutil"
 }
 
@@ -347,7 +412,21 @@ reset_fault_counters() {
   reset_case="$1"
   rm -f "$reset_case/dscl/create-count" "$reset_case/dscl/read-count" \
     "$reset_case/chown-count" "$reset_case/chown-calls" \
+    "$reset_case/chmod-n-count" "$reset_case"/acl-cleared.* \
     "$reset_case/launch/bootstrap-count" "$reset_case/launch/bootout-count"
+}
+
+write_valid_ownership_marker() {
+  marker_case="$1"
+  mkdir -p "$marker_case/var/db/unionc-agent"
+  {
+    printf 'format=@UNIONC_AGENT_PACKAGE_VERSION@\n'
+    printf 'user_created=1\n'
+    printf 'user_uid=450\n'
+    printf 'user_primary_gid=450\n'
+    printf 'group_created=1\n'
+    printf 'group_gid=450\n'
+  } >"$marker_case/var/db/unionc-agent/account-ownership"
 }
 
 assert_payload_rejected_without_bootout() {
@@ -493,6 +572,66 @@ if run_postinstall "$case_dir" STAT_OWNERSHIP_DIR=501:20:777 \
   fail 'foreign ownership directory metadata unexpectedly succeeded'
 fi
 
+case_dir="$test_root/unsafe-ownership-special-mode"
+make_case "$case_dir"
+mkdir -p "$case_dir/var/db/unionc-agent"
+if run_postinstall "$case_dir" STAT_OWNERSHIP_DIR=0:0:1:700 \
+  >"$case_dir/failure.log" 2>&1; then
+  fail 'ownership directory with special permission bits unexpectedly succeeded'
+fi
+
+case_dir="$test_root/unsafe-ownership-acl"
+make_case "$case_dir"
+mkdir -p "$case_dir/var/db/unionc-agent"
+if run_postinstall "$case_dir" ACL_OWNERSHIP_DIR=1 \
+  >"$case_dir/failure.log" 2>&1; then
+  fail 'ownership directory with an extended ACL unexpectedly succeeded'
+fi
+[ ! -e "$case_dir/acl-cleared.ownership-dir" ] ||
+  fail 'postinstall normalized an ACL on a pre-existing ownership directory'
+
+case_dir="$test_root/unsafe-ownership-ls-failure"
+make_case "$case_dir"
+mkdir -p "$case_dir/var/db/unionc-agent"
+if run_postinstall "$case_dir" FAIL_LS_OWNERSHIP_DIR=1 \
+  >"$case_dir/failure.log" 2>&1; then
+  fail 'ownership directory ACL inspection failure unexpectedly succeeded'
+fi
+
+case_dir="$test_root/unsafe-new-ownership-acl-clear"
+make_case "$case_dir"
+if run_postinstall "$case_dir" FAIL_CHMOD_N_AT=1 \
+  >"$case_dir/failure.log" 2>&1; then
+  fail 'new ownership directory ACL-clear failure unexpectedly succeeded'
+fi
+
+case_dir="$test_root/unsafe-marker-mode"
+make_case "$case_dir"
+write_valid_ownership_marker "$case_dir"
+if run_postinstall "$case_dir" STAT_OWNERSHIP_MARKER=0:0:0:666 \
+  >"$case_dir/failure.log" 2>&1; then
+  fail 'writable ownership marker unexpectedly succeeded'
+fi
+
+case_dir="$test_root/unsafe-marker-acl"
+make_case "$case_dir"
+write_valid_ownership_marker "$case_dir"
+if run_postinstall "$case_dir" ACL_OWNERSHIP_MARKER=1 \
+  >"$case_dir/failure.log" 2>&1; then
+  fail 'ownership marker with an extended ACL unexpectedly succeeded'
+fi
+[ ! -e "$case_dir/acl-cleared.ownership-marker" ] ||
+  fail 'postinstall normalized an ACL on a pre-existing ownership marker'
+
+case_dir="$test_root/unsafe-marker-symlink"
+make_case "$case_dir"
+mkdir -p "$case_dir/var/db/unionc-agent"
+: >"$case_dir/foreign-marker"
+ln -s "$case_dir/foreign-marker" "$case_dir/var/db/unionc-agent/account-ownership"
+if run_postinstall "$case_dir" >"$case_dir/failure.log" 2>&1; then
+  fail 'symlinked ownership marker unexpectedly succeeded'
+fi
+
 case_dir="$test_root/unsafe-state-symlink"
 make_case "$case_dir"
 mkdir -p "$case_dir/foreign-state"
@@ -628,6 +767,36 @@ while [ "$failure" -le 2 ]; do
   assert_recoverable "$case_dir"
   failure=$((failure + 1))
 done
+
+case_dir="$test_root/marker-acl-clear-failure"
+make_case "$case_dir"
+if run_postinstall "$case_dir" FAIL_CHMOD_N_AT=2 \
+  >"$case_dir/failure.log" 2>&1; then
+  fail 'marker ACL-clear failure unexpectedly succeeded'
+fi
+[ ! -d "$case_dir/dscl/Groups/_unioncagent" ] ||
+  fail 'marker ACL-clear failure left a partial group'
+[ ! -e "$case_dir/var/db/unionc-agent/account-ownership" ] ||
+  fail 'marker ACL-clear failure published an ownership claim'
+if find "$case_dir/var/db/unionc-agent" -name '.account-ownership.*' -print -quit |
+  grep . >/dev/null; then
+  fail 'marker ACL-clear failure left a temporary marker'
+fi
+assert_recoverable "$case_dir"
+
+# A same-directory rename is the marker transaction's commit point. No fallible
+# final-path ACL check may trigger account rollback after publication; the real
+# macOS smoke test validates the published path independently.
+case_dir="$test_root/marker-rename-commit"
+make_case "$case_dir"
+run_postinstall "$case_dir" FAIL_LS_OWNERSHIP_MARKER=1 \
+  >"$case_dir/commit.log" 2>&1 ||
+  fail 'postinstall performed a fallible marker check after the rename commit'
+[ -d "$case_dir/dscl/Groups/_unioncagent" ] &&
+  [ -d "$case_dir/dscl/Users/_unioncagent" ] ||
+  fail 'marker rename commit test lost a service account'
+grep -Fx 'user_created=1' "$case_dir/var/db/unionc-agent/account-ownership" >/dev/null ||
+  fail 'marker rename commit test did not publish the completed proof'
 
 # If the helper cannot be registered, the Agent registered immediately before
 # it must not survive a failed package transaction.

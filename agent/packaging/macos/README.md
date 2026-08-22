@@ -107,13 +107,16 @@ sudo /usr/local/share/unionc-agent/uninstall.sh --purge
 ```
 
 Managed non-interactive removal may add `--yes`. Purge only deletes `_unioncagent` records for
-which a root-only ownership marker proves this installer created them. The marker records the
-creation-time UID and GIDs, and purge requires exact identity and account-attribute matches; a
-coincidentally pre-existing or later reconstructed account is retained. A clean install refuses
-to adopt same-named accounts that are not bound by the current ownership marker.
+which the root-owned bookkeeping directory and ownership marker jointly prove this installer
+created them. The directory must be a real `root:wheel` `0700` directory and the marker a real
+`root:wheel` `0600` file; neither may have special permission bits or an extended ACL. The marker
+records the creation-time UID and GIDs, and purge requires exact identity and account-attribute
+matches; a coincidentally pre-existing or later reconstructed account is retained. A clean install
+refuses to adopt same-named accounts that are not bound by the current ownership proof.
 
 If a marker-owned account was modified, or its group still has primary/supplementary members or
 nested-group references, purge returns exit status `2` and reports `incomplete`. Directory
-Service query failures have the same fail-closed result. Program/state/log removal has still
-occurred, but the ownership marker, package receipt, and uninstall helper remain so an
-administrator can repair the account conflict and safely retry.
+Service query failures, missing proof for a still-present account, and any directory/marker
+metadata or ACL drift have the same fail-closed result. Program/state/log removal has still
+occurred, but the bookkeeping path, package receipt, and uninstall helper remain so an
+administrator can repair the conflict and safely retry.

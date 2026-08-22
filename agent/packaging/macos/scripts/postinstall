@@ -47,7 +47,7 @@ read_path_metadata() {
   metadata_path="$1"
   path_metadata="$(stat -f '%u:%g:%Mp:%Lp' "$metadata_path")" || {
     echo "Could not inspect ownership and permissions for $metadata_path" >&2
-    exit 1
+    return 1
   }
   path_uid="${path_metadata%%:*}"
   path_metadata_remainder="${path_metadata#*:}"
@@ -58,16 +58,46 @@ read_path_metadata() {
   case "$path_uid:$path_gid:$path_special_mode:$path_mode" in
     *[!0-9:]*)
       echo "Invalid ownership or permission metadata for $metadata_path" >&2
-      exit 1
+      return 1
       ;;
     :*|*::*|*:)
       echo "Incomplete ownership or permission metadata for $metadata_path" >&2
-      exit 1
+      return 1
       ;;
   esac
   [ "$path_special_mode" = 0 ] || {
     echo "Unexpected set-id or sticky permission bits on $metadata_path" >&2
-    exit 1
+    return 1
+  }
+}
+
+path_has_no_extended_acl() {
+  acl_path="$1"
+  acl_listing="$(LC_ALL=C ls -lde "$acl_path" 2>/dev/null)" || return 1
+  acl_first_line=""
+  acl_has_additional_lines=0
+  while IFS= read -r acl_line; do
+    if [ -z "$acl_first_line" ]; then
+      acl_first_line="$acl_line"
+    else
+      acl_has_additional_lines=1
+    fi
+  done <<EOF
+$acl_listing
+EOF
+  [ -n "$acl_first_line" ] && [ "$acl_has_additional_lines" -eq 0 ] || return 1
+  acl_permissions="${acl_first_line%% *}"
+  case "$acl_permissions" in
+    ''|*+) return 1 ;;
+  esac
+}
+
+require_no_extended_acl() {
+  acl_path="$1"
+  acl_description="$2"
+  path_has_no_extended_acl "$acl_path" || {
+    echo "UnionC Agent $acl_description must not have an extended ACL" >&2
+    return 1
   }
 }
 
@@ -207,8 +237,18 @@ if [ -e "$ownership_dir" ] || [ -L "$ownership_dir" ]; then
     echo "UnionC Agent ownership directory must be root:wheel with permissions 0700" >&2
     exit 1
   }
+  require_no_extended_acl "$ownership_dir" "ownership directory" || exit 1
+else
+  install -d -m 0700 -o root -g wheel "$ownership_dir"
+  [ -d "$ownership_dir" ] && [ ! -L "$ownership_dir" ] || {
+    echo "UnionC Agent ownership directory was not created safely" >&2
+    exit 1
+  }
+  chmod -N "$ownership_dir" || {
+    echo "Could not remove inherited ACLs from the UnionC Agent ownership directory" >&2
+    exit 1
+  }
 fi
-install -d -m 0700 -o root -g wheel "$ownership_dir"
 [ -d "$ownership_dir" ] && [ ! -L "$ownership_dir" ] || {
   echo "UnionC Agent ownership directory was not created safely" >&2
   exit 1
@@ -218,6 +258,7 @@ read_path_metadata "$ownership_dir"
   echo "UnionC Agent ownership directory was not secured as root:wheel 0700" >&2
   exit 1
 }
+require_no_extended_acl "$ownership_dir" "ownership directory" || exit 1
 
 validate_launch_payload
 
@@ -265,6 +306,7 @@ if [ -e "$ownership_marker" ] || [ -L "$ownership_marker" ]; then
     echo "UnionC Agent account ownership marker is not root:wheel with permissions 0600" >&2
     exit 1
   }
+  require_no_extended_acl "$ownership_marker" "account ownership marker" || exit 1
   seen_user=0
   seen_group=0
   seen_format=0
@@ -423,18 +465,41 @@ fi
 
 write_ownership_marker() {
   marker_temporary="$ownership_dir/.account-ownership.$$"
-  umask 077
-  {
-    printf 'format=%s\n' "$package_version"
-    printf 'user_created=%s\n' "$user_created"
-    printf 'user_uid=%s\n' "$created_user_uid"
-    printf 'user_primary_gid=%s\n' "$created_user_primary_gid"
-    printf 'group_created=%s\n' "$group_created"
-    printf 'group_gid=%s\n' "$created_group_gid"
-  } > "$marker_temporary"
-  chown root:wheel "$marker_temporary"
-  chmod 0600 "$marker_temporary"
-  mv -f "$marker_temporary" "$ownership_marker"
+  if [ -e "$marker_temporary" ] || [ -L "$marker_temporary" ]; then
+    echo "Unsafe UnionC Agent ownership marker temporary path" >&2
+    return 1
+  fi
+  if ! (
+    umask 077
+    set -C
+    printf 'format=%s\nuser_created=%s\nuser_uid=%s\nuser_primary_gid=%s\ngroup_created=%s\ngroup_gid=%s\n' \
+      "$package_version" "$user_created" "$created_user_uid" \
+      "$created_user_primary_gid" "$group_created" "$created_group_gid" \
+      > "$marker_temporary"
+  ); then
+    rm -f "$marker_temporary"
+    return 1
+  fi
+  chown root:wheel "$marker_temporary" || { rm -f "$marker_temporary"; return 1; }
+  chmod -N "$marker_temporary" || { rm -f "$marker_temporary"; return 1; }
+  chmod 0600 "$marker_temporary" || { rm -f "$marker_temporary"; return 1; }
+  [ -f "$marker_temporary" ] && [ ! -L "$marker_temporary" ] || {
+    rm -f "$marker_temporary"
+    return 1
+  }
+  if ! read_path_metadata "$marker_temporary" ||
+    [ "$path_uid:$path_gid:$path_special_mode:$path_mode" != 0:0:0:600 ] ||
+    ! path_has_no_extended_acl "$marker_temporary"; then
+    echo "UnionC Agent ownership marker temporary file was not secured" >&2
+    rm -f "$marker_temporary"
+    return 1
+  fi
+  mv -f "$marker_temporary" "$ownership_marker" || {
+    rm -f "$marker_temporary"
+    return 1
+  }
+  # This same-directory rename preserves the already-verified inode metadata. It is the final
+  # commit point: no later fallible check may trigger rollback after the new proof is published.
 }
 
 dscl_value() {

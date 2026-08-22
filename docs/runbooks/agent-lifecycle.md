@@ -312,9 +312,11 @@ sudo /usr/local/share/unionc-agent/uninstall.sh --purge
 sudo /usr/local/share/unionc-agent/uninstall.sh --purge --yes
 ```
 
-交互 purge 要求输入 `PURGE`。root-only ownership marker 只允许删除本 pkg 实际创建且未被
-改造的 `_unioncagent` 用户/组；冲突时保留 marker、receipt 和卸载器并返回非零，修复后
-可以重试。
+交互 purge 要求输入 `PURGE`。ownership 目录必须是无扩展 ACL 的 `root:wheel 0700` 真实目录，
+其中 marker 必须是无扩展 ACL 的 `root:wheel 0600` 真实文件；二者与创建时 UID/GID、实时
+账户属性共同证明归属。缺失证明但同名账户仍存在、Directory Service 查询失败、元数据/ACL
+漂移或账户被改造时，purge 不删除账户，并保留 bookkeeping、receipt 和卸载器，返回 `2`；
+修复后可以安全重试。
 
 ## 6. 发布签名和供应链验证
 

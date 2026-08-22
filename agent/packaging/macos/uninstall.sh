@@ -21,6 +21,7 @@ created_user_uid="-"
 created_user_primary_gid="-"
 created_group_gid="-"
 ownership_marker_valid=0
+ownership_dir_state="absent"
 purge_incomplete=0
 owned_user_blocked=0
 
@@ -41,6 +42,72 @@ EOF
 die() {
   echo "unionc-agent uninstall: $*" >&2
   exit 1
+}
+
+read_path_metadata() {
+  metadata_path="$1"
+  path_metadata="$(stat -f '%u:%g:%Mp:%Lp' "$metadata_path" 2>/dev/null)" || return 1
+  path_uid="${path_metadata%%:*}"
+  path_metadata_remainder="${path_metadata#*:}"
+  path_gid="${path_metadata_remainder%%:*}"
+  path_metadata_remainder="${path_metadata_remainder#*:}"
+  path_special_mode="${path_metadata_remainder%%:*}"
+  path_mode="${path_metadata_remainder#*:}"
+  case "$path_uid:$path_gid:$path_special_mode:$path_mode" in
+    *[!0-9:]*|:*|*::*|*:) return 1 ;;
+  esac
+}
+
+path_has_no_extended_acl() {
+  acl_path="$1"
+  acl_listing="$(LC_ALL=C ls -lde "$acl_path" 2>/dev/null)" || return 1
+  acl_first_line=""
+  acl_has_additional_lines=0
+  while IFS= read -r acl_line; do
+    if [ -z "$acl_first_line" ]; then
+      acl_first_line="$acl_line"
+    else
+      acl_has_additional_lines=1
+    fi
+  done <<EOF
+$acl_listing
+EOF
+  [ -n "$acl_first_line" ] && [ "$acl_has_additional_lines" -eq 0 ] || return 1
+  acl_permissions="${acl_first_line%% *}"
+  case "$acl_permissions" in
+    ''|*+) return 1 ;;
+  esac
+}
+
+validate_ownership_directory() {
+  [ -d "$ownership_dir" ] && [ ! -L "$ownership_dir" ] || return 1
+  read_path_metadata "$ownership_dir" || return 1
+  [ "$path_uid:$path_gid:$path_special_mode:$path_mode" = 0:0:0:700 ] || return 1
+  path_has_no_extended_acl "$ownership_dir"
+}
+
+validate_ownership_marker_path() {
+  marker_path="$1"
+  [ -f "$marker_path" ] && [ ! -L "$marker_path" ] || return 1
+  read_path_metadata "$marker_path" || return 1
+  [ "$path_uid:$path_gid:$path_special_mode:$path_mode" = 0:0:0:600 ] || return 1
+  path_has_no_extended_acl "$marker_path"
+}
+
+ownership_directory_contains_only_marker() {
+  ownership_entry_count=0
+  for ownership_entry in \
+    "$ownership_dir"/* \
+    "$ownership_dir"/.[!.]* \
+    "$ownership_dir"/..?*
+  do
+    if [ ! -e "$ownership_entry" ] && [ ! -L "$ownership_entry" ]; then
+      continue
+    fi
+    [ "$ownership_entry" = "$ownership_marker" ] || return 1
+    ownership_entry_count=$((ownership_entry_count + 1))
+  done
+  [ "$ownership_entry_count" -eq 1 ]
 }
 
 for argument in "$@"; do
@@ -78,15 +145,22 @@ EOF
 fi
 
 load_ownership_marker() {
-  [ -e "$ownership_marker" ] || return 0
-  if [ ! -f "$ownership_marker" ] || [ -L "$ownership_marker" ]; then
-    echo "Ignoring unsafe Agent account ownership marker; account and group will be preserved" >&2
+  if [ ! -e "$ownership_dir" ] && [ ! -L "$ownership_dir" ]; then
+    return 0
+  fi
+  if ! validate_ownership_directory; then
+    ownership_dir_state="invalid"
+    echo "Ignoring unsafe Agent account ownership directory; account and group will be preserved" >&2
     purge_incomplete=1
     return 0
   fi
-  marker_owner="$(stat -f '%Su:%Sg' "$ownership_marker" 2>/dev/null || true)"
-  if [ "$marker_owner" != "root:wheel" ]; then
-    echo "Ignoring non-root Agent account ownership marker; account and group will be preserved" >&2
+  ownership_dir_state="valid"
+
+  if [ ! -e "$ownership_marker" ] && [ ! -L "$ownership_marker" ]; then
+    return 0
+  fi
+  if ! validate_ownership_marker_path "$ownership_marker"; then
+    echo "Ignoring unsafe Agent account ownership marker; account and group will be preserved" >&2
     purge_incomplete=1
     return 0
   fi
@@ -158,6 +232,12 @@ load_ownership_marker() {
   fi
   if [ "$marker_invalid" -eq 1 ]; then
     echo "Ignoring invalid Agent account ownership IDs; account and group will be preserved" >&2
+    purge_incomplete=1
+    return 0
+  fi
+  if [ "$marker_user" -eq 1 ] && [ "$marker_group" -eq 1 ] &&
+    [ "$marker_user_primary_gid" != "$marker_group_gid" ]; then
+    echo "Ignoring inconsistent Agent account ownership binding; account and group will be preserved" >&2
     purge_incomplete=1
     return 0
   fi
@@ -442,10 +522,15 @@ if [ "$user_record_state" = "present" ]; then
       [ "$user_uid" = "$created_user_uid" ] &&
       [ "$user_gid" = "$created_user_primary_gid" ] &&
       [ "$user_gid" = "$current_group_gid" ]; then
-      dscl . -delete "/Users/$user"
-      user_created=0
-      created_user_uid="-"
-      created_user_primary_gid="-"
+      if dscl . -delete "/Users/$user"; then
+        user_created=0
+        created_user_uid="-"
+        created_user_primary_gid="-"
+      else
+        echo "Could not delete marker-owned $user; preserving its ownership proof" >&2
+        purge_incomplete=1
+        owned_user_blocked=1
+      fi
     else
       echo "Preserving $user because its attributes no longer match the installer account" >&2
       purge_incomplete=1
@@ -456,6 +541,8 @@ if [ "$user_record_state" = "present" ]; then
       echo "Preserving pre-existing $user account (not created by this package)" >&2
     else
       echo "Preserving $user because no root-only marker proves this package created it" >&2
+      purge_incomplete=1
+      owned_user_blocked=1
     fi
   fi
 elif [ "$user_record_state" = "absent" ]; then
@@ -496,9 +583,13 @@ if [ "$group_record_state" = "present" ]; then
     esac
     if [ "$group_name" = "UnionC Agent" ] && [ "$group_gid" = "$created_group_gid" ] &&
       [ "$group_in_use" -eq 0 ]; then
-      dscl . -delete "/Groups/$group"
-      group_created=0
-      created_group_gid="-"
+      if dscl . -delete "/Groups/$group"; then
+        group_created=0
+        created_group_gid="-"
+      else
+        echo "Could not delete marker-owned $group; preserving its ownership proof" >&2
+        purge_incomplete=1
+      fi
     else
       echo "Preserving $group because its attributes changed or it is still in use" >&2
       purge_incomplete=1
@@ -508,6 +599,7 @@ if [ "$group_record_state" = "present" ]; then
       echo "Preserving pre-existing $group group (not created by this package)" >&2
     else
       echo "Preserving $group because no root-only marker proves this package created it" >&2
+      purge_incomplete=1
     fi
   fi
 elif [ "$group_record_state" = "absent" ]; then
@@ -518,26 +610,80 @@ elif [ "$group_created" -eq 1 ]; then
   purge_incomplete=1
 fi
 
-if [ "$ownership_marker_valid" -eq 1 ]; then
-  if [ "$user_created" -eq 0 ] && [ "$group_created" -eq 0 ]; then
-    rm -f "$ownership_marker"
-  else
-    marker_temporary="$ownership_dir/.account-ownership.$$"
+write_ownership_marker() {
+  marker_temporary="$ownership_dir/.account-ownership.$$"
+  if [ -e "$marker_temporary" ] || [ -L "$marker_temporary" ]; then
+    echo "Refusing to replace an unsafe Agent ownership marker temporary path" >&2
+    return 1
+  fi
+  if ! (
     umask 077
-    {
-      printf 'format=%s\n' "$package_version"
-      printf 'user_created=%s\n' "$user_created"
-      printf 'user_uid=%s\n' "$created_user_uid"
-      printf 'user_primary_gid=%s\n' "$created_user_primary_gid"
-      printf 'group_created=%s\n' "$group_created"
-      printf 'group_gid=%s\n' "$created_group_gid"
-    } > "$marker_temporary"
-    chown root:wheel "$marker_temporary"
-    chmod 0600 "$marker_temporary"
-    mv -f "$marker_temporary" "$ownership_marker"
+    set -C
+    printf 'format=%s\nuser_created=%s\nuser_uid=%s\nuser_primary_gid=%s\ngroup_created=%s\ngroup_gid=%s\n' \
+      "$package_version" "$user_created" "$created_user_uid" \
+      "$created_user_primary_gid" "$group_created" "$created_group_gid" \
+      > "$marker_temporary"
+  ); then
+    rm -f "$marker_temporary"
+    return 1
+  fi
+  chown root:wheel "$marker_temporary" || { rm -f "$marker_temporary"; return 1; }
+  chmod -N "$marker_temporary" || { rm -f "$marker_temporary"; return 1; }
+  chmod 0600 "$marker_temporary" || { rm -f "$marker_temporary"; return 1; }
+  validate_ownership_marker_path "$marker_temporary" || {
+    rm -f "$marker_temporary"
+    return 1
+  }
+  mv -f "$marker_temporary" "$ownership_marker" || {
+    rm -f "$marker_temporary"
+    return 1
+  }
+  # The temporary file and destination share the same validated directory, so rename(2)
+  # preserves the already-verified inode metadata. Keep the rename as the final commit point:
+  # a fallible post-commit check could no longer roll the account deletion back safely.
+}
+
+if [ "$ownership_marker_valid" -eq 1 ]; then
+  if ! validate_ownership_directory ||
+    ! validate_ownership_marker_path "$ownership_marker"; then
+    echo "Agent ownership proof changed during purge; preserving it for inspection" >&2
+    ownership_marker_valid=0
+    purge_incomplete=1
+  elif [ "$user_created" -eq 0 ] && [ "$group_created" -eq 0 ]; then
+    if [ "$purge_incomplete" -eq 0 ]; then
+      if ! ownership_directory_contains_only_marker; then
+        echo "Preserving the completed Agent ownership marker because bookkeeping contains unexpected entries" >&2
+        purge_incomplete=1
+      elif ! rm -f "$ownership_marker" ||
+        [ -e "$ownership_marker" ] || [ -L "$ownership_marker" ]; then
+        echo "Could not remove the completed Agent ownership marker" >&2
+        purge_incomplete=1
+        if [ ! -e "$ownership_marker" ] && [ ! -L "$ownership_marker" ] &&
+          ! write_ownership_marker; then
+          echo "Could not restore the completed Agent ownership marker" >&2
+        fi
+      elif rmdir "$ownership_dir" >/dev/null 2>&1; then
+        ownership_dir_state="absent"
+      else
+        echo "Could not remove the Agent ownership directory; restoring its completed marker" >&2
+        purge_incomplete=1
+        if ! write_ownership_marker; then
+          echo "Could not restore the completed Agent ownership marker" >&2
+        fi
+      fi
+    fi
+  elif ! write_ownership_marker; then
+    echo "Could not safely update the remaining Agent ownership proof" >&2
+    purge_incomplete=1
   fi
 fi
-rmdir "$ownership_dir" >/dev/null 2>&1 || true
+
+if [ "$ownership_dir_state" = "valid" ] && [ "$purge_incomplete" -eq 0 ]; then
+  if ! rmdir "$ownership_dir" >/dev/null 2>&1; then
+    echo "Could not remove the non-empty Agent ownership directory" >&2
+    purge_incomplete=1
+  fi
+fi
 
 if [ "$purge_incomplete" -eq 1 ]; then
   cat >&2 <<EOF
