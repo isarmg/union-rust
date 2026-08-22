@@ -8,8 +8,7 @@ use anyhow::{Context, bail};
 use flate2::{Compression, write::GzEncoder};
 use reqwest::{Certificate, Client, Identity, StatusCode};
 
-use serde::{Deserialize, Deserializer, de::Error as _};
-use uuid::Uuid;
+use unionc_protocol::AgentReportAck;
 
 use crate::{
     config::AgentConfig,
@@ -290,33 +289,6 @@ impl SendError {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AgentReportAck {
-    #[serde(deserialize_with = "deserialize_canonical_uuid")]
-    host_id: Uuid,
-    #[serde(deserialize_with = "deserialize_canonical_uuid")]
-    report_id: Uuid,
-    #[allow(dead_code)]
-    accepted: bool,
-    #[allow(dead_code)]
-    received_at: chrono::DateTime<chrono::Utc>,
-}
-
-fn deserialize_canonical_uuid<'de, D>(deserializer: D) -> Result<Uuid, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = String::deserialize(deserializer)?;
-    let parsed = Uuid::parse_str(&value).map_err(D::Error::custom)?;
-    if parsed.to_string() != value {
-        return Err(D::Error::custom(
-            "UUID must use canonical lowercase hyphenated text",
-        ));
-    }
-    Ok(parsed)
-}
-
 fn validate_unionc_ack(
     status: StatusCode,
     content_type: Option<&str>,
@@ -341,7 +313,7 @@ fn validate_unionc_ack(
             "UnionC returned HTTP {status} without a valid report acknowledgement: {error}"
         ))
     })?;
-    if ack.host_id.to_string() != report.host.id || ack.report_id.to_string() != report.report_id {
+    if ack.host_id != report.host.id || ack.report_id != report.report_id {
         return Err(SendError::Transient(format!(
             "UnionC acknowledgement identity mismatch: expected host {} report {}, got host {} \
              report {}",
@@ -389,6 +361,7 @@ fn ensure_success(status: StatusCode, body: String, target: &str) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
+    use uuid::Uuid;
 
     use super::*;
     use crate::model::{AgentHealth, CpuSnapshot, HostIdentity, MemorySnapshot, SystemSnapshot};

@@ -34,7 +34,14 @@ Account deletion and Directory Service failure behavior can be checked without c
 accounts:
 
 ```sh
-./agent/packaging/macos/tests/account-safety-test.sh
+./agent/packaging/macos/tests/validate-packaging.sh
+```
+
+生成 pkg 后，可在一次性 macOS 测试机中执行 Release 使用的真实安装生命周期测试。该命令
+会安装、卸载并永久清理 Agent，必须显式确认系统变更：
+
+```bash
+./agent/packaging/macos/tests/smoke-pkg.sh --allow-system-changes dist/unionc-agent-0.3.2.pkg
 ```
 
 ## Install and pair

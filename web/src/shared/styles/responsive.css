@@ -1,0 +1,117 @@
+/* 旋转动画：用于加载中的图标。 */
+.spin {
+  /* animation 是动画属性的简写，格式：名称 时长 缓动函数 播放次数
+   * spin → @keyframes 里定义的动画名称
+   * 0.9s → 一圈旋转用时 0.9 秒
+   * linear → 匀速旋转（不加速不减速，区别于默认的 ease 慢快慢）
+   * infinite → 无限循环，直到元素消失 */
+  animation: spin 0.9s linear infinite;
+}
+
+/* @keyframes 定义动画的关键帧。
+ * 这里只写了 to（= 100%），省略了 from（= 0%，即原始状态），
+ * 表示从"没有旋转"到"旋转 360 度"，配合 linear + infinite 就是持续匀速转圈。 */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── 响应式布局（媒体查询）────────────────────────────────────────────────── */
+/* @media (max-width: Xpx) 意思是：当浏览器宽度 ≤ Xpx 时，里面的样式才生效。
+ * 这里按屏幕宽度设置了 4 个断点，从大到小依次收窄布局。 */
+
+/* 平板宽度（≤ 1080px）：导航项收起为纯图标，内容块从 6 列降为 4 列。 */
+@media (max-width: 1080px) {
+  .nav-item span {
+    display: none;
+  }
+
+  .nav-item {
+    padding: 0 8px;
+  }
+
+  .split-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .content-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+/* 中等屏幕（≤ 960px）：所有内容块从 4 列降为 3 列。 */
+@media (max-width: 960px) {
+  .content-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* 手机宽度（≤ 760px）：导航栏允许换行，间距收紧。 */
+@media (max-width: 760px) {
+  .app-shell {
+    gap: 12px;
+    padding: 12px;
+  }
+
+  .sidebar {
+    position: static; /* 手机上不粘性固定，避免遮挡内容 */
+    flex-wrap: wrap;
+    padding: 6px 10px;
+    gap: 6px;
+  }
+
+  .nav-list {
+    flex-wrap: wrap;
+  }
+
+  .nav-item span {
+    display: inline; /* 手机上恢复文字标签 */
+  }
+
+  .nav-item {
+    padding: 4px 8px;
+    gap: 4px;
+    font-size: 13px;
+  }
+
+  .main {
+    padding: 12px 8px;
+  }
+
+  .section-header {
+    display: grid;
+  }
+
+  h1 {
+    font-size: 28px;
+  }
+
+  .card-actions {
+    width: 100%;
+  }
+
+  .disk-row {
+    grid-template-columns: 1fr;
+  }
+
+  .search-box,
+  .search-box input {
+    width: 100%;
+  }
+}
+
+/* 窄屏（≤ 640px）：3 列降为 2 列。 */
+@media (max-width: 640px) {
+  .content-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* 极窄屏（≤ 480px）：降为单列。 */
+@media (max-width: 480px) {
+  .content-grid {
+    grid-template-columns: 1fr;
+  }
+}
+

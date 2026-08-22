@@ -21,7 +21,8 @@ use uuid::Uuid;
 /// 补充速率必须高于它，否则配置合法的 Agent 会被自家限流挡住。
 const _: () = assert!(TokenBucket::REFILL_PER_SECOND > 10.0);
 
-/// Agent 断线恢复时一轮最多补传 32 个批次（见 agent/src/main.rs 的 flush_spool）。
+/// Agent 断线恢复时一轮最多补传 32 个批次
+/// （见 agent/src/agent_app/delivery/spool.rs 的 flush_spool）。
 /// 桶容量小于这个数，恢复过程就会被限流打断。
 const _: () = assert!(TokenBucket::CAPACITY >= 32.0);
 

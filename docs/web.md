@@ -53,7 +53,7 @@ cd web && npm ci && npm run build
 sudo rsync -a --delete dist/ /var/www/unionc/
 ```
 
-反代配置见 [Caddyfile.console.example](Caddyfile.console.example)。两个要点：
+反代配置见 [Caddyfile.console.example](examples/caddy/Caddyfile.console.example)。两个要点：
 
 1. **SPA 回落**：未命中的路径要 `try_files {path} /index.html`，
    否则刷新子路由会 404；

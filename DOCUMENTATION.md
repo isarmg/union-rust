@@ -307,25 +307,23 @@ unionc-agent status # 只读本地身份、凭据和积压状态
 
 ### 3.3 管理台前端 `web`
 
-React 19 + TypeScript + Vite + TanStack Query。约 4,000 行（含前端单元测试）。
+React 19 + TypeScript + Vite + TanStack Query，按业务功能聚合源码和相邻测试。
 
 | 文件 | 职责 |
 |---|---|
 | `main.tsx` | 挂载入口；集中设置 React Query 默认策略（关窗口聚焦重取、重试 1 次、staleTime 5 秒） |
-| `App.tsx` | 会话门禁、侧边导航、主题切换、视图懒加载 |
-| `api.ts` | 统一请求层：15 秒超时、CSRF 头注入、401 事件广播、错误归一化 |
-| `api-paths.ts` | 路径构造（统一做 URL 编码，避免 id 里的特殊字符越界） |
-| `types.ts` | 与服务端响应一一对应的类型 |
-| `hooks.ts` | SSE 订阅与重连、事件/轮询状态合并、本机指标滑窗、输入防抖 |
-| `query-keys.ts` | 查询键集中定义，避免各处手写字符串导致失效失灵 |
-| `utils.ts` | 字节/时长/时间格式化与百分比钳制 |
-| `layout.ts` | 卡片旁浮动面板的定位计算 |
-| `components/ui.tsx` | 卡片、指标、进度条、状态灯等共享组件 |
-| `views/OverviewView.tsx` | 总览：健康、本机资源、服务状态 |
-| `views/MonitoringView.tsx` | 主机监控：列表、实时指标、硬件详情、能力、历史曲线、注册管理 |
-| `views/SunshineView.tsx` | Sunshine 主机、应用、客户端、配置管理 |
-| `views/SettingsView.tsx` | 管理员改密 |
-| `views/LogsView.tsx` | Sunshine 日志查看 |
+| `app/App.tsx` | 会话门禁、侧边导航、主题切换、顶层查询和视图懒加载 |
+| `app/hooks.ts` / `realtimeApi.ts` | SSE 订阅与重连、事件/轮询状态合并、本机指标滑窗 |
+| `shared/api/client.ts` / `paths.ts` | 统一请求、超时、CSRF、401 广播、错误归一化和安全路径片段 |
+| `shared/components/` / `shared/lib/` | 通用 UI、ErrorBoundary 与格式化函数 |
+| `features/<feature>/api.ts` | 对应业务的端点调用；共享请求底座不感知具体功能 |
+| `features/<feature>/types.ts` | 与该业务 Server 响应对应的类型 |
+| `features/<feature>/queryKeys.ts` | 该业务的查询键，参数必须完整进入缓存键 |
+| `features/overview/` | 总览：健康、本机资源、服务状态 |
+| `features/monitoring/` | 主机监控：列表、实时指标、硬件详情、能力、历史曲线、配对管理 |
+| `features/sunshine/` | Sunshine 主机、应用、客户端、配置管理 |
+| `features/logs/` / `settings/` | Sunshine 日志与管理员改密 |
+| `features/agent-activation/` | 公开激活页、严格路径解析与有限摘要 API |
 
 **数据刷新策略**
 
@@ -339,8 +337,8 @@ React 19 + TypeScript + Vite + TanStack Query。约 4,000 行（含前端单元�
 | 本机资源 | 20 秒 | 服务端后台每 2 秒采样，这里只是取快照 |
 | Sunshine 主机列表 | 检测中 1.5 秒；稳定后 30 秒 | 仅读取服务端健康快照；TLS/认证探测由唯一后台任务执行，增删改先立即更新页面 |
 
-**视图懒加载**：首屏只需要 Overview，其余四个视图用 `React.lazy` 按需加载
-（`SunshineView.tsx` 单文件约 850 行），由 `Suspense` 兜住切换时的空窗。
+**视图懒加载**：首屏只需要 Overview，其余四个视图用 `React.lazy` 按需加载，
+由 `Suspense` 兜住切换时的空窗。
 
 SQLite 无需浏览器配置。若启动时数据库无法创建或不符合当前 schema，Server 直接启动失败；运行中本地
 磁盘或文件异常会使 `/api/ready` 返回 503，各业务请求返回明确的持久层错误。
@@ -687,7 +685,7 @@ capabilities 数组），而控制台每 10 秒轮询一次。`COUNT(*) OVER()` 
 ### 6.4 报文契约
 
 上报报文中的实测 `interval_seconds` 必须落在 **0.1 ~ 3600** 秒，权威入口是
-`server/src/monitoring/model.rs` 的 `AgentReport::validate()`。Agent 配置使用整数秒（最小 1），
+`server/src/monitoring/model/mod.rs` 的 `AgentReport::validate()`。Agent 配置使用整数秒（最小 1），
 并在 `agent/src/config.rs` 中保证 jitter 后的最坏实测周期不超过 3600；SQLite schema 只用
 `0 < interval_seconds <= 3600` 做粗粒度存储防线，不能代替 HTTP 入口的精确下限。修改任一层
 都必须联合评估另外两层和 Agent 的 jitter 边界测试，而不是机械地假设三者数值完全相同。
@@ -939,9 +937,9 @@ SQLite 与 Server 位于同一台 Linux 主机的本地磁盘。该拓扑不支�
 
 | 示例配置 | 用途 |
 |---|---|
-| `docs/Caddyfile.console.example` | 管理台：TLS 终止 + 静态前端托管 + API 反代（必需） |
-| `docs/Caddyfile.agent-api.example` | 独立 Agent 域名 + mTLS（可选） |
-| `docs/Caddyfile.telemetry.example` | OTLP 遥测入口 + mTLS（可选，见 `docs/monitoring.md`） |
+| `docs/examples/caddy/Caddyfile.console.example` | 管理台：TLS 终止 + 静态前端托管 + API 反代（必需） |
+| `docs/examples/caddy/Caddyfile.agent-api.example` | 独立 Agent 域名 + mTLS（可选） |
+| `docs/examples/caddy/Caddyfile.telemetry.example` | OTLP 遥测入口 + mTLS（可选，见 `docs/monitoring.md`） |
 
 前端是纯静态产物，**由反向代理提供**，UnionC 服务端只提供 API。
 
@@ -1090,7 +1088,7 @@ purge；Windows x64 WiX MSI 把只读程序与可变状态分离，以原生 SCM
 必须先在 Web 撤销实例，再执行平台 purge。tag 发布强制 Windows Authenticode、macOS
 Developer ID + notarization/staple，以及签名的制品清单；缺少签名 secret 时发布失败，不会
 降级上传未签名正式制品。完整命令、路径、恢复语义和 secret 清单见
-[Agent 安装、同版本重装、卸载与退役](docs/agent-lifecycle.md)。
+[Agent 安装、同版本重装、卸载与退役](docs/runbooks/agent-lifecycle.md)。
 
 ### 9.5 Agent 配置
 
@@ -1310,8 +1308,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 ### 11.2 本地运行
 
 ```bash
-# 服务端（数据目录默认为 ./unionc/data，可用 UNIONC_DATA_DIR 覆盖）
-cargo run -p unionc
+# 服务端（Linux / WSL；统一使用仓库根 .runtime/server）
+./tools/dev-server.sh
 
 # 前端
 cd web && npm ci && npm run dev

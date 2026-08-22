@@ -14,6 +14,10 @@ Linux / Windows / macOS。在非 Linux 上开发 Agent 时需显式指定 `-p un
 
 ## 构建与测试
 
+本地启动 Server 时统一把运行数据放在仓库的 `.runtime/server`，避免从不同工作目录启动后
+生成多个难以辨认的数据目录。完整的 Bash、PowerShell 示例见
+[本地开发运行手册](docs/runbooks/development.md)。
+
 ```bash
 cargo build --workspace
 cargo test --workspace
@@ -84,7 +88,7 @@ npm run build
 
 三层约束相关但刻意不完全相同，修改任一层都要检查另外两层及 jitter 测试：
 
-- `server/src/monitoring/model.rs`：HTTP 报文中的**实测间隔**权威契约为 `[0.1, 3600]`；
+- `server/src/monitoring/model/mod.rs`：HTTP 报文中的**实测间隔**权威契约为 `[0.1, 3600]`；
 - `agent/src/config.rs`：配置是整数秒（最小 1），并保证 jitter 后最坏实测周期不超过 3600，
   `MIN/MAX_REPORT_INTERVAL_SECONDS` 保护生成报文；
 - `server/schema/sqlite.sql`：存储层只设 `(0, 3600]` 粗粒度 CHECK，
@@ -113,7 +117,7 @@ fn multibyte_input_is_rejected_instead_of_panicking() { ... }
 
 1. 从 `main` 切分支
 2. 保持提交聚焦，提交信息说明动机而非改动清单
-3. 涉及行为变更时同步更新 `DOCUMENTATION.md` 与 `docs/` 下相应文档
+3. 涉及行为变更时同步更新 `DOCUMENTATION.md` 与 [文档中心](docs/README.md) 中列出的相应主题文档
 4. 安全相关问题请勿走 PR，见 [SECURITY.md](SECURITY.md)
 
 ## 许可

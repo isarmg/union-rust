@@ -202,7 +202,7 @@ x64 MSI 和 macOS universal pkg。Windows 发布先签名 Agent、托盘伴侣�
 APT/YUM/winget/MDM 等渠道元数据继续由分发系统负责。
 
 三平台全新安装、同版本重装、普通卸载、purge、退役顺序和发布 secret 见
-[Agent 安装、同版本重装、卸载与退役](agent-lifecycle.md)。
+[Agent 安装、同版本重装、卸载与退役](runbooks/agent-lifecycle.md)。
 
 Linux 基础 unit 使用 `PrivateDevices=yes`，适合不采集 GPU 的主机。需要 GPU 时，确认
 本机存在 `render`、`video` 组后，再安装 `packaging/linux/unionc-agent-gpu.conf` 作为

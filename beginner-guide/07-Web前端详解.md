@@ -14,7 +14,9 @@ Web 管理台是一个纯静态 React 应用。开发时由 Vite 提供，生产
 - Vitest、Testing Library、jsdom；
 - ESLint 与 React Hooks 规则。
 
-前端没有 React Router，也没有 Redux、Zustand 一类通用状态库。普通导航是 `App.tsx` 的本地 `view` 状态；刷新后回到总览。只有公开 `/agent/activate/{uuid}` 由手写路径解析器识别。
+前端没有 React Router，也没有 Redux、Zustand 一类通用状态库。普通导航是
+`app/App.tsx` 的本地 `view` 状态；刷新后回到总览。只有公开 `/agent/activate/{uuid}` 由
+`features/agent-activation/route.ts` 的手写路径解析器识别。
 
 ## 2. 从 HTML 到组件树
 
@@ -44,7 +46,7 @@ web/index.html
 
 `StrictMode` 只在开发阶段帮助发现副作用问题。effect 必须正确清理 EventSource、定时器和监听器，否则开发模式下的重复挂载会暴露泄漏。
 
-## 3. `App.tsx` 的两道门
+## 3. `app/App.tsx` 的两道门
 
 ### 3.1 激活路径门
 
@@ -75,11 +77,15 @@ web/index.html
 - SSE 连接状态；
 - `/api/services` 和 `/api/system/resources` 顶层查询。
 
-只有 `OverviewView` 直接进入首屏 bundle；Monitoring、Sunshine、Logs、Settings 使用 `React.lazy` 与 `Suspense` 按需下载。Sunshine 视图很大，不应让只看总览的用户也承担其初始解析成本。
+只有 `OverviewView` 直接进入首屏 bundle；Monitoring、Sunshine、Logs、Settings 使用
+`React.lazy` 与 `Suspense` 按需下载。即使各视图已经拆成较小组件，按功能分块仍能避免
+只看总览的用户下载其他业务代码。
 
 ## 5. 统一 API 层
 
-`web/src/api.ts` 是浏览器普通 `fetch` API 请求的统一入口；SSE 则由 `hooks.ts` 使用 `EventSource` 建立。内部 `request<T>` 统一处理：
+`web/src/shared/api/client.ts` 是浏览器普通 `fetch` 请求的共享底座；每个业务功能在自己的
+`features/<feature>/api.ts` 声明端点和 DTO。SSE 则由 `app/hooks.ts` 与 `app/realtimeApi.ts`
+配合建立。共享的 `request<T>` 统一处理：
 
 1. 默认 15 秒 AbortController 超时；
 2. `credentials: "include"`，随同源请求发送 Cookie；
@@ -95,7 +101,7 @@ web/index.html
 
 ## 6. URL、类型和缓存键
 
-### 6.1 `api-paths.ts`
+### 6.1 `shared/api/paths.ts`
 
 所有动态 path segment 经过 `encodeURIComponent`：
 
@@ -105,9 +111,9 @@ monitoringHostPath(id)
 
 这防止 ID 中的 `/`、`?` 或其他字符改变 URL 结构。即使当前 ID 是 UUID，也应保持统一构造规则。
 
-### 6.2 `types.ts`
+### 6.2 功能内的 `types.ts`
 
-前端维护 Server 响应的 TypeScript 表达，包括：
+前端按功能维护 Server 响应的 TypeScript 表达，包括：
 
 - Server 本机资源；
 - 服务状态；
@@ -117,9 +123,9 @@ monitoringHostPath(id)
 
 这些类型不是运行时验证器。若后端类型改变，前端类型、API、视图和测试必须在同一个仓库版本一起更新。
 
-### 6.3 `query-keys.ts`
+### 6.3 功能内的 `queryKeys.ts`
 
-缓存键集中定义。例如：
+缓存键在对应功能内集中定义。例如：
 
 ```text
 ["monitoring-hosts", limit, offset]
@@ -145,7 +151,8 @@ POST /api/events/ticket
 
 旧 EventSource 的排队回调不能关闭已经替换它的新连接，因此 hook 会比较回调所属实例。
 
-`App.tsx` 中 services：SSE 连通时不轮询，断线时每 10 秒；Server 本机 resources 每 20 秒。SSE 只更新服务状态，不替代本机资源和 Agent 历史查询。
+`app/App.tsx` 中 services：SSE 连通时不轮询，断线时每 10 秒；Server 本机 resources 每
+20 秒。SSE 只更新服务状态，不替代本机资源和 Agent 历史查询。
 
 ## 8. `useMetricHistory`
 
@@ -186,6 +193,8 @@ POST /api/events/ticket
 - `null` 明确显示 N/A，历史缺口不补成零。
 
 这是理解“同一实体有列表摘要、详情、历史、生命周期”多缓存协调的好例子。
+入口只协调状态；主机摘要、硬件详情、历史指标和 Agent 邀请分别位于
+`features/monitoring/components/`，纯展示推导位于 `model.ts`。
 
 ### 9.3 `SunshineView`
 
@@ -198,7 +207,10 @@ POST /api/events/ticket
 - 删除成功清理该主机 apps/clients/config/logs 子缓存；
 - 探测 pending 时短轮询，稳定后降低频率。
 
-`sunshine-data.ts` 放置纯数据变换，`sunshine-host-query.ts` 把 GET 结果与进行中的 mutation 做屏障合并。原因是旧 GET 响应可能晚于新 PATCH 返回，不能让旧快照覆盖用户刚保存的值。
+`features/sunshine/data.ts` 放置纯数据变换，`queries.ts` 把 GET 结果与进行中的 mutation 做
+屏障合并。原因是旧 GET 响应可能晚于新 PATCH 返回，不能让旧快照覆盖用户刚保存的值。
+主机卡、详情面板、应用和客户端区位于 `features/sunshine/components/`；`SunshineView`
+负责选择与组合，不再承载所有表单和列表实现。
 
 ### 9.4 `LogsView`
 
@@ -214,29 +226,31 @@ POST /api/events/ticket
 
 ## 10. 通用组件与工具
 
-`components/ui.tsx` 包含卡片行、操作区、指标、sparkline、服务卡、状态灯、进度条、notice、loading、日志查看器等。业务视图应优先复用这些原语，避免每页重新发明布局和错误样式。
+`shared/components/ui.tsx` 包含卡片行、操作区、指标、sparkline、状态灯、进度条、notice、
+loading 等共享原语。日志查看器和服务卡等带业务语义的组件分别留在 `features/logs/` 与
+`features/overview/`，避免共享层反向依赖具体功能。
 
-`utils.ts` 统一格式化：
+`shared/lib/format.ts` 统一格式化：
 
 - 字节、KiB、每秒速率；
 - 百分比；
 - 日期时间。
 
-格式化集中后，KB/MB/GB/TB 阈值和精度不易跨页面漂移。监控页的 N/A 规则目前由 `MonitoringView.tsx` 中的局部辅助函数负责；`utils.ts` 的普通字节格式化不应被误当成统一缺失值策略。
+格式化集中后，KB/MB/GB/TB 阈值和精度不易跨页面漂移。监控页的 N/A 规则目前由
+`features/monitoring/MonitoringView.tsx` 中的局部辅助函数负责；普通字节格式化不应被
+误当成统一缺失值策略。
 
 `ErrorBoundary` 捕获 React 渲染异常并提供整页刷新恢复。它不能捕获事件 handler 或所有异步 Promise 错误，因此 API 查询仍需正常 error UI。
 
 ## 11. 样式系统
 
-`styles.css` 只控制导入顺序：
+`app/styles.css` 只控制导入顺序：
 
-1. `tokens.css`：颜色、字体等浅/深主题变量；
-2. `content-cards.css`：卡片网格与内部行列；
-3. `foundation.css`：壳、导航、按钮、表单、登录、通用结构；
-4. `settings-and-responsive.css`：设置页与通用响应式规则；
-5. `sunshine.css`；
-6. `monitoring.css`；
-7. `activation.css`。
+1. `shared/styles/tokens.css`：颜色、字体等浅/深主题变量；
+2. `shared/styles/content-cards.css`：卡片网格与内部行列；
+3. `shared/styles/foundation.css`：壳、导航、按钮、表单、登录、通用结构；
+4. `shared/styles/responsive.css`：通用响应式规则；
+5. 各功能自己的 `settings.css`、`sunshine.css`、`monitoring.css`、`activation.css`。
 
 卡片网格随宽度从 6 列逐步降到 1 列；业务组件不应通过硬编码像素破坏统一断点。动画还应遵守 `prefers-reduced-motion`。
 
@@ -270,7 +284,9 @@ resources.network.transmitted_bytes_per_second
 
 ### 补测试
 
-当前没有 `OverviewView` 的相邻测试文件；新建 `web/src/views/OverviewView.test.tsx`，渲染一个 `SystemResources` fixture，断言“上传”和格式化值出现。然后运行：
+当前没有 `OverviewView` 的相邻测试文件；新建
+`web/src/features/overview/OverviewView.test.tsx`，渲染一个 `SystemResources` fixture，
+断言“上传”和格式化值出现。然后运行：
 
 ```bash
 cd web
@@ -285,20 +301,20 @@ npm run build
 ## 13. 前端阅读顺序
 
 1. `index.html`、`main.tsx`；
-2. `App.tsx`；
-3. `OverviewView.tsx`、`components/ui.tsx`、`utils.ts`；
-4. `types.ts`、`api.ts`、`api-paths.ts`、`query-keys.ts`；
-5. `hooks.ts`；
-6. 较小的 Logs、Settings、Activation；
-7. Monitoring；
-8. `sunshine-data.ts`、`sunshine-host-query.ts`、SunshineView；
+2. `app/App.tsx`；
+3. `features/overview/`、`shared/components/ui.tsx`、`shared/lib/format.ts`；
+4. `shared/api/`，再看每个功能的 `types.ts`、`api.ts` 和 `queryKeys.ts`；
+5. `app/hooks.ts` 与 `app/realtimeApi.ts`；
+6. 较小的 `features/logs`、`settings`、`agent-activation`；
+7. `features/monitoring`；
+8. `features/sunshine/data.ts`、`queries.ts`、`SunshineView.tsx`；
 9. 样式与相邻测试；
 10. `scripts/publish-static.mjs`。
 
 ## 14. 本章自检
 
 1. 为什么页面刷新后普通导航会回到总览？
-2. `api.ts` 为何要严格检查预期状态和媒体类型？
+2. `shared/api/client.ts` 为何要严格检查预期状态和媒体类型？
 3. query key 为什么必须包含 hostId 和分页参数？
 4. SSE 断开时 services 如何继续更新？
 5. Sunshine 乐观写入为何需要防旧 GET 覆盖？

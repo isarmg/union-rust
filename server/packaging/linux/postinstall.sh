@@ -275,7 +275,7 @@ UnionC 已安装。首次启动前请完成：
 内嵌 SQLite 数据库会自动创建为 /var/lib/unionc/unionc.db；无需安装或配置数据库服务。
 数据目录固定为 /var/lib/unionc（由 unit 中的 UNIONC_DATA_DIR 指定）。
 UnionC 强制绑定回环，请在其前部署 HTTPS 反向代理；完整请求头契约见
-docs/Caddyfile.console.example。
+docs/examples/caddy/Caddyfile.console.example。
 
 EOF
 else

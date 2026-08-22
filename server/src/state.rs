@@ -45,7 +45,8 @@ pub struct AgentAuthenticationState {
 /// 令牌桶限流。
 ///
 /// 之所以用令牌桶而非固定窗口计数：Agent 在断线恢复时会一次补传最多 32 个批次
-/// （见 `agent/src/main.rs` 的 `flush_spool`），固定窗口会把这种**合法**的突发
+/// （见 `agent/src/agent_app/delivery/spool.rs` 的 `flush_spool`），固定窗口会把这种
+/// **合法**的突发
 /// 误判为滥用。令牌桶允许攒下额度应对突发，同时约束长期平均速率。
 #[derive(Debug)]
 pub struct TokenBucket {

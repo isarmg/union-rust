@@ -179,8 +179,20 @@ MSI；四者必须具有同一有效签名者。`unionc-agent.exe` 必须是 Con
 静态/构建验证：
 
 ```powershell
+.\tests\Test-PeSubsystems.ps1
 .\tests\Test-WixAuthoring.ps1
 ```
+
+PE 校验默认读取仓库的 `target\x86_64-pc-windows-msvc\release`，也可用
+`-ReleaseRoot PATH` 指定已构建目录。生成 MSI 后，可在**管理员权限、没有既有 UnionC Agent
+安装或状态的一次性 Windows VM** 中运行与 Release 相同的生命周期测试：
+
+```powershell
+.\tests\Test-MsiLifecycle.ps1 -ProductVersion 0.3.2 -ArtifactDirectory ..\..\..\dist
+```
+
+脚本会真实安装、卸载并 purge 软件；它会先拒绝不干净的机器，不能在生产或需要保留
+UnionC Agent 状态的主机上执行。
 
 发布前还必须在一次性、干净的 x64 Windows VM 中执行：恶意预置状态拒绝、同名 service
 碰撞拒绝、其他 UpgradeCode 版本 fail closed、fresh install、同一 0.3.2 repair/reinstall、浏览器

@@ -7,9 +7,9 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { App } from "./App";
-import { ErrorBoundary } from "./components/ErrorBoundary";
-import "./styles.css";
+import { App } from "./app/App";
+import { ErrorBoundary } from "./shared/components/ErrorBoundary";
+import "./app/styles.css";
 
 // React Query 负责缓存和刷新后端数据。
 // 这里集中设置默认策略，避免每个 useQuery 都重复写相同配置。

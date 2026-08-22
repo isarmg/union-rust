@@ -1,0 +1,9 @@
+/* 样式入口只声明加载顺序；具体规则按职责放在 styles/ 下。 */
+@import "../shared/styles/tokens.css";
+@import "../shared/styles/content-cards.css";
+@import "../shared/styles/foundation.css";
+@import "../shared/styles/responsive.css";
+@import "../features/settings/settings.css";
+@import "../features/sunshine/sunshine.css";
+@import "../features/monitoring/monitoring.css";
+@import "../features/agent-activation/activation.css";

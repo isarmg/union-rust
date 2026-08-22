@@ -1,0 +1,45 @@
+/* ── 账号管理 ── */
+.account-form {
+  display: grid;
+  gap: 10px;
+  max-width: 480px;
+  margin-top: 16px;
+}
+
+.account-form .inline-field input.input-error {
+  border-color: var(--danger);
+}
+
+.account-success {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--success, #2a9d5c);
+  font-weight: 700;
+}
+
+/* 修改密码侧面板（行内弹出，紧接在账号行下方） */
+.settings-side-panel {
+  margin-top: 16px;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-width: 480px;
+}
+
+.settings-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.settings-panel-header strong {
+  font-size: 14px;
+}
+
+.settings-side-panel .account-form {
+  margin-top: 0;
+}

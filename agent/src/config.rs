@@ -13,7 +13,8 @@ const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:8081/api/agent/v1/report";
 
 /// 上报报文中“实测间隔”的**服务端契约上限**。
 ///
-/// `server/src/monitoring/model.rs` 是 HTTP 契约的权威实现，本常量必须与其上限同步。
+/// `server/src/monitoring/model/validation.rs` 是 HTTP 契约的权威实现，本常量必须与其
+/// 上限同步。
 /// SQLite 只用 `0 < interval_seconds <= 3600` 做粗粒度存储防线；Agent 的配置值则是
 /// 整数秒（最小 1），并按 jitter 后最坏实测周期校验，因此三层边界相关但并不完全相同。
 ///

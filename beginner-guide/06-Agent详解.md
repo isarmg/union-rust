@@ -25,10 +25,12 @@ Agent 不负责：
 
 ## 2. 可执行入口
 
-主要入口 `agent/src/main.rs` 同时支持前台 CLI 和服务运行。Windows 还有：
+`agent/src/main.rs` 现在是极薄入口，只调用 `agent_app::entry()`。前台 CLI、服务启动和主
+运行流程位于 `agent/src/agent_app/`：`mod.rs` 负责编排，`diagnostics.rs` 负责只读诊断，
+`delivery/` 负责一次投递、常驻 worker、spool 补传与相邻测试。Windows 还有：
 
-- `bin/unionc-agent-tray.rs`：普通用户通知区、本机随机回环配置页、服务控制入口；
-- `bin/unionc-agent-maintenance.rs`：安装器调用的固定维护动作。
+- `bin/unionc-agent-tray.rs` → `windows/tray/`：普通用户通知区、本机随机回环配置页、服务控制入口；
+- `bin/unionc-agent-maintenance.rs` → `windows/maintenance/`：安装器调用的固定维护动作。
 
 核心库模块在 `agent/src/lib.rs` 导出，使集成测试与多个 binary 复用同一实现。
 
@@ -127,7 +129,7 @@ Agent 不负责：
 
 ## 7. 采样节拍与投递解耦
 
-`run_loop` 创建：
+`agent_app/delivery/runtime.rs` 的 `run_loop` 创建：
 
 - 一个采样循环；
 - 一个容量很小的投递唤醒通道；
@@ -192,7 +194,8 @@ spool 使用短时本地 mutex 序列化 enqueue/淘汰/ack，防止容量核算
 
 ## 10. 每轮补传为什么最多 32 份
 
-`flush_spool` 每批最多发送 32 个报告，然后主动让出调度。下一批无需等待新采样 tick，但批次边界能避免长时间断线后一个 Agent 持续独占网络和 runtime。
+`agent_app/delivery/spool.rs` 的 `flush_spool` 每批最多发送 32 个报告，然后主动让出调度。
+下一批无需等待新采样 tick，但批次边界能避免长时间断线后一个 Agent 持续独占网络和 runtime。
 
 Server 的每主机令牌桶容量 64，正好允许正常的 32 份补传突发并保留余量，同时限制长期平均写入速率。
 
@@ -220,7 +223,7 @@ Reporter 不只看 `response.is_success()`。它限制响应体大小，并检�
 
 ## 13. 可恢复配对状态机
 
-`pairing.rs` 的本地状态包括：
+`pairing/` 的本地状态包括：
 
 ```text
 Creating → Pending → Activating → Active
@@ -235,6 +238,10 @@ Creating → Pending → Activating → Active
 - Active 最后写入，代表本地状态完全一致。
 
 网络中断后 `pair` 或 `run` 可以继续当前请求，不生成会让浏览器批准对象错位的新 secret。并发配对通过状态目录锁与 generation 防护。
+
+`pairing/mod.rs` 组织状态机主流程，`state.rs` 放持久状态结构，`client.rs` 处理有界 HTTP
+响应，`activation.rs` 与 `commit.rs` 分离激活结果和本地提交步骤。阅读时仍应从 `mod.rs`
+的 `start_or_resume` 开始，再按调用进入子模块。
 
 ## 14. 本地私有文件
 

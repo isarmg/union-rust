@@ -1,0 +1,138 @@
+/// Inspect or advance the locally persisted pairing state once. Callers own
+/// scheduling so an interactive `pair` command and an already-running service
+/// can safely poll the same request without holding a lock or a socket.
+pub async fn poll_existing(config: &AgentConfig) -> anyhow::Result<Option<PairingProgress>> {
+    let Some(state) = load_state_for_network(config)? else {
+        return Ok(None);
+    };
+    let state = match state {
+        creating @ StoredPairingState::Creating { .. } => {
+            let waiting = finish_create_request(config, creating).await?;
+            return Ok(Some(PairingProgress::Waiting(waiting)));
+        }
+        activating @ StoredPairingState::Activating { .. } => {
+            return recover_activating(config, activating).map(Some);
+        }
+        state => state,
+    };
+    let pending_for_activation = state.clone();
+    let StoredPairingState::Pending {
+        version,
+        generation,
+        request_id,
+        activation_url,
+        expires_at,
+        poll_interval,
+        pairing_endpoint,
+        report_endpoint,
+        bearer_secret: _,
+        host_name: _,
+        polling_secret,
+    } = state
+    else {
+        return Ok(Some(progress_from_terminal(state)));
+    };
+    validate_state_version(version)?;
+
+    let endpoint = format!(
+        "{}/{request_id}/status",
+        pairing_endpoint.trim_end_matches('/')
+    );
+    let client = build_client(config)?;
+    let response = client
+        .post(&endpoint)
+        .header(header::AUTHORIZATION, format!("Pairing {polling_secret}"))
+        .send()
+        .await
+        .context("failed to poll browser pairing status")?;
+    let status = response.status();
+    let content_type = pairing_response_content_type(&response);
+    let body = read_limited(response, "pairing status").await?;
+    ensure_pairing_status(status, &[StatusCode::OK], &body, "poll pairing status")?;
+    let polled: PairingStatusResponse =
+        parse_pairing_json(&body, &content_type, &endpoint, "pairing status response")?;
+
+    match polled.status {
+        PairingStatus::Waiting => {
+            if polled.instance_id.is_some() {
+                bail!("waiting pairing response unexpectedly included instance_id");
+            }
+            Ok(Some(PairingProgress::Waiting(PairingSession {
+                generation,
+                request_id,
+                activation_url,
+                expires_at,
+                poll_interval,
+            })))
+        }
+        PairingStatus::Active => {
+            let instance_id = polled
+                .instance_id
+                .context("active pairing response omitted instance_id")?;
+            let instance_id = Uuid::parse_str(&instance_id)
+                .expect("protocol rejected a non-canonical paired instance UUID");
+            persist_active_credentials(config, pending_for_activation, instance_id).map(Some)
+        }
+        PairingStatus::Denied => {
+            if polled.instance_id.is_some() {
+                bail!("denied pairing response unexpectedly included instance_id");
+            }
+            let expected_report_endpoint = report_endpoint.clone();
+            let denied = StoredPairingState::Denied {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                request_id,
+                activation_url: activation_url.clone(),
+                report_endpoint,
+                completed_at: Utc::now(),
+            };
+            compare_and_persist_pending(
+                config,
+                generation,
+                request_id,
+                &pairing_endpoint,
+                &expected_report_endpoint,
+                &polling_secret,
+                &denied,
+            )?;
+            Ok(Some(PairingProgress::Denied {
+                generation,
+                request_id,
+                activation_url,
+            }))
+        }
+        PairingStatus::Expired => {
+            if polled.instance_id.is_some() {
+                bail!("expired pairing response unexpectedly included instance_id");
+            }
+            let expected_report_endpoint = report_endpoint.clone();
+            let expired = StoredPairingState::Expired {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                request_id,
+                activation_url: activation_url.clone(),
+                report_endpoint,
+                completed_at: Utc::now(),
+            };
+            compare_and_persist_pending(
+                config,
+                generation,
+                request_id,
+                &pairing_endpoint,
+                &expected_report_endpoint,
+                &polling_secret,
+                &expired,
+            )?;
+            Ok(Some(PairingProgress::Expired {
+                generation,
+                request_id,
+                activation_url,
+            }))
+        }
+    }
+}
+
+fn load_state_for_network(config: &AgentConfig) -> anyhow::Result<Option<StoredPairingState>> {
+    let _lock = lock_state(config)?;
+    load_state(config)
+}

@@ -10,6 +10,16 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  format:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
   # ── 服务端：Linux only（lib.rs 有 compile_error! 固定该约束）──────────────
   server:
     name: server (linux)
@@ -18,10 +28,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: fmt
-        run: cargo fmt --all -- --check
       - name: clippy
         run: cargo clippy -p unionc --all-targets -- -D warnings
       - name: test
@@ -39,7 +47,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: resolve Windows MSI version from Cargo metadata
         if: runner.os == 'Windows'
@@ -58,8 +66,6 @@ jobs:
               throw "Windows MSI requires a strict MAJOR.MINOR.PATCH Cargo version; found '$version'."
           }
           "version=$version" >> $env:GITHUB_OUTPUT
-      - name: fmt
-        run: cargo fmt --all -- --check
       - name: clippy
         run: cargo clippy -p unionc-agent --all-targets -- -D warnings
       - name: test
@@ -73,7 +79,7 @@ jobs:
         run: cargo check -p unionc-agent --no-default-features --features nvidia --all-targets
       - name: validate Linux packaging lifecycle
         if: runner.os == 'Linux'
-        run: sh agent/packaging/linux/test-lifecycle.sh
+        run: sh agent/packaging/linux/tests/test-lifecycle.sh
       - name: build native Windows service, tray companion, and maintenance helper
         if: runner.os == 'Windows'
         run: >-
@@ -82,62 +88,7 @@ jobs:
       - name: verify native Windows PE subsystems
         if: runner.os == 'Windows'
         shell: powershell
-        run: |
-          Set-StrictMode -Version Latest
-          $ErrorActionPreference = "Stop"
-
-          function Assert-PeSubsystem {
-              param(
-                  [Parameter(Mandatory = $true)]
-                  [string] $LiteralPath,
-                  [Parameter(Mandatory = $true)]
-                  [int] $ExpectedSubsystem
-              )
-
-              if (-not (Test-Path -LiteralPath $LiteralPath -PathType Leaf)) {
-                  throw "PE file does not exist: $LiteralPath"
-              }
-              $bytes = [System.IO.File]::ReadAllBytes($LiteralPath)
-              if ($bytes.Length -lt 64) {
-                  throw "PE file is too short to contain a DOS header: $LiteralPath"
-              }
-
-              $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3c)
-              if ($peOffset -lt 0 -or $peOffset -gt ($bytes.Length - 24)) {
-                  throw "PE header offset is outside the file: $LiteralPath"
-              }
-              if ([System.BitConverter]::ToUInt32($bytes, $peOffset) -ne 0x00004550) {
-                  throw "PE signature is invalid: $LiteralPath"
-              }
-
-              $optionalHeaderSize = [System.BitConverter]::ToUInt16($bytes, $peOffset + 20)
-              $optionalHeaderOffset = $peOffset + 24
-              if ($optionalHeaderSize -lt 70 -or
-                  $optionalHeaderOffset -gt ($bytes.Length - $optionalHeaderSize)) {
-                  throw "PE optional header is truncated: $LiteralPath"
-              }
-              $magic = [System.BitConverter]::ToUInt16($bytes, $optionalHeaderOffset)
-              if ($magic -ne 0x010b -and $magic -ne 0x020b) {
-                  throw "PE optional header has an unsupported magic value: $LiteralPath"
-              }
-
-              $actualSubsystem = [System.BitConverter]::ToUInt16($bytes, $optionalHeaderOffset + 68)
-              if ($actualSubsystem -ne $ExpectedSubsystem) {
-                  throw "Unexpected PE subsystem for ${LiteralPath}: expected $ExpectedSubsystem, found $actualSubsystem."
-              }
-              Write-Host "Verified PE subsystem $actualSubsystem for $LiteralPath"
-          }
-
-          $releaseRoot = Join-Path $env:GITHUB_WORKSPACE "target\x86_64-pc-windows-msvc\release"
-          Assert-PeSubsystem `
-              -LiteralPath (Join-Path $releaseRoot "unionc-agent.exe") `
-              -ExpectedSubsystem 3
-          Assert-PeSubsystem `
-              -LiteralPath (Join-Path $releaseRoot "unionc-agent-maintenance.exe") `
-              -ExpectedSubsystem 2
-          Assert-PeSubsystem `
-              -LiteralPath (Join-Path $releaseRoot "unionc-agent-tray.exe") `
-              -ExpectedSubsystem 2
+        run: agent\packaging\windows\tests\Test-PeSubsystems.ps1
       - name: validate WiX MSI authoring
         if: runner.os == 'Windows'
         shell: powershell
@@ -155,17 +106,7 @@ jobs:
       - name: validate macOS packaging lifecycle
         if: runner.os == 'macOS'
         shell: bash
-        run: |
-          set -euo pipefail
-          sh -n agent/packaging/macos/build-pkg.sh
-          sh -n agent/packaging/macos/scripts/preinstall
-          sh -n agent/packaging/macos/scripts/postinstall
-          sh -n agent/packaging/macos/uninstall.sh
-          sh -n agent/packaging/macos/unionc-agent-logrotate
-          sh -n agent/packaging/macos/tests/account-safety-test.sh
-          plutil -lint agent/packaging/macos/com.unionc.agent.plist
-          plutil -lint agent/packaging/macos/com.unionc.agent.logrotate.plist
-          sh agent/packaging/macos/tests/account-safety-test.sh
+        run: sh agent/packaging/macos/tests/validate-packaging.sh
 
   # ── OTLP 端到端：手写的 protobuf 编码必须由真实 Collector 校验 ───────────────
   #

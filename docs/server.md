@@ -18,7 +18,7 @@ Proxmox VE、静态博客、文件服务及其路由、模型、进程管理和�
 在仓库根目录运行：
 
 ```bash
-cargo run -p unionc
+./tools/dev-server.sh
 ```
 
 默认监听 `127.0.0.1:8081`。首次开发启动会在数据目录下生成 `unionc-config.json` 和开发管理员密码。
@@ -31,11 +31,18 @@ cargo run -p unionc
 | 场景 | 数据目录 |
 |---|---|
 | 设置了 `UNIONC_DATA_DIR` | 该路径（会被规范化为绝对路径） |
-| 未设置（仓库内开发） | `<当前工作目录>/unionc/data` |
+| 仓库内开发约定 | `<仓库根>/.runtime/server`（通过环境变量显式设置） |
+| 未设置时的程序默认值 | `<当前工作目录>/unionc/data` |
 
 数据库固定为 `<数据目录>/unionc.db`：空目录会按当前唯一 schema 创建；已有文件必须与当前
 schema 精确一致，否则启动失败。它只能放在 Server 本机磁盘，
 不支持把活动数据库放在 NFS、SMB 或其他网络文件系统，也不提供多 Server 共享写入。
+
+`tools/dev-server.sh` 会解析仓库根目录、创建 `.runtime/server`，导出绝对
+`UNIONC_DATA_DIR` 后从根 manifest 启动 Server；即使从其他目录调用也不会改变数据位置。
+程序不会自动迁移以前生成的 `unionc/data` 或 `server/unionc/data`；需要保留的数据应先停止
+相关进程并按备份/恢复流程处理，不要直接删除数据库、WAL、配置或密钥。跨平台开发命令见
+[本地开发运行手册](runbooks/development.md)。
 
 解析结果会在启动日志第一行打印出来。**部署务必显式设置 `UNIONC_DATA_DIR`**——
 随包提供的 systemd unit 已设为 `/var/lib/unionc`。依赖工作目录的相对路径意味着从别的
@@ -117,6 +124,10 @@ attestation 和 GitHub Release，Agent 原有 job 与生命周期门禁保持独
 - 运行在线一致性备份、当前 schema 清单恢复与完整性检查；
 - 在 Fedora 容器真实安装 RPM，验证脚本顺序、服务状态与完整性检查；
 - 验证普通移除保留 `/var/lib/unionc`，不会把卸载误当成数据 purge。
+
+这些长生命周期检查位于 `server/packaging/linux/tests/`，不再内嵌在 GitHub Actions
+YAML 中。RPM 检查只改变一次性 Fedora 容器；DEB 检查会真实安装、启动和移除本机服务，
+因此只允许在可丢弃的 Ubuntu 测试机执行，并要求显式传入 `--allow-system-changes`。
 
 原始二进制制品不代替 unit、环境文件和账户初始化，适合自定义部署系统；一般主机安装优先
 使用 DEB/RPM。
@@ -279,8 +290,8 @@ Error: encrypted secret uses key id '2025q1', which is not in the keyring
 
 按 IP 的限流取 XFF 的**最右**一项（离本服务最近的可信代理写入的那个）。该实现假定
 前面恰好有一层可信反代；若再叠加 CDN，必须相应调整，否则取到的是内网地址。
-管理台域名的反代配置见 `docs/Caddyfile.console.example`（含静态前端托管与 SSE 缓冲设置）；
-需要独立 Agent 域名和 mTLS 时，可从 `docs/Caddyfile.agent-api.example` 开始。
+管理台域名的反代配置见 `docs/examples/caddy/Caddyfile.console.example`（含静态前端托管与 SSE 缓冲设置）；
+需要独立 Agent 域名和 mTLS 时，可从 `docs/examples/caddy/Caddyfile.agent-api.example` 开始。
 
 ## 验证
 

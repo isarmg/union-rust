@@ -46,7 +46,7 @@ OTLP；当前报告得到 UnionC ACK 后才同步尝试 OTLP，因而可能等�
 只记告警，不把已经成功的 UnionC 上报改判为失败。
 
 反向代理配置（含 mTLS 客户端证书校验）见
-[Caddyfile.telemetry.example](Caddyfile.telemetry.example)。
+[Caddyfile.telemetry.example](examples/caddy/Caddyfile.telemetry.example)。
 
 > **注意**：OTLP 导出由 `otlp` feature 门控，默认构建不启用。需要显式使用
 > `--features otlp` 构建；未编译该 feature 却为投递命令配置 `otlp_endpoint` 或

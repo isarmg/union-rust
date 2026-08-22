@@ -8,6 +8,8 @@ agent/packaging/windows/wix/obj/
 # ── 运行时数据与密钥（严禁入库）────────────────────────────────────────────
 # unionc.secret 是 AES-256 主密钥，unionc-config.json 含管理员 bcrypt 哈希，
 # unionc.db 含资产、遥测、审计、凭据哈希与加密运行配置。
+# 仓库内开发统一使用根目录 .runtime/server；整个 .runtime 都属于可重建或敏感的本地状态。
+/.runtime/
 # 数据目录现在由 infra/paths.rs 解析为绝对路径（UNIONC_DATA_DIR，缺省为
 # <CWD>/unionc/data），因此开发环境下仍可能在仓库内落地。用 ** 通配确保任何
 # 层级下的运行时数据都不会被提交。

@@ -30,7 +30,7 @@ rg -n "ResourceMonitor" server/src/system server/src/startup.rs server/src/state
 
 ```text
 后台 ResourceMonitor → AppState 快照 → HTTP handler
-→ api.ts → App useQuery → OverviewView
+→ features/overview/api.ts → app/App.tsx 的 useQuery → OverviewView
 ```
 
 验收问题：HTTP 请求是否会临时执行一次系统采样？页面曲线是否来自 SQLite？正确答案都是否。
@@ -99,7 +99,7 @@ rg -n "accepted.*false|accepted: false|duplicate" server/tests agent/src
 1. 先确认 API type 已有 `transmitted_bytes_per_second`；
 2. 复用 `Metric` 和格式化函数；
 3. 不修改 Server/protocol/schema；
-4. 新建 `web/src/views/OverviewView.test.tsx` 覆盖该视图；
+4. 新建 `web/src/features/overview/OverviewView.test.tsx` 覆盖该视图；
 5. 通过 lint、test、typecheck、build；
 6. 用窄屏检查响应式布局。
 
@@ -341,4 +341,4 @@ Server 撤销与本地 purge 是两个管理域。完整退役需要两边都做
 - [ ] 解释生产反代、备份、恢复和密钥轮换的安全顺序；
 - [ ] 遇到远程命令需求时识别它越过项目明确边界。
 
-完成后，继续把根目录 `DOCUMENTATION.md`、`PROJECT_CAPABILITIES.md` 和 `docs/` 作为日常参考手册；源码与测试始终是最终事实。
+完成后，继续从 `docs/README.md` 文档中心查阅 `DOCUMENTATION.md`、能力边界和各组件手册；源码与测试始终是最终事实。

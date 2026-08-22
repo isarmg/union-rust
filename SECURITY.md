@@ -99,12 +99,12 @@ Agent 报文的**每一个**文本字段都有长度上界并禁止控制字符�
   Hardened Runtime、notarytool 和 staple；全部制品另有 GPG 签名清单与 provenance
   attestation。开发手动构建的未签名制品不得当作正式发布。
 
-完整流程见 [`docs/agent-lifecycle.md`](docs/agent-lifecycle.md)。
+完整流程见 [`docs/runbooks/agent-lifecycle.md`](docs/runbooks/agent-lifecycle.md)。
 
 ## 加固建议
 
 - 用 `UNIONC_SECRET_KEY` 显式提供主密钥，不要依赖开发环境的自动生成
-- 需要时为报告数据入口启用 mTLS（见 `docs/Caddyfile.agent-api.example`）。不要对首次
+- 需要时为报告数据入口启用 mTLS（见 `docs/examples/caddy/Caddyfile.agent-api.example`）。不要对首次
   pairing/bootstrap 入口预先要求客户端证书；应拆分域名或路由，并在配对后另行签发证书
 - 首次部署后立即移除 `UNIONC_ALLOW_BOOTSTRAP` 与 `UNIONC_BOOTSTRAP_PASSWORD`
 - 退役主机使用 `POST /api/monitoring/hosts/{id}/revoke` 持久撤销；不要直接删除数据库行，

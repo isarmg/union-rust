@@ -16,6 +16,8 @@ $releasePath = Join-Path $workspaceRoot ".github\workflows\release.yml"
 $helperPath = Join-Path $agentRoot "src\bin\unionc-agent-maintenance.rs"
 $trayPath = Join-Path $agentRoot "src\bin\unionc-agent-tray.rs"
 $mainPath = Join-Path $agentRoot "src\main.rs"
+$helperSourceRoot = Join-Path $agentRoot "src\windows\maintenance"
+$traySourceRoot = Join-Path $agentRoot "src\windows\tray"
 
 foreach ($required in @(
     $packagePath, $projectPath, $buildPath, $workspacePath, $releasePath,
@@ -25,6 +27,31 @@ foreach ($required in @(
         throw "Required WiX packaging file is missing: $required"
     }
 }
+foreach ($requiredSourceRoot in @($helperSourceRoot, $traySourceRoot)) {
+    if (-not (Test-Path -LiteralPath $requiredSourceRoot -PathType Container)) {
+        throw "Required Windows Agent source tree is missing: $requiredSourceRoot"
+    }
+}
+
+function Get-SourceBundle {
+    param(
+        [Parameter(Mandatory = $true)][string]$EntryPath,
+        [Parameter(Mandatory = $true)][string]$SourceRoot
+    )
+
+    # The Windows binaries deliberately keep tiny entrypoints and place their
+    # implementation in module trees. Packaging invariants must inspect the
+    # complete compiled/text-included source, not just the entrypoint wrapper.
+    $parts = @(
+        Get-Content -LiteralPath $EntryPath -Raw -Encoding UTF8
+        Get-ChildItem -LiteralPath $SourceRoot -Recurse -File |
+            Sort-Object -Property FullName |
+            ForEach-Object {
+                Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8
+            }
+    )
+    return ($parts -join "`n")
+}
 
 [xml]$package = Get-Content -LiteralPath $packagePath -Raw
 [xml]$project = Get-Content -LiteralPath $projectPath -Raw
@@ -33,8 +60,10 @@ $projectText = Get-Content -LiteralPath $projectPath -Raw
 $buildText = Get-Content -LiteralPath $buildPath -Raw
 $workspaceText = Get-Content -LiteralPath $workspacePath -Raw
 $releaseText = Get-Content -LiteralPath $releasePath -Raw
-$helperText = Get-Content -LiteralPath $helperPath -Raw
-$trayText = Get-Content -LiteralPath $trayPath -Raw -Encoding UTF8
+$helperEntryText = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
+$trayEntryText = Get-Content -LiteralPath $trayPath -Raw -Encoding UTF8
+$helperText = Get-SourceBundle -EntryPath $helperPath -SourceRoot $helperSourceRoot
+$trayText = Get-SourceBundle -EntryPath $trayPath -SourceRoot $traySourceRoot
 $mainText = Get-Content -LiteralPath $mainPath -Raw
 
 foreach ($removedScript in @(
@@ -63,16 +92,16 @@ foreach ($removedHelperMechanism in @('TaskScheduler', 'ScheduledTask', 'legacy'
 }
 
 $guiSubsystemAttribute = '#![cfg_attr(windows, windows_subsystem = "windows")]'
-if (-not $helperText.StartsWith($guiSubsystemAttribute)) {
+if (-not $helperEntryText.StartsWith($guiSubsystemAttribute)) {
     throw "The MSI maintenance helper must use the Windows GUI subsystem to avoid flashing console windows."
 }
-if ([regex]::Matches($helperText, [regex]::Escape($guiSubsystemAttribute)).Count -ne 1) {
+if ([regex]::Matches($helperEntryText, [regex]::Escape($guiSubsystemAttribute)).Count -ne 1) {
     throw "The MSI maintenance helper must declare the Windows GUI subsystem exactly once."
 }
-if (-not $trayText.StartsWith($guiSubsystemAttribute)) {
+if (-not $trayEntryText.StartsWith($guiSubsystemAttribute)) {
     throw "The user-session tray companion must use the Windows GUI subsystem."
 }
-if ([regex]::Matches($trayText, [regex]::Escape($guiSubsystemAttribute)).Count -ne 1) {
+if ([regex]::Matches($trayEntryText, [regex]::Escape($guiSubsystemAttribute)).Count -ne 1) {
     throw "The tray companion must declare the Windows GUI subsystem exactly once."
 }
 if ($mainText -match 'windows_subsystem') {
