@@ -59,7 +59,7 @@ pub async fn rekey() -> anyhow::Result<()> {
     let settings = Settings::load(&runtime)?;
     ensure_layout()?;
     let database_path = database::database_path(&settings)?;
-    let _database_lock = database::acquire_database_lock(&database_path)?;
+    let _locks = database::acquire_offline_maintenance_locks(&database_path)?;
     secrets::init(runtime.mode)?;
     let pool = database::connect(&settings).await?;
     database::initialize_schema(&pool).await?;

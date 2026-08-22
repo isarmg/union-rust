@@ -14,8 +14,7 @@ pub async fn restore_database(
     if target == Path::new(":memory:") {
         bail!("cannot restore an in-memory database");
     }
-    let _lock = acquire_database_lock(&target)?;
-    let _maintenance_lock = acquire_maintenance_lock(&target)?;
+    let _locks = acquire_offline_maintenance_locks(&target)?;
     let target_exists = path_exists(&target)?;
     if target_exists && !force {
         bail!(

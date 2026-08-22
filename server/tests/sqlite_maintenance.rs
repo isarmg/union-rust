@@ -163,6 +163,15 @@ async fn backup_restore_and_integrity_use_a_validated_atomic_snapshot() {
 
     let blocked_backup = directory.join("blocked-by-maintenance-lock.db");
     let maintenance_lock = database::acquire_maintenance_lock(&live).unwrap();
+    let error = database::acquire_offline_maintenance_locks(&live)
+        .err()
+        .expect("offline maintenance must not bypass an active maintenance lock");
+    assert!(
+        error
+            .to_string()
+            .contains("another UnionC database maintenance command"),
+        "offline rekey/restore must serialize with online maintenance: {error:#}"
+    );
     let error = database::backup_database(&settings, &blocked_backup)
         .await
         .unwrap_err();

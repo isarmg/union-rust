@@ -32,6 +32,13 @@ pub struct DatabaseFileLock {
     _file: File,
 }
 
+/// Locks required by an offline operation that both mutates the live database
+/// and must exclude every explicit maintenance command.
+pub struct OfflineMaintenanceLocks {
+    _server: DatabaseFileLock,
+    _maintenance: DatabaseFileLock,
+}
+
 pub fn acquire_database_lock(database: &Path) -> anyhow::Result<DatabaseFileLock> {
     let file = open_fixed_lock_file(database, SERVER_LOCK_FILE_NAME)?;
     file.try_lock().map_err(|error| {
@@ -57,6 +64,21 @@ pub fn acquire_maintenance_lock(database: &Path) -> anyhow::Result<DatabaseFileL
         )
     })?;
     Ok(DatabaseFileLock { _file: file })
+}
+
+/// Exclude the running Server first, then serialize with online backup,
+/// integrity checks, restore, and other maintenance. Both locks use
+/// non-blocking acquisition, so a competing command fails instead of creating
+/// a lock-order deadlock.
+pub fn acquire_offline_maintenance_locks(
+    database: &Path,
+) -> anyhow::Result<OfflineMaintenanceLocks> {
+    let server = acquire_database_lock(database)?;
+    let maintenance = acquire_maintenance_lock(database)?;
+    Ok(OfflineMaintenanceLocks {
+        _server: server,
+        _maintenance: maintenance,
+    })
 }
 
 fn open_fixed_lock_file(database: &Path, file_name: &str) -> anyhow::Result<File> {
