@@ -230,11 +230,7 @@ fn load_or_create_key() -> anyhow::Result<[u8; 32]> {
     let key_path = crate::infra::paths::secret_key_path();
     let key_path = key_path.as_path();
     match fs::metadata(key_path) {
-        Ok(_) => {
-            ensure_private_key_permissions(key_path)?;
-            let value = fs::read_to_string(key_path)?;
-            return decode_key(value.trim());
-        }
+        Ok(_) => return load_existing_private_key(key_path),
         Err(err) if err.kind() != std::io::ErrorKind::NotFound => return Err(err.into()),
         Err(_) => {}
     }
@@ -247,12 +243,20 @@ fn load_or_create_key() -> anyhow::Result<[u8; 32]> {
     match write_private_key_file(key_path, encoded.as_bytes()) {
         Ok(()) => decode_key(encoded.trim()),
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-            ensure_private_key_permissions(key_path)?;
-            let value = fs::read_to_string(key_path)?;
-            decode_key(value.trim())
+            load_existing_private_key(key_path)
         }
         Err(err) => Err(err.into()),
     }
+}
+
+fn load_existing_private_key(path: &std::path::Path) -> anyhow::Result<[u8; 32]> {
+    ensure_private_key_permissions(path)?;
+    // A previous startup can have created and fsynced the file, then failed
+    // while syncing its directory. Retry the directory durability step before
+    // accepting that key and allowing encrypted database writes.
+    sync_key_directory(path)?;
+    let value = fs::read_to_string(path)?;
+    decode_key(value.trim())
 }
 
 fn ensure_private_key_permissions(path: &std::path::Path) -> std::io::Result<()> {
@@ -268,6 +272,27 @@ fn ensure_private_key_permissions(path: &std::path::Path) -> std::io::Result<()>
 }
 
 fn write_private_key_file(path: &std::path::Path, content: &[u8]) -> std::io::Result<()> {
+    write_private_key_file_with_sync(path, content, fs::File::sync_all, |directory| {
+        fs::File::open(directory)?.sync_all()
+    })
+}
+
+fn sync_key_directory(path: &std::path::Path) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "secret key path has no parent directory",
+        )
+    })?;
+    fs::File::open(parent)?.sync_all()
+}
+
+fn write_private_key_file_with_sync(
+    path: &std::path::Path,
+    content: &[u8],
+    sync_file: impl FnOnce(&fs::File) -> std::io::Result<()>,
+    sync_directory: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     use std::{io::Write, os::unix::fs::OpenOptionsExt};
     let mut file = fs::OpenOptions::new()
         .write(true)
@@ -275,11 +300,25 @@ fn write_private_key_file(path: &std::path::Path, content: &[u8]) -> std::io::Re
         .mode(0o600)
         .open(path)?;
     file.write_all(content)?;
-    file.sync_all()
+    sync_file(&file)?;
+    drop(file);
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "secret key path has no parent directory",
+        )
+    })?;
+    // fsync on the file persists its contents, but not the new directory
+    // entry. Do not let startup accept the generated key until both are
+    // durable; otherwise a power loss can leave encrypted SQLite rows without
+    // the only key capable of decrypting them.
+    sync_directory(parent)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
 
     #[test]
@@ -295,6 +334,47 @@ mod tests {
         assert!(decrypt("plain").is_err());
         assert!(decrypt("enc:v2:primary:not-base64").is_err());
         assert!(decrypt("enc:v2:primary:AAAA").is_err());
+    }
+
+    #[test]
+    fn generated_key_syncs_file_before_its_directory_entry() {
+        let directory = tempfile::tempdir().expect("temporary key directory");
+        let path = directory.path().join("unionc.secret");
+        let order = Mutex::new(Vec::new());
+
+        write_private_key_file_with_sync(
+            &path,
+            b"test-key\n",
+            |_| {
+                order.lock().unwrap().push("file");
+                Ok(())
+            },
+            |synced_directory| {
+                assert_eq!(synced_directory, directory.path());
+                order.lock().unwrap().push("directory");
+                Ok(())
+            },
+        )
+        .expect("durable key write");
+
+        assert_eq!(fs::read(&path).unwrap(), b"test-key\n");
+        assert_eq!(*order.lock().unwrap(), ["file", "directory"]);
+    }
+
+    #[test]
+    fn generated_key_is_not_accepted_when_directory_sync_fails() {
+        let directory = tempfile::tempdir().expect("temporary key directory");
+        let path = directory.path().join("unionc.secret");
+        let error = write_private_key_file_with_sync(
+            &path,
+            b"test-key\n",
+            |_| Ok(()),
+            |_| Err(std::io::Error::other("injected directory sync failure")),
+        )
+        .expect_err("directory durability is part of a successful key write");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert_eq!(fs::read(&path).unwrap(), b"test-key\n");
     }
 
     // ─── 密钥轮换 ────────────────────────────────────────────────────────────
