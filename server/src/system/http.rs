@@ -204,18 +204,28 @@ pub(crate) async fn events(
     // 本 handler **不发起任何探测**：探测由 startup 启动的后台 worker 负责，
     // 这里只订阅广播。因此连接数不再放大对被监控主机的探测频率。
     let mut updates = state.services.events.subscribe();
+    let mut shutdown = state.subscribe_shutdown();
 
     // `stream!` 宏生成一个 `async_stream::AsyncStream`，可以被 `Sse` 消费
     let events = stream! {
-        if session_cancellation.is_cancelled() {
+        if *shutdown.borrow() || session_cancellation.is_cancelled() {
             return;
         }
         // 先立即推送当前快照，新连接无需等待下一个探测周期。
         let initial = crate::sunshine::status::all_services(&state).await;
+        if *shutdown.borrow() || session_cancellation.is_cancelled() {
+            return;
+        }
         yield Ok(sse_event(initial));
 
         loop {
             tokio::select! {
+                biased;
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow_and_update() {
+                        break;
+                    }
+                }
                 () = session_cancellation.cancelled() => break,
                 update = updates.recv() => match update {
                     Ok(services) => yield Ok(sse_event(services)),
@@ -225,7 +235,7 @@ pub(crate) async fn events(
                         let latest = crate::sunshine::status::all_services(&state).await;
                         yield Ok(sse_event(latest));
                     }
-                    // 发送端已关闭（仅发生在进程关停），结束本流。
+                    // 所有发送端都已释放时结束本流。
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }

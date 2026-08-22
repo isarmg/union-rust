@@ -18,6 +18,7 @@ use crate::{
 pub struct AppState {
     pub settings: Arc<Settings>,
     database: Arc<DbPool>,
+    shutdown: tokio::sync::watch::Sender<bool>,
     pub database_health: Arc<Mutex<Option<DatabaseHealthSnapshot>>>,
     pub started_at: DateTime<Utc>,
     pub hosts: HostState,
@@ -332,9 +333,11 @@ impl AppState {
         resources: crate::system::ResourceMonitor,
     ) -> Self {
         let sunshine_hosts = settings.sunshine.hosts.clone();
+        let (shutdown, _) = tokio::sync::watch::channel(false);
         Self {
             settings: Arc::new(settings),
             database: Arc::new(db),
+            shutdown,
             database_health: Arc::new(Mutex::new(None)),
             started_at: Utc::now(),
             hosts: HostState {
@@ -368,5 +371,16 @@ impl AppState {
 
     pub fn db(&self) -> Arc<DbPool> {
         self.database.clone()
+    }
+
+    /// Mark the process as shutting down before the HTTP server begins draining
+    /// existing connections. `send_replace` keeps the value sticky for streams
+    /// that subscribe concurrently with the shutdown signal.
+    pub fn request_shutdown(&self) {
+        self.shutdown.send_replace(true);
+    }
+
+    pub(crate) fn subscribe_shutdown(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.shutdown.subscribe()
     }
 }

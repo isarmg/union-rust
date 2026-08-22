@@ -648,6 +648,86 @@ async fn logout_closes_an_already_established_sse_stream() {
 }
 
 #[tokio::test]
+async fn application_shutdown_closes_an_already_established_sse_stream() {
+    let state = test_state().await;
+    insert_session(&state, "test-session").await;
+    let response = http::router(state.clone())
+        .oneshot(
+            Request::get("/api/events")
+                .header("cookie", "session=test-session")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut stream = response.into_body().into_data_stream();
+    let initial = tokio::time::timeout(std::time::Duration::from_secs(1), stream.next())
+        .await
+        .expect("initial SSE event timed out");
+    assert!(initial.is_some(), "SSE should emit its initial snapshot");
+
+    state.request_shutdown();
+
+    let end = tokio::time::timeout(std::time::Duration::from_secs(1), stream.next())
+        .await
+        .expect("SSE stream did not close promptly during application shutdown");
+    assert!(
+        end.is_none(),
+        "shutting-down SSE stream emitted another frame"
+    );
+}
+
+#[tokio::test]
+async fn graceful_server_shutdown_is_not_blocked_by_an_active_sse_response() {
+    let state = test_state().await;
+    insert_session(&state, "test-session").await;
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind loopback test listener");
+    let address = listener.local_addr().expect("read test listener address");
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let shutdown_state = state.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, http::router(state))
+            .with_graceful_shutdown(async move {
+                shutdown_rx.await.expect("receive test shutdown signal");
+                shutdown_state.request_shutdown();
+            })
+            .await
+            .expect("serve test application");
+    });
+
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .expect("build loopback test client");
+    let mut response = client
+        .get(format!("http://{address}/api/events"))
+        .header(reqwest::header::COOKIE, "session=test-session")
+        .send()
+        .await
+        .expect("establish real SSE response");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let initial = tokio::time::timeout(std::time::Duration::from_secs(1), response.chunk())
+        .await
+        .expect("real SSE initial event timed out")
+        .expect("read real SSE initial event");
+    assert!(initial.is_some(), "real SSE response ended before shutdown");
+
+    shutdown_tx.send(()).expect("signal test server shutdown");
+    tokio::time::timeout(std::time::Duration::from_secs(2), server)
+        .await
+        .expect("active SSE response blocked graceful server shutdown")
+        .expect("join test server");
+    let end = tokio::time::timeout(std::time::Duration::from_secs(1), response.chunk())
+        .await
+        .expect("real SSE body did not reach EOF after server shutdown")
+        .expect("read real SSE EOF");
+    assert!(end.is_none());
+}
+
+#[tokio::test]
 async fn monitoring_routes_remain_console_authenticated() {
     let response = http::router(test_state().await)
         .oneshot(

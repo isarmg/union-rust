@@ -98,12 +98,13 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let initialized = startup::initialize().await?;
-    let app = http::router(initialized.state);
+    let state = initialized.state;
+    let app = http::router(state.clone());
 
     tracing::info!("unionc listening on http://{}", initialized.addr);
     let listener = tokio::net::TcpListener::bind(initialized.addr).await?;
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(state))
         .await?;
 
     Ok(())
@@ -113,7 +114,7 @@ fn version_line() -> String {
     format!("unionc {}", env!("CARGO_PKG_VERSION"))
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(state: unionc::state::AppState) {
     let ctrl_c = async {
         if let Err(err) = tokio::signal::ctrl_c().await {
             tracing::error!("failed to install Ctrl+C handler: {err}");
@@ -132,6 +133,10 @@ async fn shutdown_signal() {
         _ = ctrl_c => {},
         _ = terminate => {},
     }
+    // Axum waits for every active response after this future returns. Notify
+    // long-lived SSE streams first so they can end instead of blocking that
+    // drain until their seven-day login session expires.
+    state.request_shutdown();
     tracing::info!("shutdown signal received; draining HTTP connections");
 }
 
