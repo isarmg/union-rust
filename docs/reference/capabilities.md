@@ -791,7 +791,7 @@ Windows release 制品包含 NVIDIA 支持而不含 OTLP；当前 macOS release 
 | Agent 采样 | 快指标 10 秒、慢指标 30 秒、10% jitter、请求超时 10 秒 | 可配置，但必须满足 Server 协议范围 |
 | 主机在线判定 | `max(3 × interval, 30s)` 内 online；`max(12 × interval, 300s)` 内 stale | 是基于最后一次有效新报告推导，不是 Server 主动心跳 |
 | Agent spool | 默认 64 MiB；每轮最多补传 32 份 | 超预算最终淘汰最老报告，不承诺无限期无损 |
-| 上报请求 | 最大 512 KiB；schema v1；采样时间最多超前 5 分钟 | 超限或协议不合法会在入库前拒绝 |
+| 上报请求 | 最大 512 KiB；schema v1；采样时间最多超前 5 分钟 | Agent 对实际 compact JSON 字节收敛，Server 仍在不可信边界拒绝超限/非法输入；旧 spool 读取时也应用当前契约 |
 | 设备数量 | CPU 4096 核、网卡 1024、磁盘 1024、温度 4096、GPU 128、capability 256 | 防止异常主机放大解析与数据库成本 |
 | 后端主机查询 | 默认 200、最大 1000；Web 固定每页 20 | Web 的页内计数不代表全库聚合 |
 | 后端历史查询 | 默认最近 300、最大 1000，响应按时间升序 | 只返回数值摘要，不回放完整历史 payload |

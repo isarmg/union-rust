@@ -11,6 +11,7 @@ pub mod model;
 pub mod otlp;
 pub mod pairing;
 mod private_fs;
+mod report_contract;
 pub mod service;
 pub mod spool;
 mod state_lock;

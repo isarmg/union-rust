@@ -10,8 +10,9 @@
 use chrono::{Duration, Utc};
 use serde_json::{Value, json};
 use unionc::monitoring::{
-    AgentHealth, AgentReport, AgentReportExt, CpuSnapshot, HostIdentity, MemorySnapshot,
-    SystemSnapshot,
+    AGENT_REPORT_MAX_CAPABILITIES, AGENT_REPORT_MAX_CPU_CORES, AGENT_REPORT_MAX_DISKS,
+    AGENT_REPORT_MAX_GPUS, AGENT_REPORT_MAX_NETWORKS, AGENT_REPORT_MAX_TEMPERATURES, AgentHealth,
+    AgentReport, AgentReportExt, CpuSnapshot, HostIdentity, MemorySnapshot, SystemSnapshot,
 };
 use uuid::Uuid;
 
@@ -207,26 +208,36 @@ fn rejects_timestamps_too_far_in_the_future() {
 fn rejects_reports_with_too_many_devices() {
     for (case, pointer, count, item) in [
         (
-            "networks 超过 1024",
+            "networks 超过共享上限",
             "/system/networks",
-            1025,
+            AGENT_REPORT_MAX_NETWORKS + 1,
             network("eth"),
         ),
-        ("disks 超过 1024", "/system/disks", 1025, disk("sd")),
         (
-            "temperatures 超过 4096",
+            "disks 超过共享上限",
+            "/system/disks",
+            AGENT_REPORT_MAX_DISKS + 1,
+            disk("sd"),
+        ),
+        (
+            "temperatures 超过共享上限",
             "/system/temperatures",
-            4097,
+            AGENT_REPORT_MAX_TEMPERATURES + 1,
             temperature(50.0),
         ),
-        ("gpus 超过 128", "/system/gpus", 129, gpu()),
+        (
+            "gpus 超过共享上限",
+            "/system/gpus",
+            AGENT_REPORT_MAX_GPUS + 1,
+            gpu(),
+        ),
         // per_core_percent 曾是这份清单里唯一的缺口。它不含文本，因此逃过了逐字段的
         // 文本长度校验；又不在设备计数里，于是 512 KiB 的 body 之内可以塞进约 10 万个
         // 浮点数——它们会完整落进 payload JSON 文本，并由详情接口原样回传给控制台。
         (
-            "per_core_percent 超过 4096",
+            "per_core_percent 超过共享上限",
             "/system/cpu/per_core_percent",
-            4097,
+            AGENT_REPORT_MAX_CPU_CORES + 1,
             json!(1.0),
         ),
     ] {
@@ -238,16 +249,20 @@ fn rejects_reports_with_too_many_devices() {
     assert_accepted(
         "per_core_percent 恰好 4096",
         patch(
-            patch(valid_report(), "/system/cpu/logical_count", json!(4096)),
+            patch(
+                valid_report(),
+                "/system/cpu/logical_count",
+                json!(AGENT_REPORT_MAX_CPU_CORES),
+            ),
             "/system/cpu/per_core_percent",
-            Value::Array(vec![json!(1.0); 4096]),
+            Value::Array(vec![json!(1.0); AGENT_REPORT_MAX_CPU_CORES]),
         ),
     );
 
     let capabilities = Value::Array(vec![
         json!({ "name": "x", "available": true, "source": "s",
                 "error_kind": null, "message": null });
-        257
+        AGENT_REPORT_MAX_CAPABILITIES + 1
     ]);
     assert_rejected(
         "capabilities 超过 256",

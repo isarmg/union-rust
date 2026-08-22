@@ -5,6 +5,9 @@ mod tests {
         config::{LocalConfig, Settings},
         infra::database,
     };
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    use unionc_protocol::AGENT_REPORT_MAX_BODY_BYTES;
 
     fn state() -> AppState {
         AppState::new(
@@ -72,6 +75,34 @@ mod tests {
             require_json_content_type(&headers),
             Err(AppError::UnsupportedMediaType(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn report_route_uses_the_shared_exact_body_limit() {
+        let app = agent_router().with_state(state());
+        let request = |size| {
+            Request::post("/api/agent/v1/report")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(vec![b' '; size]))
+                .unwrap()
+        };
+
+        let boundary = app
+            .clone()
+            .oneshot(request(AGENT_REPORT_MAX_BODY_BYTES))
+            .await
+            .unwrap();
+        assert_ne!(
+            boundary.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "the documented maximum must reach the handler"
+        );
+
+        let oversized = app
+            .oneshot(request(AGENT_REPORT_MAX_BODY_BYTES + 1))
+            .await
+            .unwrap();
+        assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[test]

@@ -1,11 +1,24 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 pub use unionc_protocol::{
-    AGENT_REPORT_SCHEMA_VERSION, ActivateAgentRequest, ActivateAgentResponse,
-    ActivatePairingStatus, AgentHealth, AgentPairingRequest, AgentPairingResponse,
-    AgentPairingStatusResponse, AgentReport, AgentReportAck, Capability, CapabilityErrorKind,
-    CpuSnapshot, DiskSnapshot, GpuSnapshot, HostIdentity, MemorySnapshot, NetworkSnapshot,
-    PairingStatus, SystemSnapshot, TemperatureSnapshot,
+    AGENT_REPORT_MAX_AGENT_VERSION_BYTES, AGENT_REPORT_MAX_BODY_BYTES,
+    AGENT_REPORT_MAX_CAPABILITIES, AGENT_REPORT_MAX_CAPABILITY_MESSAGE_BYTES,
+    AGENT_REPORT_MAX_CAPABILITY_NAME_BYTES, AGENT_REPORT_MAX_CAPABILITY_SOURCE_BYTES,
+    AGENT_REPORT_MAX_CPU_CORES, AGENT_REPORT_MAX_DISK_NAME_BYTES, AGENT_REPORT_MAX_DISKS,
+    AGENT_REPORT_MAX_FILE_SYSTEM_BYTES, AGENT_REPORT_MAX_GPU_ID_BYTES,
+    AGENT_REPORT_MAX_GPU_NAME_BYTES, AGENT_REPORT_MAX_GPU_SOURCE_BYTES,
+    AGENT_REPORT_MAX_GPU_VENDOR_BYTES, AGENT_REPORT_MAX_GPUS, AGENT_REPORT_MAX_HOST_ARCH_BYTES,
+    AGENT_REPORT_MAX_HOST_NAME_BYTES, AGENT_REPORT_MAX_HOST_OS_BYTES,
+    AGENT_REPORT_MAX_HOST_VERSION_BYTES, AGENT_REPORT_MAX_INTERVAL_SECONDS,
+    AGENT_REPORT_MAX_MOUNT_POINT_BYTES, AGENT_REPORT_MAX_NETWORK_NAME_BYTES,
+    AGENT_REPORT_MAX_NETWORKS, AGENT_REPORT_MAX_TEMPERATURE_ID_BYTES,
+    AGENT_REPORT_MAX_TEMPERATURE_LABEL_BYTES, AGENT_REPORT_MAX_TEMPERATURE_SOURCE_BYTES,
+    AGENT_REPORT_MAX_TEMPERATURES, AGENT_REPORT_MIN_INTERVAL_SECONDS, AGENT_REPORT_SCHEMA_VERSION,
+    ActivateAgentRequest, ActivateAgentResponse, ActivatePairingStatus, AgentHealth,
+    AgentPairingRequest, AgentPairingResponse, AgentPairingStatusResponse, AgentReport,
+    AgentReportAck, Capability, CapabilityErrorKind, CpuSnapshot, DiskSnapshot, GpuSnapshot,
+    HostIdentity, MemorySnapshot, NetworkSnapshot, PairingStatus, SystemSnapshot,
+    TemperatureSnapshot,
 };
 
 use crate::error::{AppError, AppResult};
@@ -200,10 +213,14 @@ pub trait HostIdentityExt {
 impl HostIdentityExt for HostIdentity {
     fn validate(&self) -> AppResult<()> {
         validate_canonical_uuid("host.id", &self.id)?;
-        validate_text("host.name", &self.name, 255)?;
-        validate_text("host.os", &self.os, 64)?;
-        validate_text("host.arch", &self.arch, 64)?;
-        validate_text("host.agent_version", &self.agent_version, 128)?;
+        validate_text("host.name", &self.name, AGENT_REPORT_MAX_HOST_NAME_BYTES)?;
+        validate_text("host.os", &self.os, AGENT_REPORT_MAX_HOST_OS_BYTES)?;
+        validate_text("host.arch", &self.arch, AGENT_REPORT_MAX_HOST_ARCH_BYTES)?;
+        validate_text(
+            "host.agent_version",
+            &self.agent_version,
+            AGENT_REPORT_MAX_AGENT_VERSION_BYTES,
+        )?;
         if self.agent_version != env!("CARGO_PKG_VERSION") {
             return Err(AppError::BadRequest(format!(
                 "unsupported host.agent_version; expected {}",
@@ -216,8 +233,16 @@ impl HostIdentityExt for HostIdentity {
         // 它们必须有界的理由比其他字段更强：二者直接写入 `monitored_hosts` 的
         // 无长度约束 TEXT 列，并随 `HostSummary` 在**主机列表**接口返回——
         // 一台被攻陷的 Agent 注入一次，此后每一次列表查询都要带上这份文本。
-        validate_optional_text("host.os_version", self.os_version.as_deref(), 128)?;
-        validate_optional_text("host.kernel_version", self.kernel_version.as_deref(), 128)
+        validate_optional_text(
+            "host.os_version",
+            self.os_version.as_deref(),
+            AGENT_REPORT_MAX_HOST_VERSION_BYTES,
+        )?;
+        validate_optional_text(
+            "host.kernel_version",
+            self.kernel_version.as_deref(),
+            AGENT_REPORT_MAX_HOST_VERSION_BYTES,
+        )
     }
 }
 
@@ -236,10 +261,12 @@ impl AgentReportExt for AgentReport {
                 "unsupported agent report schema_version".to_string(),
             ));
         }
-        // 上限 3600 是 Agent 与服务端之间的契约，三处必须同步修改：
-        // 此处、schema/sqlite.sql 的 CHECK 约束，以及
-        // agent/src/config.rs 的 MAX_REPORT_INTERVAL_SECONDS。
-        if !self.interval_seconds.is_finite() || !(0.1..=3600.0).contains(&self.interval_seconds) {
+        // Agent 与 Server 从 protocol crate 读取同一份区间；修改共享常量时仍须同步
+        // schema/sqlite.sql 的粗粒度 CHECK 约束。
+        if !self.interval_seconds.is_finite()
+            || !(AGENT_REPORT_MIN_INTERVAL_SECONDS..=AGENT_REPORT_MAX_INTERVAL_SECONDS as f64)
+                .contains(&self.interval_seconds)
+        {
             return Err(AppError::BadRequest(
                 "interval_seconds is outside the supported range".to_string(),
             ));
@@ -255,12 +282,12 @@ impl AgentReportExt for AgentReport {
         // 那轮逐字段的文本校验，又不在这里的设备计数里。512 KiB 的 body 上限之内
         // 可以塞进约 10 万个浮点数，它们会完整落进 `payload` JSON 文本，并由详情接口
         // 原样回传给控制台。目前最大的商用 CPU 也就几百个逻辑核，4096 留足余量。
-        if self.capabilities.len() > 256
-            || self.system.cpu.per_core_percent.len() > 4096
-            || self.system.networks.len() > 1024
-            || self.system.disks.len() > 1024
-            || self.system.temperatures.len() > 4096
-            || self.system.gpus.len() > 128
+        if self.capabilities.len() > AGENT_REPORT_MAX_CAPABILITIES
+            || self.system.cpu.per_core_percent.len() > AGENT_REPORT_MAX_CPU_CORES
+            || self.system.networks.len() > AGENT_REPORT_MAX_NETWORKS
+            || self.system.disks.len() > AGENT_REPORT_MAX_DISKS
+            || self.system.temperatures.len() > AGENT_REPORT_MAX_TEMPERATURES
+            || self.system.gpus.len() > AGENT_REPORT_MAX_GPUS
         {
             return Err(AppError::BadRequest(
                 "report contains too many devices".to_string(),
@@ -281,14 +308,30 @@ impl AgentReportExt for AgentReport {
         // 下面**逐字段列全**，不写"其余字段同理"之类的概括。概括无法被核查，新增字段
         // 时也不会有任何东西提醒你补上——列全虽然啰嗦，但漏掉一个是看得见的。
         for capability in &self.capabilities {
-            validate_text("capability.name", &capability.name, 128)?;
-            validate_text("capability.source", &capability.source, 128)?;
+            validate_text(
+                "capability.name",
+                &capability.name,
+                AGENT_REPORT_MAX_CAPABILITY_NAME_BYTES,
+            )?;
+            validate_text(
+                "capability.source",
+                &capability.source,
+                AGENT_REPORT_MAX_CAPABILITY_SOURCE_BYTES,
+            )?;
             if let Some(error_kind) = &capability.error_kind {
-                validate_text("capability.error_kind", error_kind.as_str(), 128)?;
+                validate_text(
+                    "capability.error_kind",
+                    error_kind.as_str(),
+                    AGENT_REPORT_MAX_CAPABILITY_NAME_BYTES,
+                )?;
             }
             // message 是人类可读的诊断信息，放宽到 1 KiB，但仍必须有界。
             if let Some(message) = &capability.message {
-                validate_text("capability.message", message, 1024)?;
+                validate_text(
+                    "capability.message",
+                    message,
+                    AGENT_REPORT_MAX_CAPABILITY_MESSAGE_BYTES,
+                )?;
             }
         }
         validate_percent("cpu.usage_percent", self.system.cpu.usage_percent)?;
@@ -324,7 +367,11 @@ impl AgentReportExt for AgentReport {
             ));
         }
         for network in &self.system.networks {
-            validate_text("network.name", &network.name, 255)?;
+            validate_text(
+                "network.name",
+                &network.name,
+                AGENT_REPORT_MAX_NETWORK_NAME_BYTES,
+            )?;
             validate_nonnegative_rate(
                 "network.received_bytes_per_second",
                 network.received_bytes_per_second,
@@ -338,10 +385,22 @@ impl AgentReportExt for AgentReport {
             // Windows 对无卷标卷返回空 `disk.name`，而 mount_point 仍能唯一、可读地
             // 标识该卷（例如 `F:\\`）。前端本来就会回退显示 mount_point；拒绝空名称
             // 只会让整份合法遥测永久 400，导致已配对主机一直显示离线。
-            validate_optional_text("disk.name", Some(&disk.name), 1024)?;
-            validate_text("disk.mount_point", &disk.mount_point, 4096)?;
+            validate_optional_text(
+                "disk.name",
+                Some(&disk.name),
+                AGENT_REPORT_MAX_DISK_NAME_BYTES,
+            )?;
+            validate_text(
+                "disk.mount_point",
+                &disk.mount_point,
+                AGENT_REPORT_MAX_MOUNT_POINT_BYTES,
+            )?;
             // 伪文件系统与未识别设备的 file_system 可能是空串，故用宽松校验。
-            validate_optional_text("disk.file_system", Some(&disk.file_system), 128)?;
+            validate_optional_text(
+                "disk.file_system",
+                Some(&disk.file_system),
+                AGENT_REPORT_MAX_FILE_SYSTEM_BYTES,
+            )?;
             if disk.available_bytes > disk.total_bytes {
                 return Err(AppError::BadRequest(
                     "disk available bytes exceed total bytes".to_string(),
@@ -356,9 +415,21 @@ impl AgentReportExt for AgentReport {
         for sensor in &self.system.temperatures {
             // 传感器三个文本字段都可能为空：sysinfo 的 `label()` 对无标签组件返回空串，
             // 而 `id` 在拿不到设备 id 时正是回退到该 label。
-            validate_optional_text("temperature.id", Some(&sensor.id), 255)?;
-            validate_optional_text("temperature.label", Some(&sensor.label), 255)?;
-            validate_optional_text("temperature.source", Some(&sensor.source), 64)?;
+            validate_optional_text(
+                "temperature.id",
+                Some(&sensor.id),
+                AGENT_REPORT_MAX_TEMPERATURE_ID_BYTES,
+            )?;
+            validate_optional_text(
+                "temperature.label",
+                Some(&sensor.label),
+                AGENT_REPORT_MAX_TEMPERATURE_LABEL_BYTES,
+            )?;
+            validate_optional_text(
+                "temperature.source",
+                Some(&sensor.source),
+                AGENT_REPORT_MAX_TEMPERATURE_SOURCE_BYTES,
+            )?;
             for (field, value) in [
                 ("temperature.celsius", sensor.celsius),
                 ("temperature.max_celsius", sensor.max_celsius),
@@ -373,10 +444,18 @@ impl AgentReportExt for AgentReport {
         }
         for gpu in &self.system.gpus {
             // GPU 的四个文本字段全部来自厂商 API 或 sysfs 字符串，长度不可预期。
-            validate_optional_text("gpu.id", Some(&gpu.id), 255)?;
-            validate_optional_text("gpu.vendor", Some(&gpu.vendor), 64)?;
-            validate_optional_text("gpu.name", Some(&gpu.name), 255)?;
-            validate_optional_text("gpu.source", Some(&gpu.source), 64)?;
+            validate_optional_text("gpu.id", Some(&gpu.id), AGENT_REPORT_MAX_GPU_ID_BYTES)?;
+            validate_optional_text(
+                "gpu.vendor",
+                Some(&gpu.vendor),
+                AGENT_REPORT_MAX_GPU_VENDOR_BYTES,
+            )?;
+            validate_optional_text("gpu.name", Some(&gpu.name), AGENT_REPORT_MAX_GPU_NAME_BYTES)?;
+            validate_optional_text(
+                "gpu.source",
+                Some(&gpu.source),
+                AGENT_REPORT_MAX_GPU_SOURCE_BYTES,
+            )?;
             if let Some(value) = gpu.utilization_percent {
                 validate_percent("gpu.utilization_percent", value)?;
             }

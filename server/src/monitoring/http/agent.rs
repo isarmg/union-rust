@@ -1,6 +1,7 @@
 use axum::{Router, extract::DefaultBodyLimit, routing::post};
 
 use crate::state::AppState;
+use unionc_protocol::AGENT_REPORT_MAX_BODY_BYTES;
 
 use super::{
     activate_pairing_request, create_pairing_request, pairing_request_status,
@@ -10,7 +11,7 @@ use super::{
 pub(super) fn router() -> Router<AppState> {
     let reporting = Router::new()
         .route("/api/agent/v1/report", post(report_metrics))
-        .layer(DefaultBodyLimit::max(512 * 1024));
+        .layer(DefaultBodyLimit::max(AGENT_REPORT_MAX_BODY_BYTES));
     let pairing = Router::new()
         .route(
             "/api/agent/v2/pairing-requests",

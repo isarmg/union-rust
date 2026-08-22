@@ -111,7 +111,7 @@ impl SystemSampler {
             })
             .count() as u64;
 
-        AgentReport {
+        let mut report = AgentReport {
             schema_version: AGENT_REPORT_SCHEMA_VERSION,
             report_id: Uuid::new_v4().to_string(),
             collected_at: Utc::now(),
@@ -147,7 +147,9 @@ impl SystemSampler {
                 spool_pending_batches,
                 collector_errors,
             },
-        }
+        };
+        crate::report_contract::bound_report(&mut report);
+        report
     }
 }
 

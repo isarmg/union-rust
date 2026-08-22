@@ -14,6 +14,7 @@ use crate::{
     config::AgentConfig,
     model::AgentReport,
     private_fs::{self, OwnerPolicy},
+    report_contract,
 };
 
 const MAX_ERROR_RESPONSE_BYTES: usize = 64 * 1024;
@@ -79,11 +80,14 @@ impl Reporter {
     }
 
     pub async fn send_unionc(&self, report: &AgentReport) -> Result<(), SendError> {
+        let (bounded, body) = report_contract::encode_report_body(report)
+            .map_err(|error| SendError::Permanent(format!("invalid Agent report: {error}")))?;
         let response = self
             .client
             .post(&self.endpoint)
             .bearer_auth(&self.token)
-            .json(report)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
             .send()
             .await
             .map_err(|error| SendError::Transient(format!("UnionC request failed: {error}")))?;
@@ -96,7 +100,7 @@ impl Reporter {
         let body = read_limited(response, MAX_ERROR_RESPONSE_BYTES, "UnionC")
             .await
             .map_err(SendError::Transient)?;
-        validate_unionc_ack(status, content_type.as_deref(), &body, report)
+        validate_unionc_ack(status, content_type.as_deref(), &body, &bounded)
     }
 
     #[cfg(feature = "otlp")]

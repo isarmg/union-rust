@@ -13,23 +13,22 @@ const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:8081/api/agent/v1/report";
 
 /// 上报报文中“实测间隔”的**服务端契约上限**。
 ///
-/// `server/src/monitoring/model/validation.rs` 是 HTTP 契约的权威实现，本常量必须与其
-/// 上限同步。
+/// `unionc-protocol` 是 HTTP 契约边界的唯一常量来源；Agent 配置与 Server 校验都引用它。
 /// SQLite 只用 `0 < interval_seconds <= 3600` 做粗粒度存储防线；Agent 的配置值则是
 /// 整数秒（最小 1），并按 jitter 后最坏实测周期校验，因此三层边界相关但并不完全相同。
 ///
 /// 报文中的 `interval_seconds` 是实测经过时间，因此落到区间之外会让**每一次**上报
 /// 都被服务端以 400 永久拒绝；投递 worker 会把这类必失败报文从 spool 确认丢弃。
 /// 在启动时拒绝，好过让用户只在日志里追查周期性数据缺口。
-pub const MAX_REPORT_INTERVAL_SECONDS: u64 = 3600;
+pub const MAX_REPORT_INTERVAL_SECONDS: u64 = unionc_protocol::AGENT_REPORT_MAX_INTERVAL_SECONDS;
 
-/// 契约下限。
+/// 共享协议契约下限的 Agent 配置别名。
 ///
 /// 下限与上限同样需要显式常量。采集侧对实测间隔的兜底若只写成"防除零"的 `.max(0.001)`，
 /// 就比服务端要求的 0.1 **低两个数量级**：当前主循环最小 sleep 0.5 秒触及不到，
 /// 但那是巧合而非约束，一旦调整 jitter 或引入更短的周期，报文就会被判为 400
 /// （永久拒绝）**直接丢弃**。采集侧引用本常量，使这条边界有守卫而不是靠巧合成立。
-pub const MIN_REPORT_INTERVAL_SECONDS: f64 = 0.1;
+pub const MIN_REPORT_INTERVAL_SECONDS: f64 = unionc_protocol::AGENT_REPORT_MIN_INTERVAL_SECONDS;
 
 /// 编译期守卫：契约区间必须自洽。写成 `const _` 而非测试，是因为这两个常量的关系
 /// 属于"不可能为真就不该编译"的性质，没有必要等到跑测试才发现。

@@ -6,6 +6,39 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 /// Current schema emitted by the Agent and accepted by the Server.
 pub const AGENT_REPORT_SCHEMA_VERSION: u16 = 1;
 
+/// Maximum compact JSON request body accepted by the report endpoint.
+pub const AGENT_REPORT_MAX_BODY_BYTES: usize = 512 * 1024;
+pub const AGENT_REPORT_MIN_INTERVAL_SECONDS: f64 = 0.1;
+pub const AGENT_REPORT_MAX_INTERVAL_SECONDS: u64 = 3600;
+/// Collection bounds are wire-contract limits, not merely Server implementation details.
+pub const AGENT_REPORT_MAX_CAPABILITIES: usize = 256;
+pub const AGENT_REPORT_MAX_CPU_CORES: usize = 4096;
+pub const AGENT_REPORT_MAX_NETWORKS: usize = 1024;
+pub const AGENT_REPORT_MAX_DISKS: usize = 1024;
+pub const AGENT_REPORT_MAX_TEMPERATURES: usize = 4096;
+pub const AGENT_REPORT_MAX_GPUS: usize = 128;
+
+/// Text limits use UTF-8 bytes, matching JSON trust-boundary validation.
+pub const AGENT_REPORT_MAX_HOST_NAME_BYTES: usize = 255;
+pub const AGENT_REPORT_MAX_HOST_OS_BYTES: usize = 64;
+pub const AGENT_REPORT_MAX_HOST_VERSION_BYTES: usize = 128;
+pub const AGENT_REPORT_MAX_HOST_ARCH_BYTES: usize = 64;
+pub const AGENT_REPORT_MAX_AGENT_VERSION_BYTES: usize = 128;
+pub const AGENT_REPORT_MAX_CAPABILITY_NAME_BYTES: usize = 128;
+pub const AGENT_REPORT_MAX_CAPABILITY_SOURCE_BYTES: usize = 128;
+pub const AGENT_REPORT_MAX_CAPABILITY_MESSAGE_BYTES: usize = 1024;
+pub const AGENT_REPORT_MAX_NETWORK_NAME_BYTES: usize = 255;
+pub const AGENT_REPORT_MAX_DISK_NAME_BYTES: usize = 1024;
+pub const AGENT_REPORT_MAX_MOUNT_POINT_BYTES: usize = 4096;
+pub const AGENT_REPORT_MAX_FILE_SYSTEM_BYTES: usize = 128;
+pub const AGENT_REPORT_MAX_TEMPERATURE_ID_BYTES: usize = 255;
+pub const AGENT_REPORT_MAX_TEMPERATURE_LABEL_BYTES: usize = 255;
+pub const AGENT_REPORT_MAX_TEMPERATURE_SOURCE_BYTES: usize = 64;
+pub const AGENT_REPORT_MAX_GPU_ID_BYTES: usize = 255;
+pub const AGENT_REPORT_MAX_GPU_VENDOR_BYTES: usize = 64;
+pub const AGENT_REPORT_MAX_GPU_NAME_BYTES: usize = 255;
+pub const AGENT_REPORT_MAX_GPU_SOURCE_BYTES: usize = 64;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentReport {
