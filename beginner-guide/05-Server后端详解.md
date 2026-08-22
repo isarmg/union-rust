@@ -155,15 +155,17 @@ Axum 的 `.layer()` 阅读顺序容易让初学者困惑：后添加的外层会
 1. 验证生产代理链路；
 2. 取得来源 IP，消耗认证前限流额度；
 3. 解析 Bearer secret，计算 SHA-256；
-4. 数据库按哈希查找 active credential；
+4. 数据库按哈希判断 credential 与 host 生命周期：未知或已替换/撤销的 credential 返回 401，已撤销的 host 返回 403；
 5. 消耗已认证主机的令牌桶；
-6. 原始 body 此时已经被 `Bytes` 提取器在 512 KiB 上限内读入；认证通过后才检查 JSON Content-Type 并反序列化；
-7. 调用 `report.validate()`；
-8. 比对 credential host 与 body host；
-9. 调用 `store_monitoring_report`；
-10. 返回 202 与严格 ACK。
+6. 检查 JSON Content-Type；到这里都由 `AuthenticatedReport` 请求头提取器完成；
+7. 只有前述检查全部通过，`Bytes` 提取器才在 512 KiB 上限内读取原始 body；
+8. handler 使用 `serde_json::from_slice` 反序列化；
+9. 调用 `report.validate()`；
+10. 比对 credential host 与 body host；
+11. 调用 `store_authenticated_monitoring_report`，在写事务中复核同一个 credential 仍然有效；
+12. 返回 202 与严格 ACK。
 
-昂贵 JSON 校验和数据库写入前先做来源/凭据防护，可以降低滥用成本。该顺序避免匿名调用触发 JSON 反序列化与结构化分配，但不避免原始 body 的带宽和缓冲成本。查 credential 本身需要数据库，所以前面还有认证前 IP/全局限流。
+昂贵 JSON 校验和数据库写入前先做来源/凭据防护，可以降低滥用成本。该顺序还会在认证或媒体类型失败时阻止应用层轮询、聚合原始 body；底层网络栈仍可能按自己的缓冲策略预读少量数据。查 credential 本身需要数据库，所以前面还有认证前 IP/全局限流。
 
 ## 8. 功能模块详解
 
