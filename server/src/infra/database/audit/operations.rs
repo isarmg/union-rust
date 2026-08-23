@@ -8,6 +8,29 @@ use super::*;
 /// large backlog. One thousand narrow rows keeps transaction duration short
 /// without turning normal retention into hundreds of round trips.
 const AUDIT_RETENTION_BATCH: i64 = 1_000;
+/// A page can contain 500 audit rows, so every free-form detail must have an
+/// application-level ceiling before it reaches SQLite or an API response.
+const MAX_AUDIT_DETAIL_CHARS: usize = 512;
+
+fn bounded_audit_detail(detail: &str) -> String {
+    let mut characters = detail.chars();
+    let mut bounded = characters
+        .by_ref()
+        .take(MAX_AUDIT_DETAIL_CHARS)
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    if characters.next().is_some() {
+        bounded.pop();
+        bounded.push('…');
+    }
+    bounded
+}
 
 fn context() -> AuditContext {
     current_audit_context().unwrap_or(AuditContext {
@@ -36,6 +59,7 @@ async fn insert_audit_with_context(
     target: &str,
     detail: Option<&str>,
 ) -> anyhow::Result<()> {
+    let detail = detail.map(bounded_audit_detail);
     query("INSERT INTO audit_logs(action,target,detail,actor,request_id) VALUES(?,?,?,?,?)")
         .bind(action)
         .bind(target)

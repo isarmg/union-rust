@@ -801,7 +801,8 @@ credential 主机索引。
 文本存储并在 Rust 写入入口做规范解析；时间统一存 Unix 微秒；`config`/`capabilities`/`payload` 通过 `json_valid` 与 `json_type`
 约束对象或数组；credential、授权码与 polling secret 哈希用长度及 `GLOB` 约束为 64 位小写十六进制；
 `interval_seconds` 用 `(0, 3600]` 粗粒度 CHECK 拦截损坏值，应用入口再执行 `[0.1, 3600]`
-精确契约。`agent_credentials.token_hash` 唯一，因此一次索引查找即可完成上报鉴权。主机
+精确契约。审计详情在写入前统一移除控制字符并限制为 512 个 Unicode 字符，避免分页读取
+放大异常上游字段。`agent_credentials.token_hash` 唯一，因此一次索引查找即可完成上报鉴权。主机
 地址的完整 IP/域名规则在 Rust 写入入口统一校验。
 
 **Sunshine 主机按行持久化**：创建、更新和删除只修改目标 `external_hosts` 行，并把对应
