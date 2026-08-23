@@ -55,6 +55,14 @@ mod tests {
     }
 
     fn one_shot_pairing_server() -> (String, thread::JoinHandle<()>) {
+        one_shot_pairing_server_with_activation_url(|request_id| {
+            format!("/agent/activate/{request_id}")
+        })
+    }
+
+    fn one_shot_pairing_server_with_activation_url(
+        activation_url: impl FnOnce(Uuid) -> String + Send + 'static,
+    ) -> (String, thread::JoinHandle<()>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
         let request_id = Uuid::new_v4();
@@ -72,7 +80,7 @@ mod tests {
             );
             let body = serde_json::to_vec(&serde_json::json!({
                 "request_id": request_id,
-                "activation_url": format!("/agent/activate/{request_id}"),
+                "activation_url": activation_url(request_id),
                 "expires_in": 600,
                 "poll_interval": 1
             }))
@@ -87,6 +95,36 @@ mod tests {
             stream.flush().unwrap();
         });
         (format!("http://{address}"), handle)
+    }
+
+    #[tokio::test]
+    async fn create_rejects_cross_origin_activation_url_before_showing_or_persisting_it() {
+        let directory = std::env::temp_dir().join(format!(
+            "unionc-pairing-untrusted-activation-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let (server, server_thread) = one_shot_pairing_server_with_activation_url(|request_id| {
+            format!("https://attacker.example/agent/activate/{request_id}")
+        });
+        let config = AgentConfig {
+            endpoint: format!("{server}/api/agent/v1/report"),
+            pairing_endpoint: Some(format!("{server}/api/agent/v2/pairing-requests")),
+            state_dir: directory.clone(),
+            ..AgentConfig::default()
+        };
+
+        let error = start_or_resume(&config, &test_host())
+            .await
+            .expect_err("an untrusted browser destination must fail during request creation");
+        assert!(error.to_string().contains("does not match"));
+        assert!(matches!(
+            load_state(&config).unwrap(),
+            Some(StoredPairingState::Creating { .. })
+        ));
+
+        server_thread.join().unwrap();
+        fs::remove_dir_all(directory).unwrap();
     }
 
     fn delayed_active_server(

@@ -161,6 +161,10 @@ async fn finish_create_request(
         bail!("UnionC returned an invalid pairing poll interval");
     }
     let activation_url = resolve_activation_url(&pairing_endpoint, &created.activation_url)?;
+    // Validate the browser destination before it is persisted or shown. Waiting
+    // until the user submits the local activation code would already have
+    // exposed them to a cross-origin or request-swapping URL from a bad peer.
+    validate_activation_url_request(&activation_url, &pairing_endpoint, created_request_id)?;
     let expires_at = Utc::now()
         .checked_add_signed(TimeDelta::seconds(
             i64::try_from(created.expires_in).context("pairing expiration overflow")?,
