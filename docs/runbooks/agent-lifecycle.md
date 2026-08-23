@@ -326,8 +326,9 @@ sudo /usr/local/share/unionc-agent/uninstall.sh --purge --yes
 漂移或账户被改造时，purge 不删除账户，并保留 bookkeeping、receipt 和卸载器，返回 `2`；
 修复后可以安全重试。
 
-Directory Service 的 `RealName` 只是显示属性，不参与归属判定；安全边界仍由记录名、精确
-UID/GID、版本 marker，以及服务用户的 shell、home 和隐藏属性共同组成。
+Directory Service 的 `RealName` 和 `IsHidden` 都只是显示属性，macOS 接受写入后仍可能省略，
+因此不参与归属判定；安全边界仍由记录名、精确 UID/GID、版本 marker，以及服务用户的
+非登录 shell 和 `/var/empty` home 共同组成。
 
 ## 6. 未签名预发布与完整性校验
 

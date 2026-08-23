@@ -203,7 +203,7 @@ user_created=\"\$1\"
 created_user_uid=\"\$2\"
 created_user_primary_gid=\"\$3\"
 existing_user_matches_marker \"\$4\" \"\$5\" \
-  /usr/bin/false /var/empty 1 \"\$6\"" sh \
+  /usr/bin/false /var/empty \"\$6\"" sh \
     "$marker_owned" "$marker_uid" "$marker_primary_gid" "$actual_uid" \
     "$actual_primary_gid" "$service_group_gid" >/dev/null 2>&1
   actual="$?"

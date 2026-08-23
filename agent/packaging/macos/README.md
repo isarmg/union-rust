@@ -135,8 +135,9 @@ created them. The directory must be a real `root:wheel` `0700` directory and the
 records the creation-time UID and GIDs, and purge requires exact identity and account-attribute
 matches; a coincidentally pre-existing or later reconstructed account is retained. A clean install
 refuses to adopt same-named accounts that are not bound by the current ownership proof.
-The cosmetic Directory Service `RealName` is not used as identity proof: authorization remains
-bound to the record name, exact numeric IDs, service shell/home/hidden attributes, and marker.
+The cosmetic Directory Service `RealName` and `IsHidden` attributes are not used as identity
+proof: macOS may omit them after accepting a write. Authorization remains bound to the record
+name, exact numeric IDs, service shell/home attributes, and marker.
 
 If a marker-owned account was modified, or its group still has primary/supplementary members or
 nested-group references, purge returns exit status `2` and reports `incomplete`. Directory

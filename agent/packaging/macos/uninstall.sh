@@ -513,9 +513,8 @@ if [ "$user_record_state" = "present" ]; then
     user_gid="$(dscl_value "/Users/$user" PrimaryGroupID || true)"
     user_shell="$(dscl_value "/Users/$user" UserShell || true)"
     user_home="$(dscl_value "/Users/$user" NFSHomeDirectory || true)"
-    hidden="$(dscl_value "/Users/$user" IsHidden || true)"
     if [ "$user_shell" = "/usr/bin/false" ] &&
-      [ "$user_home" = "/var/empty" ] && [ "$hidden" = "1" ] &&
+      [ "$user_home" = "/var/empty" ] &&
       [ -n "$current_group_gid" ] &&
       [ "$user_uid" = "$created_user_uid" ] &&
       [ "$user_gid" = "$created_user_primary_gid" ] &&

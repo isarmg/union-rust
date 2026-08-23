@@ -211,7 +211,6 @@ case "$operation" in
       /Users/_unioncagent:PrimaryGroupID) printf 'PrimaryGroupID: 450\n' ;;
       /Users/_unioncagent:UserShell) printf 'UserShell: /usr/bin/false\n' ;;
       /Users/_unioncagent:NFSHomeDirectory) printf 'NFSHomeDirectory: /var/empty\n' ;;
-      /Users/_unioncagent:IsHidden) printf 'IsHidden: 1\n' ;;
       /Groups/_unioncagent:RealName) printf 'RealName: UnionC Agent\n' ;;
       /Groups/_unioncagent:PrimaryGroupID) printf 'PrimaryGroupID: 450\n' ;;
       /Groups/_unioncagent:GeneratedUID)

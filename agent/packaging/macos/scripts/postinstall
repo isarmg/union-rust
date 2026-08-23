@@ -958,14 +958,12 @@ existing_user_matches_marker() {
   actual_primary_gid="$2"
   actual_shell="$3"
   actual_home="$4"
-  actual_hidden="$5"
-  service_group_gid="$6"
+  service_group_gid="$5"
   for numeric_id in "$actual_uid" "$actual_primary_gid" "$service_group_gid"; do
     is_reserved_service_id "$numeric_id" || return 1
   done
   [ "$actual_shell" = "/usr/bin/false" ] &&
     [ "$actual_home" = "/var/empty" ] &&
-    [ "$actual_hidden" = "1" ] &&
     [ "$actual_primary_gid" = "$service_group_gid" ] || return 1
   [ "$ownership_marker_present" -eq 1 ] &&
     [ "$user_created" -eq 1 ] &&
@@ -1083,13 +1081,12 @@ else
   existing_gid="$(dscl_value "/Users/$user" PrimaryGroupID)"
   existing_shell="$(dscl_value "/Users/$user" UserShell || true)"
   existing_home="$(dscl_value "/Users/$user" NFSHomeDirectory || true)"
-  existing_hidden="$(dscl_value "/Users/$user" IsHidden || true)"
   if ! existing_user_matches_marker "$existing_uid" "$existing_gid" \
-    "$existing_shell" "$existing_home" "$existing_hidden" "$gid"; then
+    "$existing_shell" "$existing_home" "$gid"; then
     echo "Existing $user account does not match the installer ownership binding" >&2
     printf '%s\n' \
-      "actual uid=$existing_uid primary_gid=$existing_gid shell=$existing_shell home=$existing_home hidden=$existing_hidden" \
-      "expected uid=$created_user_uid primary_gid=$created_user_primary_gid group_gid=$gid shell=/usr/bin/false home=/var/empty hidden=1" >&2
+      "actual uid=$existing_uid primary_gid=$existing_gid shell=$existing_shell home=$existing_home" \
+      "expected uid=$created_user_uid primary_gid=$created_user_primary_gid group_gid=$gid shell=/usr/bin/false home=/var/empty" >&2
     exit 1
   fi
   uid="$existing_uid"
