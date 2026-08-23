@@ -150,9 +150,13 @@ function Assert-StateAcl {
             "S-1-3-4" = 0x00020000
         }
         $expectedRights[$serviceSid] = 0x001301bf
-        $expectedInheritance = `
+        $expectedInheritance = if ((Get-Item -LiteralPath $protectedPath).PSIsContainer) {
             [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor `
-            [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+                [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+        }
+        else {
+            [System.Security.AccessControl.InheritanceFlags]::None
+        }
         if ($rules.Count -ne $expectedRights.Count) {
             throw "$protectedPath has an unexpected managed-state ACE count."
         }
@@ -311,9 +315,13 @@ function Assert-PreservedStateAcl([string]$RetiredServiceSid) {
             "S-1-5-32-544" = 0x1f01ff
             "S-1-3-4" = 0x00020000
         }
-        $expectedInheritance = `
+        $expectedInheritance = if ((Get-Item -LiteralPath $protectedPath).PSIsContainer) {
             [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor `
-            [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+                [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+        }
+        else {
+            [System.Security.AccessControl.InheritanceFlags]::None
+        }
         if ($rules.Count -ne $expectedRights.Count) {
             throw "$protectedPath has an unexpected preserved-state ACE count."
         }
