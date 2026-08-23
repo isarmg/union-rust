@@ -41,22 +41,22 @@ test "$(stat -c '%a:%U:%G:%h' /etc/unionc/unionc.env)" = \
   "640:root:unionc:1"
 for marker in managed-user managed-group; do
   marker_path="/var/lib/unionc-package/$marker"
-  test "$(stat -c '%a:%U:%G:%h' "$marker_path")" = "600:root:root:1"
-  test "$(sed -n 's/^format=//p' "$marker_path")" = "$server_version"
+  test "$(sudo stat -c '%a:%U:%G:%h' "$marker_path")" = "600:root:root:1"
+  test "$(sudo sed -n 's/^format=//p' "$marker_path")" = "$server_version"
 done
-test ! -e /var/lib/unionc-package/pending-group
-test ! -e /var/lib/unionc-package/pending-user
-test "$(sed -n 's/^uid=//p' /var/lib/unionc-package/managed-user)" = \
+sudo test ! -e /var/lib/unionc-package/pending-group
+sudo test ! -e /var/lib/unionc-package/pending-user
+test "$(sudo sed -n 's/^uid=//p' /var/lib/unionc-package/managed-user)" = \
   "$(id -u unionc)"
-test "$(sed -n 's/^primary_gid=//p' /var/lib/unionc-package/managed-user)" = \
+test "$(sudo sed -n 's/^primary_gid=//p' /var/lib/unionc-package/managed-user)" = \
   "$(id -g unionc)"
-test "$(sed -n 's/^gid=//p' /var/lib/unionc-package/managed-group)" = \
+test "$(sudo sed -n 's/^gid=//p' /var/lib/unionc-package/managed-group)" = \
   "$(getent group unionc | cut -d: -f3)"
-grep -Fx "UNIONC_PACKAGE_VERSION=$server_version" /etc/unionc/unionc.env
+sudo grep -Fx "UNIONC_PACKAGE_VERSION=$server_version" /etc/unionc/unionc.env
 ! systemctl is-enabled --quiet unionc.service
 ! systemctl is-active --quiet unionc.service
-test ! -e /var/lib/unionc/unionc.db
-test ! -e /var/lib/unionc/.unionc-data-directory
+sudo test ! -e /var/lib/unionc/unionc.db
+sudo test ! -e /var/lib/unionc/.unionc-data-directory
 
 sudo tee /etc/unionc/unionc.env >/dev/null <<EOF
 UNIONC_PACKAGE_VERSION=$server_version
@@ -92,11 +92,11 @@ run_maintenance() {
 sudo systemctl enable --now unionc.service
 systemctl is-enabled --quiet unionc.service
 wait_ready
-test "$(stat -c '%a:%U:%G' /var/lib/unionc/unionc.db)" = "600:unionc:unionc"
+test "$(sudo stat -c '%a:%U:%G' /var/lib/unionc/unionc.db)" = "600:unionc:unionc"
 data_marker=/var/lib/unionc/.unionc-data-directory
-test "$(stat -c '%a:%U:%G:%h' "$data_marker")" = "600:unionc:unionc:1"
-test "$(cat "$data_marker")" = "unionc-data-directory-v1"
-data_marker_identity=$(stat -c '%d:%i' "$data_marker")
+test "$(sudo stat -c '%a:%U:%G:%h' "$data_marker")" = "600:unionc:unionc:1"
+test "$(sudo cat "$data_marker")" = "unionc-data-directory-v1"
+data_marker_identity=$(sudo stat -c '%d:%i' "$data_marker")
 sudo sed -i \
   -e '/^UNIONC_ALLOW_BOOTSTRAP=/d' \
   -e '/^UNIONC_BOOTSTRAP_PASSWORD=/d' \
@@ -105,17 +105,17 @@ sudo sed -i \
 sudo install -d -m 0700 -o unionc -g unionc /var/backups/unionc-release
 backup=/var/backups/unionc-release/unionc.db
 run_maintenance backup --output "$backup"
-test "$(stat -c '%a:%U:%G' "$backup")" = "600:unionc:unionc"
-test "$(stat -c '%a:%U:%G' "${backup}.manifest.json")" = "600:unionc:unionc"
+test "$(sudo stat -c '%a:%U:%G' "$backup")" = "600:unionc:unionc"
+test "$(sudo stat -c '%a:%U:%G' "${backup}.manifest.json")" = "600:unionc:unionc"
 
 sudo systemctl stop unionc.service
 run_maintenance restore --input "$backup" --force
 run_maintenance integrity-check
-pre_restore="$(find /var/lib/unionc -maxdepth 1 \
+pre_restore="$(sudo find /var/lib/unionc -maxdepth 1 \
   -name 'unionc.pre-restore-*.db' -type f -print -quit)"
 test -n "$pre_restore"
-test "$(stat -c '%a:%U:%G' "$pre_restore")" = "600:unionc:unionc"
-test "$(stat -c '%a:%U:%G' "${pre_restore}.manifest.json")" = \
+test "$(sudo stat -c '%a:%U:%G' "$pre_restore")" = "600:unionc:unionc"
+test "$(sudo stat -c '%a:%U:%G' "${pre_restore}.manifest.json")" = \
   "600:unionc:unionc"
 run_maintenance restore --input "$pre_restore" --force
 run_maintenance integrity-check
@@ -140,12 +140,12 @@ test "$(dpkg-query -W -f='${Version}' unionc)" = \
   "$(dpkg-deb --field "$package" Version)"
 systemctl is-enabled --quiet unionc.service
 wait_ready
-test "$(stat -c '%d:%i' "$data_marker")" = "$data_marker_identity"
+test "$(sudo stat -c '%d:%i' "$data_marker")" = "$data_marker_identity"
 
 sudo dpkg --remove unionc
 test ! -e /usr/bin/unionc
-test -e /var/lib/unionc/unionc.db
-test "$(stat -c '%d:%i' "$data_marker")" = "$data_marker_identity"
+sudo test -e /var/lib/unionc/unionc.db
+test "$(sudo stat -c '%d:%i' "$data_marker")" = "$data_marker_identity"
 
 # A retained marker from any other version must fail closed. Restore
 # it only to let dpkg finish cleaning up this disposable runner.
@@ -155,7 +155,7 @@ if sudo dpkg -i "$package"; then
   echo "Server package adopted another version's ownership marker" >&2
   exit 1
 fi
-test -e /var/lib/unionc/unionc.db
+sudo test -e /var/lib/unionc/unionc.db
 sudo sed -i "s/^format=.*/format=$server_version/" \
   /var/lib/unionc-package/managed-user
 sudo dpkg --configure unionc
