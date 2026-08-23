@@ -368,6 +368,10 @@ impl AgentConfig {
         }
         let (mut config, config_issue) =
             Self::load_selected_config(config_path.as_deref(), command)?;
+        // Pairing commits Active before mirroring the report endpoint back to
+        // the administrator-owned config. Only a policy already present in
+        // that file is therefore safe across a crash in the commit window.
+        let persisted_pairing_allow_insecure_http = config.allow_insecure_http;
         config.apply_environment()?;
         config.config_path = config_path;
         config.server_override = server_override;
@@ -385,6 +389,10 @@ impl AgentConfig {
         }
         if command == AgentCommand::Pair {
             config.apply_pair_options()?;
+            validate_persisted_pairing_transport(
+                &config.endpoint,
+                persisted_pairing_allow_insecure_http,
+            )?;
         } else if let Some(endpoint) = config.endpoint_override.take() {
             config.endpoint = endpoint;
         }
@@ -766,6 +774,25 @@ pub(crate) fn validate_endpoint(endpoint: &str, allow_insecure_http: bool) -> an
     }
 }
 
+fn validate_persisted_pairing_transport(
+    report_endpoint: &str,
+    persisted_allow_insecure_http: bool,
+) -> anyhow::Result<()> {
+    let url = reqwest::Url::parse(report_endpoint)
+        .with_context(|| format!("invalid telemetry endpoint {report_endpoint}"))?;
+    if url.scheme() == "http"
+        && !crate::tray_support::is_loopback_host(url.host_str())
+        && !persisted_allow_insecure_http
+    {
+        bail!(
+            "pairing a remote plaintext report endpoint requires allow_insecure_http=true in the \
+             existing persistent config; a CLI or environment override cannot safely authorize a \
+             durable binding"
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_pairing_endpoint(endpoint: &str) -> anyhow::Result<()> {
     validate_endpoint(endpoint, false).context(
         "browser pairing requires HTTPS except when the endpoint is on the local loopback host",
@@ -837,6 +864,8 @@ fn print_help() {
          Common options: --config PATH [--endpoint REPORT_URL] [--output human|json]\n\
            [--allow-insecure-http]\n\
          --allow-insecure-http permits remote plaintext report/OTLP delivery only;\n\
+           pairing a remote plaintext report endpoint requires this policy to already\n\
+           be true in the persistent config; CLI/environment overrides are insufficient.\n\
            browser pairing still requires HTTPS except on the local loopback host.\n\
          Doctor delivery opt-in: --delivery (sends one report and may drain queued reports)\n\
          Pair options: [--server URL | --endpoint REPORT_URL]\n\
@@ -1006,6 +1035,27 @@ mod tests {
             ..AgentConfig::default()
         };
         split_endpoints.validate(AgentCommand::Run).unwrap();
+    }
+
+    #[test]
+    fn remote_plaintext_pairing_requires_a_persisted_transport_policy() {
+        let remote = "http://192.0.2.10/api/agent/v1/report";
+        assert!(validate_persisted_pairing_transport(remote, false).is_err());
+        assert!(validate_persisted_pairing_transport(remote, true).is_ok());
+        assert!(
+            validate_persisted_pairing_transport(
+                "http://127.0.0.1:8081/api/agent/v1/report",
+                false
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_persisted_pairing_transport(
+                "https://unionc.example/api/agent/v1/report",
+                false
+            )
+            .is_ok()
+        );
     }
 
     #[test]

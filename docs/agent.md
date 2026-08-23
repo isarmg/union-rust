@@ -113,7 +113,9 @@ report token。不要复制或重用另一台机器的整个状态目录。
 除回环地址外，Agent 默认拒绝明文 HTTP；生产入口应使用 HTTPS，确有隔离内网遥测需求时
 才显式设置 `allow_insecure_http`。该开关只放宽 report/OTLP 数据投递，浏览器配对入口和
 激活页面始终要求 HTTPS（回环地址除外）；若明文 report endpoint 不提供 HTTPS，需要另行
-配置 HTTPS `pairing_endpoint`。
+配置 HTTPS `pairing_endpoint`。由于配对会持久化 report endpoint，远程明文策略必须在开始
+配对前已经写入持久配置；临时 CLI 或环境变量覆盖不能授权新的远程明文绑定，以免 Active
+提交后、配置镜像前崩溃导致下一次启动拒绝刚生成的凭据。
 
 ## 状态目录
 
