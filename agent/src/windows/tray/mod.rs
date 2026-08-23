@@ -74,9 +74,31 @@ fn reconcile_pairing_child(
     }
 }
 
+/// Once the signed Agent child exits successfully, its credential, Active
+/// journal, and durable configuration are already committed. A subsequent
+/// service reload failure is actionable, but must never turn that irreversible
+/// success into a request to pair again.
+#[cfg(any(windows, test))]
+fn committed_pairing_restart_warning(
+    service_was_running: bool,
+    restart: impl FnOnce() -> anyhow::Result<()>,
+) -> Option<String> {
+    if !service_was_running {
+        return None;
+    }
+    restart().err().map(|error| {
+        format!(
+            "配对已成功并写入新凭据，但 Agent 服务未能重新加载它们：{error:#}\n\n\
+             当前运行的服务可能仍在使用旧凭据，或服务可能已经停止。请在配置窗口中单独启动或重启服务；不要重新配对。"
+        )
+    })
+}
+
 #[cfg(test)]
 mod cross_platform_tests {
-    use super::{MissingAuthorizationKeyEvent, reconcile_pairing_child};
+    use super::{
+        MissingAuthorizationKeyEvent, committed_pairing_restart_warning, reconcile_pairing_child,
+    };
 
     #[test]
     fn child_diagnostics_replace_the_secondary_missing_key_error() {
@@ -118,6 +140,25 @@ mod cross_platform_tests {
         assert!(rendered.starts_with("pairing event processing failed"));
         assert!(rendered.contains(event_message));
         assert!(rendered.contains("pairing child was cancelled"));
+    }
+
+    #[test]
+    fn committed_pairing_is_not_failed_by_service_reload_cleanup() {
+        let skipped = committed_pairing_restart_warning(false, || {
+            panic!("a previously stopped service must remain stopped")
+        });
+        assert!(skipped.is_none());
+
+        let restarted = committed_pairing_restart_warning(true, || Ok(()));
+        assert!(restarted.is_none());
+
+        let warning = committed_pairing_restart_warning(true, || {
+            Err(anyhow::anyhow!("simulated service restart failure"))
+        })
+        .expect("a post-commit restart failure must become a warning");
+        assert!(warning.contains("配对已成功并写入新凭据"));
+        assert!(warning.contains("simulated service restart failure"));
+        assert!(warning.contains("不要重新配对"));
     }
 }
 

@@ -32,8 +32,15 @@ fn elevated_pair(
     let outcome = run_hidden_pair(&server, &callback_nonce);
     match outcome {
         Ok(()) => {
-            if original_state == ServiceState::Running {
-                restart_service()?;
+            if let Some(warning) = super::committed_pairing_restart_warning(
+                original_state == ServiceState::Running,
+                restart_service,
+            ) {
+                message_box(
+                    &warning,
+                    "UnionC Agent 配对已完成（服务需要处理）",
+                    MB_OK | MB_ICONWARNING,
+                );
             }
             Ok(())
         }
