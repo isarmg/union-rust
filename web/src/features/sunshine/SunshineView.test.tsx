@@ -9,6 +9,7 @@ import { sunshineQueryKeys as queryKeys } from "./queryKeys";
 import { querySunshineHosts } from "./queries";
 import type { SunshineHostInfo } from "./types";
 import { appDraft, InlineHostField, managementPanelLayout, SunshineView } from "./SunshineView";
+import { HostCard } from "./components/HostCard";
 
 afterEach(() => {
   cleanup();
@@ -163,6 +164,34 @@ describe("Sunshine inline password editing", () => {
     expect(mutationCacheSnapshot(queryClient)).not.toContain("sunshine-secret-789");
     await user.click(within(card).getByRole("button", { name: /修改密码/ }));
     expect((within(card).getByLabelText("密码") as HTMLInputElement).value).toBe("");
+  });
+});
+
+describe("Sunshine host quick patches", () => {
+  it("consumes rejected fire-and-forget password and TLS updates", async () => {
+    const current = host("one", "Host one");
+    const onInlineUpdate = vi.fn(() => Promise.reject(new Error("update rejected")));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(
+      <HostCard
+        host={current}
+        selected={false}
+        updating={false}
+        onOpen={() => undefined}
+        onDelete={() => undefined}
+        onInlineUpdate={onInlineUpdate}
+      />,
+    );
+
+    const card = screen.getByRole("article", { name: /Host one/ });
+    await user.click(within(card).getByRole("button", { name: /清空 Host one/ }));
+    await user.click(within(card).getByRole("button", { name: "验证证书" }));
+    await waitFor(() => expect(onInlineUpdate).toHaveBeenCalledTimes(2));
+    expect(onInlineUpdate.mock.calls).toEqual([
+      [{ password: "" }],
+      [{ verify_tls: false }],
+    ]);
   });
 });
 

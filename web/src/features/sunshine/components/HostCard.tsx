@@ -42,6 +42,11 @@ export function HostCard({ host, selected, updating, onOpen, onDelete, onInlineU
   const connectionLabel = probePending
     ? (host.connection_error ?? "正在检测 Sunshine 连接")
     : host.connected ? "Sunshine API 已连接" : (host.connection_error ?? "Sunshine API 未连接");
+  const submitQuickPatch = (patch: SunshineHostPatchRequest) => {
+    // The parent mutation already publishes and renders the error. These buttons do not await
+    // the result, so consume the same rejection here instead of emitting `unhandledrejection`.
+    void onInlineUpdate(patch).catch(() => undefined);
+  };
 
   return (
     <article
@@ -118,7 +123,11 @@ export function HostCard({ host, selected, updating, onOpen, onDelete, onInlineU
               disabled={controlsDisabled}
               aria-label={`清空 ${host.name} 的 Sunshine 密码`}
               title="清空密码"
-              onClick={() => window.confirm("确定清空该 Sunshine 主机的密码？") && void onInlineUpdate({ password: "" })}
+              onClick={() => {
+                if (window.confirm("确定清空该 Sunshine 主机的密码？")) {
+                  submitQuickPatch({ password: "" });
+                }
+              }}
             >清空</button>
           ) : null}
         </CardRow>
@@ -130,7 +139,7 @@ export function HostCard({ host, selected, updating, onOpen, onDelete, onInlineU
             title={controlsDisabled ? "正在保存主机，请稍候" : "仅开发模式允许关闭证书验证；生产模式会拒绝此操作"}
             onClick={() => {
               if (!host.verify_tls || window.confirm("仅开发模式允许关闭 TLS 证书验证；生产模式会拒绝。仍要尝试吗？")) {
-                void onInlineUpdate({ verify_tls: !host.verify_tls });
+                submitQuickPatch({ verify_tls: !host.verify_tls });
               }
             }}
           >
