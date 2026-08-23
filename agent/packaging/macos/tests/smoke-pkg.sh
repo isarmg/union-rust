@@ -68,7 +68,7 @@ path_has_no_permissive_acl() {
 shared_directory_is_secure() {
   local path=$1
   local metadata uid gid special mode remainder
-  [[ -d $path && ! -L $path ]] || return 1
+  sudo test -d "$path" && sudo test ! -L "$path" || return 1
   metadata=$(sudo stat -f '%u:%g:%Mp:%Lp' "$path") || return 1
   uid=${metadata%%:*}
   remainder=${metadata#*:}
@@ -91,7 +91,7 @@ assert_secure_shared_directory() {
 assert_secure_root_directory_any_group() {
   local path=$1
   local metadata uid special mode remainder
-  [[ -d $path && ! -L $path ]] || {
+  sudo test -d "$path" && sudo test ! -L "$path" || {
     echo "expected a real root-owned directory at $path" >&2
     exit 1
   }
@@ -132,7 +132,7 @@ assert_trusted_path() {
 assert_trusted_directory() {
   local expected=$1
   local path=$2
-  [[ -d $path && ! -L $path ]] || {
+  sudo test -d "$path" && sudo test ! -L "$path" || {
     echo "expected a real directory at $path" >&2
     exit 1
   }
@@ -142,7 +142,7 @@ assert_trusted_directory() {
 assert_trusted_regular_file() {
   local expected=$1
   local path=$2
-  [[ -f $path && ! -L $path ]] || {
+  sudo test -f "$path" && sudo test ! -L "$path" || {
     echo "expected a real regular file at $path" >&2
     exit 1
   }
@@ -152,7 +152,7 @@ assert_trusted_regular_file() {
 assert_system_root_directory() {
   local expected=$1
   local path=$2
-  [[ -d $path && ! -L $path ]] || {
+  sudo test -d "$path" && sudo test ! -L "$path" || {
     echo "expected a real system directory at $path" >&2
     exit 1
   }
@@ -207,8 +207,8 @@ assert_runtime_state_trust() {
     '/Library/Application Support/UnionC Agent/config.json'
   assert_trusted_regular_file "$service_uid:$service_gid:0:600" \
     /var/log/unionc-agent.log
-  [[ ! -e '/Library/Application Support/UnionC Agent/config.example.json' &&
-    ! -L '/Library/Application Support/UnionC Agent/config.example.json' ]] || {
+  sudo test ! -e '/Library/Application Support/UnionC Agent/config.example.json' &&
+    sudo test ! -L '/Library/Application Support/UnionC Agent/config.example.json' || {
     echo 'package config template leaked into service-writable state' >&2
     exit 1
   }
@@ -308,7 +308,7 @@ assert_runtime_state_trust
 assert_ownership_proof
 sudo /usr/local/share/unionc-agent/uninstall.sh
 [[ ! -e /usr/local/libexec/unionc-agent ]]
-[[ -e '/Library/Application Support/UnionC Agent/release-lifecycle-marker' ]]
+sudo test -e '/Library/Application Support/UnionC Agent/release-lifecycle-marker'
 [[ ! -e /usr/local/share/unionc-agent/config.example.json ]]
 assert_preserved_uninstall_trust
 assert_runtime_state_trust 0
@@ -319,8 +319,8 @@ assert_install_trust
 assert_runtime_state_trust
 assert_ownership_proof
 sudo /usr/local/share/unionc-agent/uninstall.sh --purge --yes
-[[ ! -e '/Library/Application Support/UnionC Agent' ]]
-[[ ! -e /var/db/unionc-agent ]]
+sudo test ! -e '/Library/Application Support/UnionC Agent'
+sudo test ! -e /var/db/unionc-agent
 ! dscl . -read /Users/_unioncagent >/dev/null 2>&1
 ! dscl . -read /Groups/_unioncagent >/dev/null 2>&1
 ! pkgutil --pkg-info com.unionc.agent >/dev/null 2>&1

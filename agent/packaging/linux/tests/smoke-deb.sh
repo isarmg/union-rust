@@ -35,13 +35,13 @@ sudo touch /var/lib/unionc-agent/release-lifecycle-marker
 
 sudo dpkg --remove unionc-agent
 [[ ! -e /usr/bin/unionc-agent ]]
-[[ -e /var/lib/unionc-agent/release-lifecycle-marker ]]
-[[ -e /etc/unionc-agent/config.json ]]
+sudo test -e /var/lib/unionc-agent/release-lifecycle-marker
+sudo test -e /etc/unionc-agent/config.json
 
 sudo dpkg -i "$package"
 systemctl is-active --quiet unionc-agent.service
 sudo dpkg --purge unionc-agent
-[[ ! -e /var/lib/unionc-agent ]]
-[[ ! -e /etc/unionc-agent ]]
+sudo test ! -e /var/lib/unionc-agent
+sudo test ! -e /etc/unionc-agent
 ! getent passwd unionc-agent
 ! getent group unionc-agent
