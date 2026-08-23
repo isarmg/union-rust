@@ -110,8 +110,10 @@ Agent 还没有客户端证书；需要把 bootstrap/pairing 与受 mTLS 保护�
 
 当前版本只支持浏览器配对，不读取长期 enrollment token、旧注册 proof 或配置中的直接
 report token。不要复制或重用另一台机器的整个状态目录。
-除回环地址外，Agent 默认拒绝明文 HTTP；生产入口应使用 HTTPS，确有隔离内网需求时
-才显式设置 `allow_insecure_http`。
+除回环地址外，Agent 默认拒绝明文 HTTP；生产入口应使用 HTTPS，确有隔离内网遥测需求时
+才显式设置 `allow_insecure_http`。该开关只放宽 report/OTLP 数据投递，浏览器配对入口和
+激活页面始终要求 HTTPS（回环地址除外）；若明文 report endpoint 不提供 HTTPS，需要另行
+配置 HTTPS `pairing_endpoint`。
 
 ## 状态目录
 

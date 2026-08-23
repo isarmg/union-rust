@@ -160,11 +160,7 @@ async fn finish_create_request(
     if created.poll_interval == 0 || created.poll_interval > 300 {
         bail!("UnionC returned an invalid pairing poll interval");
     }
-    let activation_url = resolve_activation_url(
-        &pairing_endpoint,
-        &created.activation_url,
-        config.allow_insecure_http,
-    )?;
+    let activation_url = resolve_activation_url(&pairing_endpoint, &created.activation_url)?;
     let expires_at = Utc::now()
         .checked_add_signed(TimeDelta::seconds(
             i64::try_from(created.expires_in).context("pairing expiration overflow")?,

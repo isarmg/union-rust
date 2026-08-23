@@ -441,10 +441,27 @@ mod tests {
             resolve_activation_url(
                 "https://unionc.example/api/agent/v2/pairing-requests",
                 "/agent/activate/00000000-0000-4000-8000-000000000001",
-                false,
             )
             .unwrap(),
             "https://unionc.example/agent/activate/00000000-0000-4000-8000-000000000001"
+        );
+    }
+
+    #[test]
+    fn insecure_override_never_applies_to_remote_activation_pages() {
+        assert!(
+            resolve_activation_url(
+                "http://192.0.2.10/api/agent/v2/pairing-requests",
+                "/agent/activate/00000000-0000-4000-8000-000000000001",
+            )
+            .is_err()
+        );
+        assert!(
+            resolve_activation_url(
+                "http://127.0.0.1:8081/api/agent/v2/pairing-requests",
+                "/agent/activate/00000000-0000-4000-8000-000000000001",
+            )
+            .is_ok()
         );
     }
 

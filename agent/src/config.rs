@@ -491,7 +491,7 @@ impl AgentConfig {
         };
         if validates_delivery {
             validate_endpoint(&self.endpoint, self.allow_insecure_http)?;
-            validate_pairing_endpoint(&self.pairing_endpoint(), self.allow_insecure_http)?;
+            validate_pairing_endpoint(&self.pairing_endpoint())?;
         }
         #[cfg(not(feature = "otlp"))]
         if validates_delivery && (self.otlp_endpoint.is_some() || self.otlp_token.is_some()) {
@@ -714,8 +714,10 @@ fn validate_endpoint(endpoint: &str, allow_insecure_http: bool) -> anyhow::Resul
     }
 }
 
-fn validate_pairing_endpoint(endpoint: &str, allow_insecure_http: bool) -> anyhow::Result<()> {
-    validate_endpoint(endpoint, allow_insecure_http)?;
+fn validate_pairing_endpoint(endpoint: &str) -> anyhow::Result<()> {
+    validate_endpoint(endpoint, false).context(
+        "browser pairing requires HTTPS except when the endpoint is on the local loopback host",
+    )?;
     let url = reqwest::Url::parse(endpoint).expect("validate_endpoint accepted the URL");
     if url.query().is_some() || url.fragment().is_some() {
         bail!(
@@ -889,6 +891,26 @@ mod tests {
         assert!(validate_endpoint("http://192.0.2.10/report", false).is_err());
         assert!(validate_endpoint("http://127.0.0.1/report", false).is_ok());
         assert!(validate_endpoint("https://telemetry.example/report", false).is_ok());
+    }
+
+    #[test]
+    fn insecure_override_never_applies_to_browser_pairing() {
+        assert!(
+            validate_endpoint("http://192.0.2.10/api/agent/v1/report", true).is_ok(),
+            "the explicit override still permits telemetry on a trusted isolated network"
+        );
+        assert!(
+            validate_pairing_endpoint("http://192.0.2.10/api/agent/v2/pairing-requests").is_err(),
+            "the same override must never expose browser pairing over remote plaintext HTTP"
+        );
+
+        let split_endpoints = AgentConfig {
+            endpoint: "http://192.0.2.10/api/agent/v1/report".into(),
+            pairing_endpoint: Some("https://unionc.example/api/agent/v2/pairing-requests".into()),
+            allow_insecure_http: true,
+            ..AgentConfig::default()
+        };
+        split_endpoints.validate(AgentCommand::Run).unwrap();
     }
 
     #[test]

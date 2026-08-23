@@ -46,7 +46,6 @@ pub(super) fn validate_activation_url_request(
 pub(super) fn resolve_activation_url(
     pairing_endpoint: &str,
     activation_url: &str,
-    allow_insecure_http: bool,
 ) -> anyhow::Result<String> {
     let base = reqwest::Url::parse(pairing_endpoint).context("invalid pairing endpoint URL")?;
     let url = match reqwest::Url::parse(activation_url) {
@@ -60,7 +59,7 @@ pub(super) fn resolve_activation_url(
     }
     match url.scheme() {
         "https" => {}
-        "http" if allow_insecure_http || is_loopback_host(url.host_str()) => {}
+        "http" if is_loopback_host(url.host_str()) => {}
         "http" => bail!("UnionC returned an insecure non-loopback activation URL"),
         scheme => bail!("UnionC returned an unsupported activation URL scheme: {scheme}"),
     }
