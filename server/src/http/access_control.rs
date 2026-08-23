@@ -94,7 +94,8 @@ async fn authenticate_sse(
     next: Next,
 ) -> Result<Response, AppError> {
     let issued = state.auth.sse_tickets.lock().await.remove(ticket);
-    let Some(issued) = issued.filter(|entry| entry.issued_at.elapsed() < Duration::from_secs(60))
+    let Some(issued) =
+        issued.filter(|entry| entry.issued_at.elapsed() < crate::state::SSE_TICKET_TTL)
     else {
         return Err(AppError::Unauthorized);
     };

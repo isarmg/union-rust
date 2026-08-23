@@ -848,7 +848,7 @@ credential 主机索引。
   HttpOnly + SameSite=Strict，生产环境再加 Secure 与 `__Host-` 前缀
 - 未知用户名也会走一次 bcrypt（对比 dummy hash），避免时序差异泄露用户名是否存在
 - 并发的 bcrypt 运算由一个容量 4 的信号量约束，防止密码校验打满 CPU
-- SSE 用一次性短效票据（60 秒、随机 UUID、验过即删）而非会话 Cookie——
+- SSE 用一次性短效票据（60 秒、随机 UUID、验过即删、每会话最多 8 张且全局最多 256 张待消费）而非会话 Cookie——
   `EventSource` 不支持自定义请求头
 - Web 注销或收到 401 时替换整套会话 QueryClient，并在 logout 完成前阻止新登录，避免旧
   mutation 私有快照或晚到的注销响应污染下一会话

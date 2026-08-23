@@ -9,10 +9,7 @@
 //!
 //! SSE 比 WebSocket 简单，适合管理台单向接收服务状态更新。
 
-use std::{
-    convert::Infallible,
-    time::{Duration, Instant},
-};
+use std::{convert::Infallible, time::Instant};
 
 use async_stream::stream;
 use axum::{
@@ -76,8 +73,20 @@ pub(crate) async fn issue_sse_ticket(
     // `retain` 保留返回 true 的元素，这里保留"距今不超过 60 秒"的 ticket。
     // 这是一个懒清理策略：在写入时顺便清理，避免 HashMap 无限增长。
     tickets.retain(|_, entry: &mut crate::state::SseTicket| {
-        entry.issued_at.elapsed() < Duration::from_secs(60)
+        entry.issued_at.elapsed() < crate::state::SSE_TICKET_TTL
     });
+    if tickets.len() >= crate::state::MAX_PENDING_SSE_TICKETS
+        || tickets
+            .values()
+            .filter(|entry| entry.session_token == session_token)
+            .count()
+            >= crate::state::MAX_PENDING_SSE_TICKETS_PER_SESSION
+    {
+        return Err(crate::error::AppError::TooManyRequests(
+            "too many unconsumed event-stream tickets; consume an existing ticket or retry after it expires"
+                .to_string(),
+        ));
+    }
     tickets.insert(
         ticket.clone(),
         crate::state::SseTicket {

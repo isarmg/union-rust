@@ -3,7 +3,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use chrono::{DateTime, Utc};
@@ -210,6 +210,10 @@ pub struct SseTicket {
     pub session_token: String,
     pub issued_at: Instant,
 }
+
+pub const SSE_TICKET_TTL: Duration = Duration::from_secs(60);
+pub const MAX_PENDING_SSE_TICKETS: usize = 256;
+pub const MAX_PENDING_SSE_TICKETS_PER_SESSION: usize = 8;
 
 #[derive(Clone)]
 pub struct AuthenticationState {

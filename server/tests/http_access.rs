@@ -8,7 +8,10 @@ use unionc::{
     config::{LocalConfig, Settings},
     http,
     infra::database,
-    state::{AppState, LocalSession},
+    state::{
+        AppState, LocalSession, MAX_PENDING_SSE_TICKETS, MAX_PENDING_SSE_TICKETS_PER_SESSION,
+        SSE_TICKET_TTL, SseTicket,
+    },
 };
 
 async fn test_state() -> AppState {
@@ -649,6 +652,60 @@ async fn sse_ticket_is_available_once_embedded_database_is_initialized() {
         payload["ticket"]
             .as_str()
             .is_some_and(|ticket| !ticket.is_empty())
+    );
+}
+
+#[tokio::test]
+async fn unconsumed_sse_tickets_have_per_session_and_global_bounds() {
+    let state = test_state().await;
+    insert_session(&state, "test-session").await;
+    let app = http::router(state.clone());
+    let request_ticket = || {
+        Request::post("/api/events/ticket")
+            .header("cookie", "session=test-session")
+            .header("x-csrf-token", TEST_CSRF_TOKEN)
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    for _ in 0..MAX_PENDING_SSE_TICKETS_PER_SESSION {
+        let response = app.clone().oneshot(request_ticket()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let response = app.clone().oneshot(request_ticket()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    {
+        let mut tickets = state.auth.sse_tickets.lock().await;
+        tickets.clear();
+        for index in 0..MAX_PENDING_SSE_TICKETS {
+            tickets.insert(
+                format!("preloaded-{index}"),
+                SseTicket {
+                    session_token: format!("other-session-{index}"),
+                    issued_at: std::time::Instant::now(),
+                },
+            );
+        }
+    }
+    let response = app.clone().oneshot(request_ticket()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    // Expired tickets are removed before applying either bound, so capacity
+    // recovers without a restart.
+    state
+        .auth
+        .sse_tickets
+        .lock()
+        .await
+        .get_mut("preloaded-0")
+        .unwrap()
+        .issued_at = std::time::Instant::now() - SSE_TICKET_TTL;
+    let response = app.oneshot(request_ticket()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        state.auth.sse_tickets.lock().await.len(),
+        MAX_PENDING_SSE_TICKETS
     );
 }
 
