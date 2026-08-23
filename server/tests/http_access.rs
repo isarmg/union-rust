@@ -69,13 +69,22 @@ async fn insert_session(state: &AppState, token: &str) {
 
 #[tokio::test]
 async fn health_is_public_but_current_user_requires_authentication() {
-    let app = http::router(test_state().await);
+    let mut state = test_state().await;
+    state.started_at = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    let app = http::router(state);
     let health = app
         .clone()
         .oneshot(Request::get("/api/health").body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert_eq!(health.status(), StatusCode::OK);
+    let payload: serde_json::Value =
+        serde_json::from_slice(&to_bytes(health.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    assert!(
+        payload["uptime_seconds"]
+            .as_i64()
+            .is_some_and(|value| value >= 2)
+    );
 
     let current_user = app
         .oneshot(Request::get("/api/auth/me").body(Body::empty()).unwrap())

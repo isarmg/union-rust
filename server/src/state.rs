@@ -21,7 +21,9 @@ pub struct AppState {
     database_identity: Arc<DatabaseIdentity>,
     shutdown: tokio::sync::watch::Sender<bool>,
     pub database_health: Arc<Mutex<Option<DatabaseHealthSnapshot>>>,
-    pub started_at: DateTime<Utc>,
+    /// Monotonic process start marker. Wall-clock adjustments must never make
+    /// a liveness uptime negative or jump it forwards.
+    pub started_at: Instant,
     pub hosts: HostState,
     pub auth: AuthenticationState,
     pub agents: AgentAuthenticationState,
@@ -346,7 +348,7 @@ impl AppState {
             database_identity: Arc::new(database_identity),
             shutdown,
             database_health: Arc::new(Mutex::new(None)),
-            started_at: Utc::now(),
+            started_at: Instant::now(),
             hosts: HostState {
                 sunshine: Arc::new(RwLock::new(sunshine_hosts)),
                 sunshine_health: Arc::new(RwLock::new(HashMap::new())),

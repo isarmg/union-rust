@@ -109,7 +109,7 @@ pub(crate) async fn health(State(state): State<AppState>) -> Json<HealthResponse
     Json(HealthResponse {
         status: "ok".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(), // 编译时从 Cargo.toml 读取版本号
-        uptime_seconds: (Utc::now() - state.started_at).num_seconds(),
+        uptime_seconds: i64::try_from(state.started_at.elapsed().as_secs()).unwrap_or(i64::MAX),
     })
 }
 
