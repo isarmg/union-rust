@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Boxes } from "lucide-react";
 import { useMutation, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ContentTitle, InlineNotice, LoadingBlock, MutationError } from "../../shared/components/ui";
@@ -49,6 +49,8 @@ export function SunshineView({
   const handledAddTriggerRef = useRef(0);
   const hostGridRef = useRef<HTMLDivElement>(null);
   const managementPanelRef = useRef<HTMLElement>(null);
+  const managementPanelOpenerRef = useRef<HTMLButtonElement | null>(null);
+  const restoreManagementFocusRef = useRef(false);
 
   const createMutation = useMutation({
     mutationKey: sunshineHostMutationKeys.create,
@@ -151,13 +153,26 @@ export function SunshineView({
 
   const selectedHost = hosts.find((host) => host.id === selectedId) ?? null;
 
+  const closeManagementPanel = useCallback(() => {
+    restoreManagementFocusRef.current = true;
+    setSelectedId(null);
+  }, []);
+
   useEffect(() => {
     if (!selectedHost) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setSelectedId(null);
+      if (event.key === "Escape") closeManagementPanel();
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [closeManagementPanel, selectedHost]);
+
+  useLayoutEffect(() => {
+    if (selectedHost || !restoreManagementFocusRef.current) return;
+    restoreManagementFocusRef.current = false;
+    const opener = managementPanelOpenerRef.current;
+    managementPanelOpenerRef.current = null;
+    if (opener?.isConnected && !opener.disabled) opener.focus();
   }, [selectedHost]);
 
   useLayoutEffect(() => {
@@ -252,9 +267,15 @@ export function SunshineView({
                 host={host}
                 selected={selectedId === host.id}
                 updating={updatingHostIds.has(host.id)}
-                onOpen={() => {
+                onOpen={(trigger) => {
                   if (isOptimisticSunshineHost(host)) return;
-                  setSelectedId((current) => current === host.id ? null : host.id);
+                  if (selectedId === host.id) {
+                    closeManagementPanel();
+                    return;
+                  }
+                  managementPanelOpenerRef.current = trigger;
+                  restoreManagementFocusRef.current = false;
+                  setSelectedId(host.id);
                 }}
                 onInlineUpdate={(patch) => updateMutation.mutateAsync({ id: host.id, patch }).then(() => undefined)}
                 onDelete={() => {
@@ -274,7 +295,7 @@ export function SunshineView({
               <HostPanel
                 key={selectedHost.id}
                 host={selectedHost}
-                onClose={() => setSelectedId(null)}
+                onClose={closeManagementPanel}
               />
             </aside>
           ) : null}

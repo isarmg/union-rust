@@ -286,19 +286,21 @@ describe("Sunshine host panel state", () => {
       </QueryClientProvider>,
     );
 
-    await user.click(within(screen.getByRole("article", { name: /Host one/ })).getByRole("button", { name: "管理" }));
+    const managementTrigger = within(screen.getByRole("article", { name: /Host one/ }))
+      .getByRole("button", { name: "管理" });
+    await user.click(managementTrigger);
 
     const dialog = await screen.findByRole("dialog", { name: "Host one 管理面板" });
     expect(dialog.closest(".sunshine-master-detail")).toBeTruthy();
     expect(container.querySelector(".sunshine-master-detail.has-panel")).toBeNull();
     expect(within(dialog).queryByText("Host one 管理")).toBeNull();
-    expect(
-      within(dialog).getByRole("button", { name: "关闭管理面板" })
-        .closest(".sunshine-panel-nav-row"),
-    ).toBeTruthy();
+    const closeButton = within(dialog).getByRole("button", { name: "关闭管理面板" });
+    expect(closeButton.closest(".sunshine-panel-nav-row")).toBeTruthy();
+    expect(document.activeElement).toBe(closeButton);
 
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "Host one 管理面板" })).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(managementTrigger));
   });
 
   it("removes a submitted Moonlight PIN from the mutation cache", async () => {

@@ -32,7 +32,7 @@ export function HostCard({ host, selected, updating, onOpen, onDelete, onInlineU
   host: SunshineHostInfo;
   selected: boolean;
   updating: boolean;
-  onOpen: () => void;
+  onOpen: (trigger: HTMLButtonElement) => void;
   onDelete: () => void;
   onInlineUpdate: (patch: SunshineHostPatchRequest) => Promise<void>;
 }) {
@@ -147,7 +147,12 @@ export function HostCard({ host, selected, updating, onOpen, onDelete, onInlineU
           </button>
         </CardRow>
         <CardActions>
-          <button type="button" className="card-action-button" disabled={controlsDisabled} onClick={onOpen}>
+          <button
+            type="button"
+            className="card-action-button"
+            disabled={controlsDisabled}
+            onClick={(event) => onOpen(event.currentTarget)}
+          >
             <Edit2 size={12} /><span>{selected ? "收起管理" : "管理"}</span>
           </button>
           <button type="button" className="card-action-button danger" disabled={controlsDisabled} onClick={onDelete}>
