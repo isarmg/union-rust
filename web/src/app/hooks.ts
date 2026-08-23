@@ -127,6 +127,10 @@ export function useEventStream(enabled = true) {
             try {
               const payload = JSON.parse(event.data) as EventPayload;
               if (!Array.isArray(payload.services)) throw new Error("invalid services payload");
+              // Cancel the older HTTP snapshot before publishing this event. React Query's
+              // cancellation is synchronous even though the cleanup promise is returned, so a
+              // request that resolves later cannot overwrite the newer SSE state.
+              void queryClient.cancelQueries({ queryKey: queryKeys.services, exact: true });
               queryClient.setQueryData(queryKeys.services, payload.services);
             } catch {
               // A malformed stream must not leave polling disabled with stale cache data.

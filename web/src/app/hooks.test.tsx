@@ -83,6 +83,59 @@ describe("useEventStream", () => {
     unmount();
   });
 
+  it("prevents an older in-flight HTTP snapshot from overwriting a newer status event", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: PropsWithChildren) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    let resolveHttp!: (services: ServiceStatus[]) => void;
+    let httpSignal: AbortSignal | undefined;
+    const oldServices: ServiceStatus[] = [{
+      name: "Sunshine",
+      kind: "sunshine",
+      healthy: false,
+      runtime_state: "stopped",
+      pid: null,
+      address: null,
+      message: "old HTTP snapshot",
+      updated_at: "2026-08-19T12:00:00Z",
+    }];
+    const newServices: ServiceStatus[] = [{
+      ...oldServices[0],
+      healthy: true,
+      runtime_state: "running",
+      pid: 42,
+      message: "new SSE snapshot",
+      updated_at: "2026-08-19T12:00:01Z",
+    }];
+    const pendingHttp = queryClient.fetchQuery({
+      queryKey: queryKeys.services,
+      queryFn: ({ signal }) => {
+        httpSignal = signal;
+        return new Promise<ServiceStatus[]>((resolve) => { resolveHttp = resolve; });
+      },
+    });
+    void pendingHttp.catch(() => undefined);
+    const { unmount } = renderHook(() => useEventStream(), { wrapper });
+
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    const source = FakeEventSource.instances[0];
+    act(() => source.emit("status", JSON.stringify({
+      generated_at: "2026-08-19T12:00:01Z",
+      services: newServices,
+    })));
+    expect(httpSignal?.aborted).toBe(true);
+    expect(queryClient.getQueryData(queryKeys.services)).toEqual(newServices);
+
+    await act(async () => {
+      resolveHttp(oldServices);
+      await pendingHttp.catch(() => undefined);
+      await Promise.resolve();
+    });
+    expect(queryClient.getQueryData(queryKeys.services)).toEqual(newServices);
+    unmount();
+  });
+
   it("ignores late callbacks from a replaced EventSource", async () => {
     vi.useFakeTimers();
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
