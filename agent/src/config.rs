@@ -10,6 +10,45 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:8081/api/agent/v1/report";
 
+const AGENT_VERSION_OUTPUT: &str = concat!("unionc-agent ", env!("CARGO_PKG_VERSION"));
+
+#[cfg(target_os = "linux")]
+const fn nul_terminated<const N: usize>(value: &str) -> [u8; N] {
+    let source = value.as_bytes();
+    assert!(N == source.len() + 1);
+    let mut output = [0; N];
+    let mut index = 0;
+    while index < source.len() {
+        output[index] = source[index];
+        index += 1;
+    }
+    output
+}
+
+/// Cross-built Linux packages cannot safely execute their target binary on the
+/// packaging host. Keep an exact, NUL-terminated version record in a dedicated
+/// ELF section so the package builder can inspect the payload without running it.
+#[cfg(target_os = "linux")]
+#[used]
+#[unsafe(link_section = ".unionc.version")]
+static LINUX_PACKAGE_VERSION_MARKER: [u8; AGENT_VERSION_OUTPUT.len() + 1] =
+    nul_terminated::<{ AGENT_VERSION_OUTPUT.len() + 1 }>(AGENT_VERSION_OUTPUT);
+
+#[cfg(target_os = "linux")]
+fn agent_version_output() -> &'static str {
+    // black_box keeps the output tied to the package marker under release LTO;
+    // otherwise the optimizer could replace this read with another literal and
+    // leave the custom section eligible for linker garbage collection.
+    let marker = std::hint::black_box(&LINUX_PACKAGE_VERSION_MARKER);
+    std::str::from_utf8(&marker[..marker.len() - 1])
+        .expect("the compile-time Agent version marker is valid UTF-8")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn agent_version_output() -> &'static str {
+    AGENT_VERSION_OUTPUT
+}
+
 /// 上报报文中“实测间隔”的**服务端契约上限**。
 ///
 /// `unionc-protocol` 是 HTTP 契约边界的唯一常量来源；Agent 配置与 Server 校验都引用它。
@@ -288,7 +327,7 @@ impl AgentConfig {
                     doctor_delivery = true;
                 }
                 "-V" | "--version" => {
-                    println!("unionc-agent {}", env!("CARGO_PKG_VERSION"));
+                    println!("{}", agent_version_output());
                     std::process::exit(0);
                 }
                 "-h" | "--help" => {
@@ -801,6 +840,16 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn package_version_output_is_exact() {
+        assert_eq!(
+            agent_version_output(),
+            concat!("unionc-agent ", env!("CARGO_PKG_VERSION"))
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(LINUX_PACKAGE_VERSION_MARKER.last(), Some(&0));
+    }
 
     #[test]
     fn selecting_more_than_one_command_is_rejected() {

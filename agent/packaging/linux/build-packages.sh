@@ -21,10 +21,51 @@ esac
 [ "$(printf '%s' "$package_version" | awk -F. 'NF == 3 && $1 != "" && $2 != "" && $3 != "" { print "yes" }')" = yes ] ||
   die "Agent version is not strict MAJOR.MINOR.PATCH: $package_version"
 
-agent_binary=${AGENT_BINARY:-target/release/unionc-agent}
+agent_binary=target/release/unionc-agent
 [ -x "$agent_binary" ] || die "Agent binary is missing or not executable: $agent_binary"
-[ "$("$agent_binary" --version)" = "unionc-agent $package_version" ] ||
-  die "Agent binary version does not match Cargo package version $package_version"
+package_arch=${NFPM_ARCH:-amd64}
+case "$package_arch" in
+  amd64)
+    expected_elf_machine='Advanced Micro Devices X86-64'
+    rpm_arch=x86_64
+    ;;
+  arm64)
+    expected_elf_machine=AArch64
+    rpm_arch=aarch64
+    ;;
+  *) die "unsupported Agent Linux package architecture: $package_arch" ;;
+esac
+command -v readelf >/dev/null 2>&1 ||
+  die "required binary inspection command is unavailable: readelf"
+elf_machine=$(
+  LC_ALL=C readelf -h -- "$agent_binary" 2>/dev/null |
+    awk -F: '
+      /^[[:space:]]*Machine:/ {
+        value = $2
+        sub(/^[[:space:]]+/, "", value)
+        sub(/[[:space:]]+$/, "", value)
+        found += 1
+        machine = value
+      }
+      END {
+        if (found != 1 || machine == "") exit 1
+        print machine
+      }
+    '
+) || die "Agent package payload is not a readable ELF binary: $agent_binary"
+[ "$elf_machine" = "$expected_elf_machine" ] ||
+  die "Agent package payload architecture $elf_machine does not match $package_arch"
+LC_ALL=C readelf -p .unionc.version -- "$agent_binary" 2>/dev/null |
+  awk -v expected="unionc-agent $package_version" '
+    /^[[:space:]]*\[[[:space:]]*[[:xdigit:]]+\][[:space:]]+/ {
+      value = $0
+      sub(/^[[:space:]]*\[[[:space:]]*[[:xdigit:]]+\][[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      found += 1
+      if (value == expected) matched += 1
+    }
+    END { exit found == 1 && matched == 1 ? 0 : 1 }
+  ' || die "Agent package payload ELF version marker does not match Cargo $package_version"
 
 config_version=$(sed -n 's/^  "application_version": "\([^"]*\)",$/\1/p' agent/config.example.json)
 [ "$config_version" = "$package_version" ] ||
@@ -33,12 +74,6 @@ config_version=$(sed -n 's/^  "application_version": "\([^"]*\)",$/\1/p' agent/c
 nfpm_bin=${NFPM_BIN:-nfpm}
 command -v "$nfpm_bin" >/dev/null 2>&1 || [ -x "$nfpm_bin" ] ||
   die "nFPM is unavailable: $nfpm_bin"
-package_arch=${NFPM_ARCH:-amd64}
-case "$package_arch" in
-  amd64) rpm_arch=x86_64 ;;
-  arm64) rpm_arch=aarch64 ;;
-  *) rpm_arch=$package_arch ;;
-esac
 
 mkdir -p dist
 VERSION="$package_version" NFPM_ARCH="$package_arch" "$nfpm_bin" package \
@@ -47,4 +82,3 @@ VERSION="$package_version" NFPM_ARCH="$package_arch" "$nfpm_bin" package \
 VERSION="$package_version" NFPM_ARCH="$package_arch" "$nfpm_bin" package \
   --config agent/packaging/nfpm.yaml --packager rpm \
   --target "dist/unionc-agent-${package_version}.${rpm_arch}.rpm"
-

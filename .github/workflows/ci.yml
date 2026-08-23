@@ -103,6 +103,9 @@ jobs:
       - name: validate Linux packaging lifecycle
         if: runner.os == 'Linux'
         run: sh agent/packaging/linux/tests/test-lifecycle.sh
+      - name: validate Linux package builder
+        if: runner.os == 'Linux'
+        run: sh agent/packaging/linux/tests/test-build-packages.sh
       - name: build native Windows service, tray companion, and maintenance helper
         if: runner.os == 'Windows'
         run: >-
