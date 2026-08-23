@@ -58,6 +58,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.x'
+          cache: false
       - name: Install static Linux build toolchain
         run: |
           sudo apt-get update
@@ -130,7 +131,8 @@ jobs:
           dpkg-deb --control \
             "dist/unionc_${SERVER_VERSION}_amd64.deb" "$current_control"
           test ! -e "$current_control/preinst"
-          grep -F 'systemctl restart unionc.service' "$current_control/postinst"
+          grep -Fx 'service_name=unionc.service' "$current_control/postinst"
+          grep -F 'systemctl restart "$service_name"' "$current_control/postinst"
           grep -F 'systemctl daemon-reload' "$current_control/postrm"
           dpkg-deb --info "dist/unionc_${SERVER_VERSION}_amd64.deb"
           dpkg-deb --contents "dist/unionc_${SERVER_VERSION}_amd64.deb"
@@ -158,6 +160,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.x'
+          cache: false
       - name: Resolve and verify Agent version
         id: agent_version
         shell: bash

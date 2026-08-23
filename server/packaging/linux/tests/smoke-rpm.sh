@@ -25,7 +25,8 @@ docker run --rm \
     package=${packages[0]}
 
     rpm -qp --scripts "$package" >/tmp/unionc-current-rpm-scripts
-    grep -F "systemctl restart unionc.service" /tmp/unionc-current-rpm-scripts
+    grep -Fx "service_name=unionc.service" /tmp/unionc-current-rpm-scripts
+    grep -F "systemctl restart \"\$service_name\"" /tmp/unionc-current-rpm-scripts
 
     dnf install -y curl util-linux "$package"
     test "$(rpm -q --qf "%{VERSION}" unionc)" = \
