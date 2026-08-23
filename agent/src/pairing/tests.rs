@@ -1079,6 +1079,17 @@ mod tests {
                     report_endpoint: "https://new.example/api/agent/v1/report".into(),
                 })
             );
+            let binding_before_status = fs::read(active_binding_path(&config)).unwrap();
+            let status = local_status(&config).unwrap();
+            assert_eq!(
+                status.active_report_endpoint.as_deref(),
+                Some("https://new.example/api/agent/v1/report")
+            );
+            assert!(status.active_binding_persisted);
+            assert_eq!(
+                fs::read(active_binding_path(&config)).unwrap(),
+                binding_before_status
+            );
             assert!(config_path.is_dir());
             assert!(matches!(
                 load_state(&config).unwrap(),
@@ -1148,6 +1159,15 @@ mod tests {
         )
         .unwrap();
 
+        let state_before_status = fs::read(state_path(&config)).unwrap();
+        assert!(!active_binding_path(&config).exists());
+        let status = local_status(&config).unwrap();
+        assert_eq!(
+            status.active_report_endpoint.as_deref(),
+            Some(config.endpoint.as_str())
+        );
+        assert!(!status.active_binding_persisted);
+        assert_eq!(fs::read(state_path(&config)).unwrap(), state_before_status);
         assert!(!active_binding_path(&config).exists());
         assert!(reporter_for_current_active_state(&config).unwrap().is_some());
         assert_eq!(
@@ -1206,6 +1226,8 @@ mod tests {
         };
         persist_active_binding_unlocked(&config, &mismatched).unwrap();
 
+        let status_error = local_status(&config).expect_err("status must reject a mismatched binding");
+        assert!(status_error.to_string().contains("does not match"));
         let reporter_error = match reporter_for_current_active_state(&config) {
             Ok(_) => panic!("a mismatched binding must fail closed"),
             Err(error) => error,

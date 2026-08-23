@@ -9,6 +9,50 @@ pub fn local_progress(config: &AgentConfig) -> anyhow::Result<Option<PairingProg
     load_state(config).map(|state| state.map(progress_from_terminal))
 }
 
+/// Read pairing progress and its active endpoint binding as one stable, byte-for-byte read-only
+/// snapshot. Re-reading the journal prevents an atomic replacement racing with the binding read
+/// from manufacturing a false mismatch in diagnostics.
+pub fn local_status(config: &AgentConfig) -> anyhow::Result<LocalPairingStatus> {
+    const MAX_SNAPSHOT_ATTEMPTS: usize = 3;
+
+    for _ in 0..MAX_SNAPSHOT_ATTEMPTS {
+        let state = load_state(config)?;
+        if !matches!(state.as_ref(), Some(StoredPairingState::Active { .. })) {
+            return Ok(LocalPairingStatus {
+                progress: state.map(progress_from_terminal),
+                active_report_endpoint: None,
+                active_binding_persisted: false,
+            });
+        }
+        let active = state.expect("checked Active pairing state above");
+        let expected = binding_from_active_state(&active)?;
+        let binding = load_active_binding(config);
+        let current = load_state(config)?;
+        let current_binding = match current.as_ref() {
+            Some(current @ StoredPairingState::Active { .. }) => {
+                Some(binding_from_active_state(current)?)
+            }
+            _ => None,
+        };
+        if current_binding.as_ref() != Some(&expected) {
+            continue;
+        }
+        let persisted = match binding? {
+            Some(binding) if binding == expected => true,
+            Some(_) => bail!("active binding does not match the current Active pairing state"),
+            // A current-version Active journal from an installation upgraded in place remains
+            // usable; run/pair will migrate it while holding the transaction lock.
+            None => false,
+        };
+        return Ok(LocalPairingStatus {
+            progress: Some(progress_from_terminal(active)),
+            active_report_endpoint: Some(expected.report_endpoint),
+            active_binding_persisted: persisted,
+        });
+    }
+    bail!("pairing state changed repeatedly while reading local status")
+}
+
 /// Return whether the durable host-id belongs to a current package-version
 /// pairing transaction that still has an authorized credential.
 pub fn has_current_authorized_identity(config: &AgentConfig) -> anyhow::Result<bool> {

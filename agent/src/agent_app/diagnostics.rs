@@ -287,11 +287,23 @@ pub(super) fn print_local_status(config: &AgentConfig) -> anyhow::Result<()> {
         .take()
         .expect("spool inspection always produces a check");
 
-    let pairing_result = pairing::local_progress(config);
+    let pairing_result = pairing::local_status(config);
     let authorization_result = pairing::local_auth_state(config);
     let pairing_error = pairing_result.as_ref().err().map(ToString::to_string);
     let authorization_error = authorization_result.as_ref().err().map(ToString::to_string);
-    let pairing = pairing_result.ok().flatten();
+    let pairing_status = pairing_result.ok();
+    let pairing = pairing_status
+        .as_ref()
+        .and_then(|status| status.progress.as_ref());
+    let active_endpoint = pairing_status
+        .as_ref()
+        .and_then(|status| status.active_report_endpoint.as_deref());
+    let active_binding_persisted = pairing_status
+        .as_ref()
+        .is_some_and(|status| status.active_binding_persisted);
+    let status_endpoint = pairing_error
+        .is_none()
+        .then(|| active_endpoint.unwrap_or(config.endpoint.as_str()));
     let authorization = authorization_result.ok().flatten();
     let reauth_required = authorization
         .as_ref()
@@ -323,6 +335,31 @@ pub(super) fn print_local_status(config: &AgentConfig) -> anyhow::Result<()> {
         "unconfigured"
     };
     let config_status = config_check.status;
+    let (binding_status, binding_code, binding_message) = if let Some(error) = &pairing_error {
+        (
+            "error",
+            Some("active_pairing_snapshot_invalid"),
+            error.clone(),
+        )
+    } else if active_endpoint.is_some() && !active_binding_persisted {
+        (
+            "warning",
+            Some("active_binding_missing"),
+            "legacy Active state will create its private endpoint binding on the next run".into(),
+        )
+    } else if active_endpoint.is_some() {
+        (
+            "ok",
+            None,
+            "active credential endpoint binding is readable and current".into(),
+        )
+    } else {
+        (
+            "skipped",
+            None,
+            "there is no Active pairing endpoint to inspect".into(),
+        )
+    };
     let next_action = match overall_state {
         "degraded" => "repair the failed local check, then run `unionc-agent doctor`",
         "reauth_required" => "create a new pairing invitation in UnionC and pair this host again",
@@ -340,6 +377,11 @@ pub(super) fn print_local_status(config: &AgentConfig) -> anyhow::Result<()> {
             "code": pairing_error.as_ref().map(|_| "pairing_state_invalid"),
             "message": pairing_error
         },
+        "active_binding": {
+            "status": binding_status,
+            "code": binding_code,
+            "message": binding_message
+        },
         "authorization": {
             "status": if authorization_error.is_some() { "error" } else { "ok" },
             "code": authorization_error.as_ref().map(|_| "authorization_state_invalid"),
@@ -352,7 +394,7 @@ pub(super) fn print_local_status(config: &AgentConfig) -> anyhow::Result<()> {
         "status": overall_state,
         "configured": configured,
         "config": config.config_path,
-        "endpoint": config.endpoint,
+        "endpoint": status_endpoint,
         "state_dir": config.state_dir,
         "host_id": host.id,
         "credential_present": credential.present,
@@ -381,6 +423,7 @@ pub(super) fn print_local_status(config: &AgentConfig) -> anyhow::Result<()> {
                     "missing"
                 }
             );
+            println!("  Endpoint: {}", status_endpoint.unwrap_or("not available"));
             println!(
                 "  Spool: {} pending, {} invalid, {} bytes",
                 spool.pending_batches, spool.invalid_batches, spool.total_bytes

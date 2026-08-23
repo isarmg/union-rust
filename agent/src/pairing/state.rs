@@ -151,6 +151,14 @@ pub enum PairingProgress {
     },
 }
 
+/// One read-only view used by `status`; it never creates locks or migrates state.
+#[derive(Debug)]
+pub struct LocalPairingStatus {
+    pub progress: Option<PairingProgress>,
+    pub active_report_endpoint: Option<String>,
+    pub active_binding_persisted: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LocalAuthState {

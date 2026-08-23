@@ -34,7 +34,7 @@ use activation::*;
 use client::*;
 use commit::*;
 use state::*;
-pub use state::{LocalAuthState, PairingProgress, PairingSession};
+pub use state::{LocalAuthState, LocalPairingStatus, PairingProgress, PairingSession};
 
 // Flow fragments stay in this module scope so the state machine retains its
 // existing private visibility and compare-and-swap transaction invariants.
