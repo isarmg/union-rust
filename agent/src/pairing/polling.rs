@@ -132,6 +132,8 @@ fn pairing_status_endpoint(
     pairing_endpoint: &str,
     request_id: Uuid,
 ) -> anyhow::Result<reqwest::Url> {
+    crate::config::validate_pairing_endpoint(pairing_endpoint)
+        .context("stored pairing endpoint is unsafe")?;
     let mut endpoint = reqwest::Url::parse(pairing_endpoint)
         .context("stored pairing endpoint is not a valid URL")?;
     if endpoint.query().is_some() || endpoint.fragment().is_some() {

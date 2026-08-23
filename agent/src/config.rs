@@ -714,7 +714,7 @@ fn validate_endpoint(endpoint: &str, allow_insecure_http: bool) -> anyhow::Resul
     }
 }
 
-fn validate_pairing_endpoint(endpoint: &str) -> anyhow::Result<()> {
+pub(crate) fn validate_pairing_endpoint(endpoint: &str) -> anyhow::Result<()> {
     validate_endpoint(endpoint, false).context(
         "browser pairing requires HTTPS except when the endpoint is on the local loopback host",
     )?;

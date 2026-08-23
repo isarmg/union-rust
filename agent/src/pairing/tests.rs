@@ -54,6 +54,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn persisted_pairing_endpoints_are_revalidated_before_network_use() {
+        let request_id = Uuid::new_v4();
+        let remote_plaintext = "http://192.0.2.10/api/agent/v2/pairing-requests";
+        assert!(pairing_status_endpoint(remote_plaintext, request_id).is_err());
+        assert!(activation_endpoint(remote_plaintext).is_err());
+    }
+
+    #[tokio::test]
+    async fn persisted_creating_state_cannot_reuse_remote_plaintext_endpoint() {
+        let state = StoredPairingState::Creating {
+            version: PAIRING_STATE_VERSION,
+            generation: Uuid::new_v4(),
+            pairing_endpoint: "http://192.0.2.10/api/agent/v2/pairing-requests".into(),
+            report_endpoint: "http://192.0.2.10/api/agent/v1/report".into(),
+            host: test_host(),
+            bearer_secret: random_secret(),
+            polling_secret: random_secret(),
+        };
+        let config = AgentConfig {
+            allow_insecure_http: true,
+            ..AgentConfig::default()
+        };
+
+        let error = finish_create_request(&config, state)
+            .await
+            .expect_err("old state must be checked under the current pairing transport policy");
+        assert!(format!("{error:#}").contains("browser pairing requires HTTPS"));
+    }
+
     fn one_shot_pairing_server() -> (String, thread::JoinHandle<()>) {
         one_shot_pairing_server_with_activation_url(|request_id| {
             format!("/agent/activate/{request_id}")

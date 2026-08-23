@@ -4,6 +4,8 @@ use anyhow::{Context, bail};
 use uuid::Uuid;
 
 pub(super) fn activation_endpoint(pairing_endpoint: &str) -> anyhow::Result<reqwest::Url> {
+    crate::config::validate_pairing_endpoint(pairing_endpoint)
+        .context("stored pairing endpoint is unsafe")?;
     let mut endpoint = reqwest::Url::parse(pairing_endpoint)
         .context("stored pairing endpoint is not a valid URL")?;
     if !endpoint.username().is_empty() || endpoint.password().is_some() {
