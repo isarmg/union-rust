@@ -69,6 +69,7 @@ pub struct HostIdentity {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SystemSnapshot {
+    #[serde(with = "crate::json_u64")]
     pub uptime_seconds: u64,
     pub cpu: CpuSnapshot,
     pub memory: MemorySnapshot,
@@ -91,10 +92,15 @@ pub struct CpuSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemorySnapshot {
+    #[serde(with = "crate::json_u64")]
     pub total_bytes: u64,
+    #[serde(with = "crate::json_u64")]
     pub used_bytes: u64,
+    #[serde(with = "crate::json_u64")]
     pub available_bytes: u64,
+    #[serde(with = "crate::json_u64")]
     pub swap_total_bytes: u64,
+    #[serde(with = "crate::json_u64")]
     pub swap_used_bytes: u64,
 }
 
@@ -102,14 +108,20 @@ pub struct MemorySnapshot {
 #[serde(deny_unknown_fields)]
 pub struct NetworkSnapshot {
     pub name: String,
+    #[serde(with = "crate::json_u64")]
     pub received_bytes_total: u64,
+    #[serde(with = "crate::json_u64")]
     pub transmitted_bytes_total: u64,
     /// Rates are floating point so sub-unit sampling intervals do not silently truncate them.
     pub received_bytes_per_second: f64,
     pub transmitted_bytes_per_second: f64,
+    #[serde(with = "crate::json_u64")]
     pub packets_received_total: u64,
+    #[serde(with = "crate::json_u64")]
     pub packets_transmitted_total: u64,
+    #[serde(with = "crate::json_u64")]
     pub receive_errors_total: u64,
+    #[serde(with = "crate::json_u64")]
     pub transmit_errors_total: u64,
 }
 
@@ -119,9 +131,13 @@ pub struct DiskSnapshot {
     pub name: String,
     pub mount_point: String,
     pub file_system: String,
+    #[serde(with = "crate::json_u64")]
     pub total_bytes: u64,
+    #[serde(with = "crate::json_u64")]
     pub available_bytes: u64,
+    #[serde(with = "crate::json_u64")]
     pub read_bytes_total: u64,
+    #[serde(with = "crate::json_u64")]
     pub written_bytes_total: u64,
     pub read_bytes_per_second: f64,
     pub written_bytes_per_second: f64,
@@ -146,7 +162,9 @@ pub struct GpuSnapshot {
     pub vendor: String,
     pub name: String,
     pub utilization_percent: Option<f64>,
+    #[serde(default, with = "crate::json_u64::option")]
     pub memory_total_bytes: Option<u64>,
+    #[serde(default, with = "crate::json_u64::option")]
     pub memory_used_bytes: Option<u64>,
     pub temperature_celsius: Option<f64>,
     pub power_watts: Option<f64>,
@@ -222,7 +240,9 @@ impl Capability {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentHealth {
+    #[serde(with = "crate::json_u64")]
     pub spool_pending_batches: u64,
+    #[serde(with = "crate::json_u64")]
     pub collector_errors: u64,
 }
 
@@ -310,6 +330,69 @@ mod tests {
             serde_json::from_slice::<AgentReport>(&json).unwrap(),
             report
         );
+    }
+
+    #[test]
+    fn u64_fields_switch_to_decimal_strings_past_the_javascript_boundary() {
+        let mut report = fixture();
+        report.system.uptime_seconds = crate::json_u64::MAX_SAFE_INTEGER;
+        report.system.networks[0].received_bytes_total = crate::json_u64::MAX_SAFE_INTEGER + 1;
+        report.system.networks[0].packets_received_total = u64::MAX;
+        report.system.gpus.push(GpuSnapshot {
+            id: "gpu0".into(),
+            vendor: "test".into(),
+            name: "test".into(),
+            utilization_percent: None,
+            memory_total_bytes: Some(u64::MAX),
+            memory_used_bytes: None,
+            temperature_celsius: None,
+            power_watts: None,
+            core_clock_mhz: None,
+            memory_clock_mhz: None,
+            pcie_rx_bytes_per_second: None,
+            pcie_tx_bytes_per_second: None,
+            source: "test".into(),
+        });
+
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(
+            json["system"]["uptime_seconds"],
+            serde_json::json!(9_007_199_254_740_991_u64)
+        );
+        assert_eq!(
+            json["system"]["networks"][0]["received_bytes_total"],
+            "9007199254740992"
+        );
+        assert_eq!(
+            json["system"]["networks"][0]["packets_received_total"],
+            "18446744073709551615"
+        );
+        assert_eq!(
+            json["system"]["gpus"][0]["memory_total_bytes"],
+            "18446744073709551615"
+        );
+        assert!(json["system"]["gpus"][0]["memory_used_bytes"].is_null());
+        assert_eq!(serde_json::from_value::<AgentReport>(json).unwrap(), report);
+    }
+
+    #[test]
+    fn legacy_large_json_integers_remain_accepted_without_loss() {
+        let mut json = serde_json::to_value(fixture()).unwrap();
+        json["system"]["networks"][0]["received_bytes_total"] = serde_json::json!(u64::MAX);
+        let report = serde_json::from_value::<AgentReport>(json).unwrap();
+        assert_eq!(report.system.networks[0].received_bytes_total, u64::MAX);
+    }
+
+    #[test]
+    fn malformed_decimal_u64_strings_are_rejected() {
+        for invalid in ["", "01", "+1", "-1", "1.0", "18446744073709551616"] {
+            let mut json = serde_json::to_value(fixture()).unwrap();
+            json["system"]["networks"][0]["received_bytes_total"] = serde_json::json!(invalid);
+            assert!(
+                serde_json::from_value::<AgentReport>(json).is_err(),
+                "accepted malformed u64 string {invalid:?}"
+            );
+        }
     }
 
     #[test]

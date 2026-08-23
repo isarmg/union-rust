@@ -1,5 +1,7 @@
 // Telemetry values are read-only snapshots. Nullable values mean the agent could
 // not collect the metric; the UI deliberately distinguishes those values from a real zero.
+import type { JsonU64 } from "../../shared/lib/format";
+
 export interface MonitoringCapability {
   name: string;
   available: boolean;
@@ -48,33 +50,33 @@ export interface MonitoringCpuReport {
 }
 
 export interface MonitoringMemoryReport {
-  total_bytes: number;
-  used_bytes: number;
-  available_bytes: number;
-  swap_total_bytes: number;
-  swap_used_bytes: number;
+  total_bytes: JsonU64;
+  used_bytes: JsonU64;
+  available_bytes: JsonU64;
+  swap_total_bytes: JsonU64;
+  swap_used_bytes: JsonU64;
 }
 
 export interface MonitoringNetworkReport {
   name: string;
-  received_bytes_total: number;
-  transmitted_bytes_total: number;
+  received_bytes_total: JsonU64;
+  transmitted_bytes_total: JsonU64;
   received_bytes_per_second: number;
   transmitted_bytes_per_second: number;
-  packets_received_total: number;
-  packets_transmitted_total: number;
-  receive_errors_total: number;
-  transmit_errors_total: number;
+  packets_received_total: JsonU64;
+  packets_transmitted_total: JsonU64;
+  receive_errors_total: JsonU64;
+  transmit_errors_total: JsonU64;
 }
 
 export interface MonitoringDiskReport {
   name: string;
   mount_point: string;
   file_system: string;
-  total_bytes: number;
-  available_bytes: number;
-  read_bytes_total: number;
-  written_bytes_total: number;
+  total_bytes: JsonU64;
+  available_bytes: JsonU64;
+  read_bytes_total: JsonU64;
+  written_bytes_total: JsonU64;
   read_bytes_per_second: number;
   written_bytes_per_second: number;
   is_read_only: boolean;
@@ -94,8 +96,8 @@ export interface MonitoringGpuReport {
   vendor: string;
   name: string;
   utilization_percent: number | null;
-  memory_total_bytes: number | null;
-  memory_used_bytes: number | null;
+  memory_total_bytes: JsonU64 | null;
+  memory_used_bytes: JsonU64 | null;
   temperature_celsius: number | null;
   power_watts: number | null;
   core_clock_mhz: number | null;
@@ -119,7 +121,7 @@ export interface MonitoringAgentReport {
   };
   interval_seconds: number;
   system: {
-    uptime_seconds: number;
+    uptime_seconds: JsonU64;
     cpu: MonitoringCpuReport;
     memory: MonitoringMemoryReport;
     networks: MonitoringNetworkReport[];
@@ -128,7 +130,7 @@ export interface MonitoringAgentReport {
     gpus: MonitoringGpuReport[];
   };
   capabilities: MonitoringCapability[];
-  agent: { spool_pending_batches: number; collector_errors: number };
+  agent: { spool_pending_batches: JsonU64; collector_errors: JsonU64 };
 }
 
 export type AgentInstanceStatus = "pending" | "expired" | "cancelled" | "active";

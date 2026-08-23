@@ -11,10 +11,13 @@ import {
 } from "lucide-react";
 import { InlineNotice, LoadingBlock, StatusLed } from "../../../shared/components/ui";
 import {
+  addJsonU64,
   formatBytes,
   formatBytesPerSecond,
   formatDateTime,
+  formatInteger,
   percent,
+  subtractJsonU64,
 } from "../../../shared/lib/format";
 import { HistoryMetrics } from "./HistoryMetrics";
 import {
@@ -167,9 +170,9 @@ function NetworkTable({ report }: { report: MonitoringAgentReport | null | undef
         formatBytesPerSecond(network.transmitted_bytes_per_second),
         formatBytes(network.received_bytes_total),
         formatBytes(network.transmitted_bytes_total),
-        network.packets_received_total.toLocaleString(),
-        network.packets_transmitted_total.toLocaleString(),
-        (network.receive_errors_total + network.transmit_errors_total).toLocaleString(),
+        formatInteger(network.packets_received_total),
+        formatInteger(network.packets_transmitted_total),
+        formatInteger(addJsonU64(network.receive_errors_total, network.transmit_errors_total)),
       ])}
       emptyLabel="暂无网络接口数据"
     />
@@ -182,7 +185,7 @@ function StorageTable({ report }: { report: MonitoringAgentReport | null | undef
       title="磁盘与文件系统"
       columns={["设备", "挂载点", "文件系统", "已用 / 总量", "占用率", "读取", "写入", "模式"]}
       rows={(report?.system.disks ?? []).map((disk) => {
-        const used = Math.max(0, disk.total_bytes - disk.available_bytes);
+        const used = subtractJsonU64(disk.total_bytes, disk.available_bytes);
         return [
           disk.name || NA,
           disk.mount_point || NA,
@@ -200,7 +203,7 @@ function StorageTable({ report }: { report: MonitoringAgentReport | null | undef
 }
 
 function gpuMemory(gpu: MonitoringGpuReport): string {
-  return isNumber(gpu.memory_used_bytes) && isNumber(gpu.memory_total_bytes)
+  return gpu.memory_used_bytes !== null && gpu.memory_total_bytes !== null
     ? `${formatBytes(gpu.memory_used_bytes)} / ${formatBytes(gpu.memory_total_bytes)}（${formatPercent(percent(gpu.memory_used_bytes, gpu.memory_total_bytes))}）`
     : NA;
 }

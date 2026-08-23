@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod json_u64;
 mod pairing;
 mod report;
 
