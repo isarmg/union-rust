@@ -1,12 +1,5 @@
 import { formatBytes, formatBytesPerSecond } from "../../../shared/lib/format";
-import {
-  CardInner,
-  CardRow,
-  Metric,
-  StatusLed,
-  TickerText,
-  TruncatedText,
-} from "../../../shared/components/ui";
+import { Metric } from "../../../shared/components/ui";
 import {
   formatMetric,
   formatPercent,
@@ -14,45 +7,9 @@ import {
   isNumber,
   metricTone,
   NA,
-  statusMeta,
   sumNullable,
 } from "../model";
 import type { MonitoringAgentReport, MonitoringHostSummary } from "../types";
-
-export function MonitoringHostCard({ host, selected, onSelect }: {
-  host: MonitoringHostSummary;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  const status = statusMeta(host.status);
-  const network = sumNullable(
-    host.network_received_bytes_per_second,
-    host.network_transmitted_bytes_per_second,
-  );
-  return (
-    <button
-      className={`content-card monitoring-host-card${selected ? " selected" : ""}`}
-      type="button"
-      onClick={onSelect}
-      aria-pressed={selected}
-      aria-label={`查看主机 ${host.name}`}
-    >
-      <CardInner>
-        <CardRow label="主机">
-          <TruncatedText grow><TickerText>{host.name || NA}</TickerText></TruncatedText>
-          <span title={status.label}><StatusLed tone={status.tone} /></span>
-        </CardRow>
-        <CardRow label="状态">{status.label}</CardRow>
-        <CardRow label="系统">
-          <TruncatedText><TickerText>{[host.os, host.arch].filter(Boolean).join(" · ") || NA}</TickerText></TruncatedText>
-        </CardRow>
-        <CardRow label="CPU">{formatPercent(host.cpu_usage_percent)}</CardRow>
-        <CardRow label="GPU">{formatPercent(host.gpu_utilization_percent)}</CardRow>
-        <CardRow label="网络">{formatMetric(network, formatBytesPerSecond)}</CardRow>
-      </CardInner>
-    </button>
-  );
-}
 
 export function LiveMetrics({ host, report }: {
   host: MonitoringHostSummary;

@@ -355,7 +355,6 @@ pub(super) fn print_local_status(config: &AgentConfig) -> anyhow::Result<()> {
         "endpoint": config.endpoint,
         "state_dir": config.state_dir,
         "host_id": host.id,
-        "host_name": config.host_name,
         "credential_present": credential.present,
         "spool_pending_batches": spool.pending_batches,
         "spool_invalid_batches": spool.invalid_batches,
@@ -468,10 +467,7 @@ pub(super) async fn run_read_only_doctor(config: &AgentConfig) -> anyhow::Result
     );
 
     let started = Instant::now();
-    let mut collection_host = transient_host_identity(diagnostic_id);
-    if let Some(name) = &config.host_name {
-        collection_host.name.clone_from(name);
-    }
+    let collection_host = transient_host_identity(diagnostic_id);
     let mut sampler = SystemSampler::new();
     let report = sampler.collect(
         collection_host,

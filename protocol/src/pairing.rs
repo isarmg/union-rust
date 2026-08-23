@@ -133,12 +133,11 @@ mod tests {
     fn host() -> HostIdentity {
         HostIdentity {
             id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(),
-            name: "host".into(),
             os: "linux".into(),
             os_version: None,
             kernel_version: None,
             arch: "x86_64".into(),
-            agent_version: "0.3.2".into(),
+            agent_version: "0.3.3".into(),
         }
     }
 

@@ -1,6 +1,6 @@
 # UnionC 项目文档
 
-> 版本：v0.3.2 ｜ 文档更新：2026-08-22
+> 版本：v0.3.3 ｜ 文档更新：2026-08-22
 > 本文是项目的完整说明：功能、架构、各组成部分、接口契约、部署与运维。
 
 ## 目录
@@ -169,7 +169,7 @@ server/src/
 ├─ state.rs         跨功能共享状态
 ├─ error.rs         统一错误类型与 HTTP 映射
 │
-├─ monitoring/      只读主机监控
+├─ monitoring/      主机监控与实例生命周期
 │  ├─ model/          报文类型、校验、指标摘要计算
 │  ├─ http/           Agent 配对/上报 + 控制台查询/撤销
 │  └─ store/          配对、遥测、主机和保留期持久化
@@ -427,9 +427,11 @@ token、直接 report token 或旧状态回填。`/api/agent/v1/report` 是当�
 | 首次接入 | 创建待激活实例并完成浏览器配对 | 新实例进入 active，Agent secret 从未经过浏览器 |
 | 凭据修复/换机 | 对现有 `instance_id` 创建新邀请 | 新 credential 激活、旧 credential 撤销，历史与 instance ID 不变 |
 | 主机退役 | `POST /api/monitoring/hosts/{id}/revoke` | 持久标记 revoked，拒绝全部 credential，保留身份和历史 |
+| 永久删除 | `DELETE /api/monitoring/managed-instances/{id}` | 原子删除实例、历史、credential、配对请求和邀请；不可恢复 |
 
-撤销与物理删除严格分开。保留 revoked tombstone 是安全要求，可维持凭据拒绝状态、历史和
-审计关联。恢复 revoked 实例必须由管理员显式创建绑定该 `instance_id` 的新邀请。
+撤销与物理删除严格分开。常规退役应保留 revoked tombstone，以维持凭据拒绝状态、历史和
+审计关联；只有管理员明确确认永久删除时才清除实例数据。恢复 revoked 实例必须由管理员
+显式创建绑定该 `instance_id` 的新邀请。
 
 ### 4.3 采集与投递
 
@@ -674,6 +676,8 @@ Agent 端点都**不**走会话中间件与 CSRF；它们按各自协议鉴权�
 | GET | `/api/monitoring/hosts` | 主机列表，`?limit&offset`（默认 200，上限 1000），响应含 `total` |
 | GET | `/api/monitoring/hosts/{id}` | 主机详情（含完整报文） |
 | GET | `/api/monitoring/hosts/{id}/history` | 历史曲线，`?from&to&limit`（默认 300，上限 1000） |
+| PATCH | `/api/monitoring/managed-instances/{id}` | 更新 Server 备注；Agent 后续上报和重新配对都不会覆盖 |
+| DELETE | `/api/monitoring/managed-instances/{id}` | 永久删除实例及全部关联数据 |
 | GET/POST | `/api/monitoring/agent-instances` | 列出邀请 / 创建待激活实例；创建响应才含一次性激活码 |
 | DELETE | `/api/monitoring/agent-instances/{invite_id}` | 取消尚未消费的激活邀请 |
 | POST | `/api/monitoring/hosts/{id}/revoke` | 持久撤销实例及全部 credential，保留历史与 tombstone |
@@ -737,8 +741,8 @@ Agent 侧在**启动时**就校验配置的间隔是否越界，而不是等运�
 Agent 可以把配额全部塞进任意一个不限长的字符串，而这些文本会落库并原样回传控制台。
 校验分两类：
 
-- `validate_text`（身份字段，**必须非空**）：`host.name` ≤255、`host.os` ≤64、
-  `host.arch` ≤64、`host.agent_version` ≤128、`network.name` ≤255、`disk.name` ≤1024、
+- `validate_text`（身份字段，**必须非空**）：`host.os` ≤64、`host.arch` ≤64、
+  `host.agent_version` ≤128、`network.name` ≤255、`disk.name` ≤1024、
   `disk.mount_point` ≤4096、`capability.name`/`source`/`error_kind` ≤128、
   `capability.message` ≤1024
 - `validate_optional_text`（描述性字段，**允许为空**）：`host.os_version`/`kernel_version`
@@ -977,7 +981,7 @@ SQLite 与 Server 位于同一台 Linux 主机的本地磁盘。该拓扑不支�
 # 必须在工作区根执行——合并为 Cargo workspace 后产物在根 target/
 cargo build --release -p unionc
 NFPM_ARCH=amd64 server/packaging/linux/build-packages.sh
-sudo dpkg -i unionc_0.3.2_amd64.deb
+sudo dpkg -i unionc_0.3.3_amd64.deb
 ```
 
 两个 Linux 打包脚本都要求 `nfpm` 位于 `PATH`，或由 `NFPM_BIN` 指向可执行文件；正式发布
@@ -998,10 +1002,10 @@ sudo dpkg -i unionc_0.3.2_amd64.deb
 | 数据目录 | `/var/lib/unionc`（0700 unionc:unionc） |
 | 内嵌数据库 | `/var/lib/unionc/unionc.db`（显式首次 bootstrap 创建，0600 unionc:unionc） |
 
-环境文件中的 `UNIONC_PACKAGE_VERSION=0.3.2` 是不可修改的包归属标记；裸二进制部署不要求
+环境文件中的 `UNIONC_PACKAGE_VERSION=0.3.3` 是不可修改的包归属标记；裸二进制部署不要求
 设置它。包安装还以 `/var/lib/unionc-package` 中绑定当前版本与实际 UID/GID 的 root-only
 marker 校验账户和数据目录。缺少当前标记的既有环境文件、同名账户或数据目录一律拒绝接管；
-普通卸载会保留数据和 marker，只允许同一 0.3.2 重装。
+普通卸载会保留数据和 marker，只允许同一 0.3.3 重装。
 
 unit 显式设置 `UNIONC_DATA_DIR=/var/lib/unionc` 与 `WorkingDirectory`，并附一组
 systemd 硬化：`CapabilityBoundingSet=` 为空、`NoNewPrivileges`、`ProtectSystem=strict`、
@@ -1041,7 +1045,7 @@ Pre-release；当前不执行平台签名、公证、GPG 签名或 provenance，
 
 | 变量 | 必填 | 说明 |
 |---|---|---|
-| `UNIONC_PACKAGE_VERSION` | DEB/RPM 固定 | 包内必须精确为 `0.3.2`，仅供生命周期归属校验；不要修改，裸二进制部署不设置 |
+| `UNIONC_PACKAGE_VERSION` | DEB/RPM 固定 | 包内必须精确为 `0.3.3`，仅供生命周期归属校验；不要修改，裸二进制部署不设置 |
 | `UNIONC_ENV` | 生产必填 | 设为 `production` 启用全部生产约束 |
 | `UNIONC_DATA_DIR` | 强烈建议 | 数据目录绝对路径；各级不得为符号链接，最终目录须由服务 UID 所有且精确 0700；unit 已设为 `/var/lib/unionc` |
 | `UNIONC_SECRET_KEY` | 生产必填 | 32 字节主密钥的 Base64 |
@@ -1065,23 +1069,23 @@ apt/rpm 仓库、签名 Windows MSI/winget、签名并公证的 macOS pkg、MDM�
 # 必须在工作区根执行
 cargo build --release -p unionc-agent
 NFPM_ARCH=amd64 agent/packaging/linux/build-packages.sh
-sudo dpkg -i unionc-agent_0.3.2_amd64.deb
+sudo dpkg -i unionc-agent_0.3.3_amd64.deb
 ```
 
 Windows 当前只发布 x64 MSI。可双击安装，或在管理员命令提示符中执行；`PURGE=1` 只用于
 已经在 Web 撤销实例后的永久本地清理：
 
 ```cmd
-msiexec.exe /i UnionC-Agent-0.3.2-x64.msi /qn /norestart
-msiexec.exe /x UnionC-Agent-0.3.2-x64.msi /qn /norestart
-msiexec.exe /x UnionC-Agent-0.3.2-x64.msi PURGE=1 /qn /norestart
+msiexec.exe /i UnionC-Agent-0.3.3-x64.msi /qn /norestart
+msiexec.exe /x UnionC-Agent-0.3.3-x64.msi /qn /norestart
+msiexec.exe /x UnionC-Agent-0.3.3-x64.msi PURGE=1 /qn /norestart
 ```
 
 安装完成后的授权协议相同，Windows 另提供无需手写命令的托盘入口：
 
 1. 管理员在 Web 创建待激活实例并把一次性授权密钥交给安装人员；
 2. Windows 双击交互安装成功后，从通知区托盘右键选择“配对/重新配对”，在随机回环地址的
-   本机页面一次填写 Server HTTPS 地址、一次性授权密钥和可选主机名称，并接受机器级
+   本机页面一次填写 Server HTTPS 地址和一次性授权密钥，并接受机器级
    操作所需的 UAC；其他平台
    或 Windows 诊断场景以能写 Agent 私有状态目录的权限运行：
 
@@ -1126,10 +1130,9 @@ purge；Windows x64 WiX MSI 把只读程序与可变状态分离，以原生 SCM
 
 | 配置项 | 环境变量 | 默认 | 说明 |
 |---|---|---|---|
-| `application_version` | — | `0.3.2` | 持久配置必填且必须精确等于当前 Agent 包版本 |
+| `application_version` | — | `0.3.3` | 持久配置必填且必须精确等于当前 Agent 包版本 |
 | `endpoint` | `UNIONC_AGENT_ENDPOINT` | `http://127.0.0.1:8081/api/agent/v1/report` | 上报地址 |
 | `pairing_endpoint` | `UNIONC_AGENT_PAIRING_ENDPOINT` | 由标准 report endpoint 推导 | v2 配对请求地址；配对成功时持久化 JSON 字段会被清空，环境变量仍可在下次加载时覆盖 |
-| `host_name` | `UNIONC_AGENT_HOST_NAME` | 操作系统主机名 | 管理台显示名称，可由 `pair --name` 设置 |
 | `interval_seconds` | `UNIONC_AGENT_INTERVAL_SECONDS` | 10 | 采集周期，1-3600 |
 | `slow_interval_seconds` | `UNIONC_AGENT_SLOW_INTERVAL_SECONDS` | 30 | 温度等慢速指标周期，不得小于 `interval_seconds` |
 | `request_timeout_seconds` | — | 10 | 单次 HTTP 请求超时 |
@@ -1145,7 +1148,7 @@ purge；Windows x64 WiX MSI 把只读程序与可变状态分离，以原生 SCM
 
 配置文件存在时必须包含表中的完整当前结构；缺字段、未知字段和不同
 `application_version` 都会在环境变量覆盖之前被拒绝。配置文件不存在时才使用编译期的
-0.3.2 默认值，成功配对会原子写出完整当前结构。
+0.3.3 默认值，成功配对会原子写出完整当前结构。
 
 pairing/report 分域时，配对成功会把持久化 JSON 中的 `pairing_endpoint` 清为 `null`。
 若服务长期设置 `UNIONC_AGENT_PAIRING_ENDPOINT`，下次加载会自动重新覆盖；否则重新配对前
@@ -1180,7 +1183,8 @@ journalctl -u unionc --since '1 hour ago' -p warning      # 近期告警
 ### 10.2 新增被监控主机
 
 1. 通过组织的软件渠道安装 Agent；管理台不分发安装包；
-2. 管理台打开“主机 → 添加 Agent”，填写实例名称，生成默认15分钟有效的一次性授权密钥；
+2. 管理台打开“主机”，点击侧栏“+”，生成默认 15 分钟有效的一次性授权密钥；Server 同时
+   为实例建立可内联编辑的备注，Agent 不采集或上报设备名称；
 3. Windows 从托盘选择“配对/重新配对”；其他平台或诊断场景运行
    `unionc-agent pair --server https://unionc.example.com`；
 4. Windows 在本机配置页同时填写 Server 地址和一次性授权密钥，接受 UAC 后即可；
@@ -1222,9 +1226,10 @@ unionc-agent probe | jq '.capabilities[] | select(.name | startswith("gpu"))'
 
 ### 10.5 主机退役
 
-管理台 → 主机监控 → 选中主机 → **实例管理** → 撤销 Agent。
+管理台 → 主机 → 对应主机内容块 → **撤销**。
 这会持久标记 revoked 并吊销该实例全部 credential，身份和历史继续保留作为 tombstone，
 操作记入审计日志。若以后恢复，必须对同一 instance ID 重新完成管理员授权的浏览器配对。
+内容块中的**删除**是另一项不可恢复操作，会清除该实例的历史、凭据和全部关联邀请。
 
 ### 10.6 数据保留
 

@@ -88,7 +88,7 @@ async fn store_monitoring_report_inner(
     let received_at_micros = database::to_epoch_micros(received_at);
 
     // 一条语句同时完成三件事：确认主机存在、取出当前的 latest 指针与时间戳，
-    // 取出当前的 latest 指针与时间戳，以及**判断身份列是否真的变了**。
+    // 以及**判断身份列是否真的变了**。
     //
     // 最后一项是为了避免写放大：identity 与 capabilities 几乎从不变化，若每份上报都把
     // 它们原样重写一遍，代价有二——
@@ -99,18 +99,17 @@ async fn store_monitoring_report_inner(
         r#"
         SELECT latest_report_id,
                latest_collected_at,
-               (name           IS NOT ?2
-             OR os             IS NOT ?3
-             OR os_version     IS NOT ?4
-             OR kernel_version IS NOT ?5
-             OR arch           IS NOT ?6
-             OR agent_version  IS NOT ?7
-             OR capabilities   IS NOT ?8) AS identity_changed,
+               (os             IS NOT ?2
+             OR os_version     IS NOT ?3
+             OR kernel_version IS NOT ?4
+             OR arch           IS NOT ?5
+             OR agent_version  IS NOT ?6
+             OR capabilities   IS NOT ?7) AS identity_changed,
                EXISTS(
                    SELECT 1
                    FROM agent_credentials c
                    WHERE c.host_id=monitored_hosts.host_id
-                     AND c.token_hash=?9
+                     AND c.token_hash=?8
                      AND c.revoked_at IS NULL
                ) AS credential_active
         FROM monitored_hosts
@@ -118,7 +117,6 @@ async fn store_monitoring_report_inner(
         "#,
     )
     .bind(&host_id)
-    .bind(report.host.name.trim())
     .bind(report.host.os.trim())
     .bind(report.host.os_version.as_deref())
     .bind(report.host.kernel_version.as_deref())
@@ -234,22 +232,20 @@ async fn store_monitoring_report_inner(
         query(
             r#"
             UPDATE monitored_hosts SET
-                name                    = CASE WHEN ?9 THEN ?2 ELSE name END,
-                os                      = CASE WHEN ?9 THEN ?3 ELSE os END,
-                os_version              = CASE WHEN ?9 THEN ?4 ELSE os_version END,
-                kernel_version          = CASE WHEN ?9 THEN ?5 ELSE kernel_version END,
-                arch                    = CASE WHEN ?9 THEN ?6 ELSE arch END,
-                agent_version           = CASE WHEN ?9 THEN ?7 ELSE agent_version END,
-                capabilities            = CASE WHEN ?9 THEN ?8 ELSE capabilities END,
-                last_seen_at            = MAX(last_seen_at, ?14),
-                latest_report_id        = CASE WHEN ?10 THEN ?11 ELSE latest_report_id END,
-                latest_collected_at     = CASE WHEN ?10 THEN ?12 ELSE latest_collected_at END,
-                latest_interval_seconds = CASE WHEN ?10 THEN ?13 ELSE latest_interval_seconds END
+                os                      = CASE WHEN ?8 THEN ?2 ELSE os END,
+                os_version              = CASE WHEN ?8 THEN ?3 ELSE os_version END,
+                kernel_version          = CASE WHEN ?8 THEN ?4 ELSE kernel_version END,
+                arch                    = CASE WHEN ?8 THEN ?5 ELSE arch END,
+                agent_version           = CASE WHEN ?8 THEN ?6 ELSE agent_version END,
+                capabilities            = CASE WHEN ?8 THEN ?7 ELSE capabilities END,
+                last_seen_at            = MAX(last_seen_at, ?13),
+                latest_report_id        = CASE WHEN ?9 THEN ?10 ELSE latest_report_id END,
+                latest_collected_at     = CASE WHEN ?9 THEN ?11 ELSE latest_collected_at END,
+                latest_interval_seconds = CASE WHEN ?9 THEN ?12 ELSE latest_interval_seconds END
             WHERE host_id=?1
             "#,
         )
         .bind(&host_id)
-        .bind(report.host.name.trim())
         .bind(report.host.os.trim())
         .bind(report.host.os_version.as_deref())
         .bind(report.host.kernel_version.as_deref())

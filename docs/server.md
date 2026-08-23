@@ -127,7 +127,7 @@ unit 已包含一组 systemd 硬化选项，并显式设置 `UNIONC_DATA_DIR` �
 `Type=notify` 只会在环境、密钥、SQLite、路由和监听端口全部初始化成功后报告就绪；已启用
 服务的同版本重装会等待这一就绪信号，并在启动失败或随后不再 active 时让包配置失败。
 
-包内环境文件的 `UNIONC_PACKAGE_VERSION=0.3.2` 是安装归属标记，不是可调运行参数，不能
+包内环境文件的 `UNIONC_PACKAGE_VERSION=0.3.3` 是安装归属标记，不是可调运行参数，不能
 删除或修改。安装脚本还会把 `/var/lib/unionc-package` 中的版本化 marker 与实际 UID/GID、
 账户 home/shell、数据目录所有权和 0700 权限逐一比对；既有文件、账户或目录缺少当前标记
 时会 fail closed，不执行旧安装接管。marker 目录必须保持 `root:root/0700`，其中状态文件
@@ -136,7 +136,7 @@ unit 已包含一组 systemd 硬化选项，并显式设置 `UNIONC_DATA_DIR` �
 `/usr/bin/unionc`，不能由同名外部
 程序替换。`/etc/unionc` 必须是不可由非 root 写入的真实目录；`unionc.env` 必须是 root 拥有、
 0640 且没有其他硬链接的真实文件，其组只能是 root 或当前 marker 记录的 `unionc` GID。普通
-卸载保留数据与 marker，仅支持同一 0.3.2 重装。新建专用账户前，安装脚本先原子发布并同步
+卸载保留数据与 marker，仅支持同一 0.3.3 重装。新建专用账户前，安装脚本先原子发布并同步
 `pending-group` 或 `pending-user` 意图（包含预选 UID/GID），再要求账户工具创建同一个数值身份；
 确认 NSS 中名称、UID/GID、home、shell 以及唯一、锁定的 shadow/gshadow 记录均严格匹配后，
 才同步发布 `managed-group` 或 `managed-user` 提交 marker；即使 `/etc` 与 `/var` 分属不同文件
@@ -282,7 +282,7 @@ Error: encrypted secret uses key id '2025q1', which is not in the keyring
 (known ids: 2025q3); add the retired key to UNIONC_SECRET_KEY_PREVIOUS to read it
 ```
 
-## 只读主机监控
+## 主机监控
 
 ### 一次性授权配对（推荐）
 
@@ -311,11 +311,15 @@ Error: encrypted secret uses key id '2025q1', which is not in the keyring
 - `POST /api/agent/v1/report`：使用实例级 Bearer secret 上报只读快照，512 KiB 请求上限。
   成功返回 202 和包含 `host_id/report_id` 的 ACK；重放同一 `report_id` 返回
   `accepted: false`，不产生第二行，也不改变主机当前状态；
-- `GET /api/monitoring/hosts`、`/{id}`、`/{id}/history`：管理员会话只读查询。
+- `GET /api/monitoring/hosts`、`/{id}`、`/{id}/history`：管理员会话只读查询；
   列表支持 `?limit&offset`（默认 200、上限 1000）并返回 `total`；历史支持
   `?from&to&limit`（默认 300、上限 1000）；
+- `PATCH /api/monitoring/managed-instances/{id}`：保存 Server 备注；Agent 不上报设备名称，
+  后续遥测和重新配对都不会覆盖；
 - `POST /api/monitoring/hosts/{id}/revoke`：持久撤销该实例的全部 credential，保留实例
-  tombstone 和历史。之后只有管理员为同一实例明确创建新邀请并完成浏览器配对才能恢复。
+  tombstone 和历史。之后只有管理员为同一实例明确创建新邀请并完成浏览器配对才能恢复；
+- `DELETE /api/monitoring/managed-instances/{id}`：永久删除实例、历史、credential、配对请求和邀请，
+  不可恢复；删除动作本身仍写入独立审计记录。
 
 凭据查找区分“当前无效”和“实例退役”：未知或已被新 secret 取代的凭据返回 401；
 `lifecycle_status=revoked` 的实例返回 403。

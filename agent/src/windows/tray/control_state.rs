@@ -3,7 +3,6 @@
 struct TrayPreferences {
     application_version: CurrentPackageVersion,
     server: String,
-    name: Option<String>,
 }
 
 #[derive(Clone)]
@@ -314,7 +313,6 @@ struct HttpResponse {
 #[serde(deny_unknown_fields)]
 struct PairRequest {
     server: String,
-    name: String,
     activation_code: String,
 }
 

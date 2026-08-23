@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { monitoringApi as api } from "../api";
@@ -27,7 +28,7 @@ const host: MonitoringHostSummary = {
   os_version: "11",
   kernel_version: null,
   arch: "x86_64",
-  agent_version: "0.3.2",
+  agent_version: "0.3.3",
   lifecycle_status: "active",
   registered_at: "2026-08-21T12:00:00Z",
   last_seen_at: "2026-08-21T12:00:00Z",
@@ -54,8 +55,15 @@ afterEach(() => {
 function renderWithClient(node: React.ReactNode) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   clients.push(queryClient);
-  const rendered = render(<QueryClientProvider client={queryClient}>{node}</QueryClientProvider>);
-  return { ...rendered, queryClient };
+  const wrap = (next: React.ReactNode) => (
+    <QueryClientProvider client={queryClient}>{next}</QueryClientProvider>
+  );
+  const rendered = render(wrap(node));
+  return {
+    ...rendered,
+    queryClient,
+    rerenderWithClient: (next: React.ReactNode) => rendered.rerender(wrap(next)),
+  };
 }
 
 function activationCodes(queryClient: QueryClient): string[] {
@@ -70,6 +78,11 @@ function activationCodes(queryClient: QueryClient): string[] {
 function mockPairingApis() {
   vi.spyOn(api, "monitoringAgentInstances").mockResolvedValue([]);
   vi.spyOn(api, "monitoringCreateAgentInstance").mockResolvedValue(created);
+  vi.spyOn(api, "monitoringCancelAgentInstance").mockResolvedValue();
+}
+
+function triggerAgentCreation(rerenderWithClient: (node: React.ReactNode) => void) {
+  rerenderWithClient(<AgentInstances activeHostIds={new Set()} addTrigger={1} />);
 }
 
 async function expectSecretVisible(queryClient: QueryClient) {
@@ -86,22 +99,37 @@ async function expectSecretCleared(queryClient: QueryClient) {
 }
 
 describe("Agent activation-code lifetime", () => {
+  it("honors an add trigger already present on first mount", async () => {
+    mockPairingApis();
+    const { queryClient } = renderWithClient(
+      <AgentInstances activeHostIds={new Set()} addTrigger={1} />,
+    );
+
+    await expectSecretVisible(queryClient);
+    expect(api.monitoringCreateAgentInstance).toHaveBeenCalledWith("新监控主机", 15);
+  });
+
   it("clears first-pairing mutation data when the operator closes the panel", async () => {
     mockPairingApis();
-    const { queryClient } = renderWithClient(<AgentInstances activeHostIds={new Set()} />);
+    const { queryClient, rerenderWithClient } = renderWithClient(
+      <AgentInstances activeHostIds={new Set()} addTrigger={0} />,
+    );
 
-    fireEvent.click(screen.getByRole("button", { name: "创建 Agent" }));
+    triggerAgentCreation(rerenderWithClient);
     await expectSecretVisible(queryClient);
-    fireEvent.click(screen.getByRole("button", { name: "关闭并清除授权密钥" }));
+    fireEvent.click(screen.getByRole("button", { name: "取消邀请并清除授权密钥" }));
 
     await expectSecretCleared(queryClient);
+    expect(api.monitoringCancelAgentInstance).toHaveBeenCalledWith(created.request_id);
   }, 15_000);
 
   it("clears first-pairing mutation data when the invitation reaches a terminal state", async () => {
     mockPairingApis();
-    const { queryClient } = renderWithClient(<AgentInstances activeHostIds={new Set()} />);
+    const { queryClient, rerenderWithClient } = renderWithClient(
+      <AgentInstances activeHostIds={new Set()} addTrigger={0} />,
+    );
 
-    fireEvent.click(screen.getByRole("button", { name: "创建 Agent" }));
+    triggerAgentCreation(rerenderWithClient);
     await expectSecretVisible(queryClient);
     act(() => {
       queryClient.setQueryData(queryKeys.monitoring.agentInstances, [{ ...created, status: "active" }]);
@@ -112,11 +140,11 @@ describe("Agent activation-code lifetime", () => {
 
   it("clears first-pairing mutation data when the component unmounts", async () => {
     mockPairingApis();
-    const { queryClient, unmount } = renderWithClient(
-      <AgentInstances activeHostIds={new Set()} />,
+    const { queryClient, unmount, rerenderWithClient } = renderWithClient(
+      <AgentInstances activeHostIds={new Set()} addTrigger={0} />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "创建 Agent" }));
+    triggerAgentCreation(rerenderWithClient);
     await expectSecretVisible(queryClient);
     unmount();
 
@@ -129,7 +157,7 @@ describe("Agent activation-code lifetime", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "重新配对" }));
     await expectSecretVisible(queryClient);
-    fireEvent.click(screen.getByRole("button", { name: "关闭并清除授权密钥" }));
+    fireEvent.click(screen.getByRole("button", { name: "取消邀请并清除授权密钥" }));
 
     await expectSecretCleared(queryClient);
   }, 15_000);
@@ -160,11 +188,9 @@ describe("Agent activation-code lifetime", () => {
 });
 
 describe("Agent invitation request lifetime", () => {
-  it.each([
-    ["creation panel", <AgentInstances activeHostIds={new Set()} />],
-    ["host registration panel", <HostRegistration host={host} />],
-  ])("aborts the in-flight list request when the %s unmounts", async (_name, panel) => {
+  it("aborts the in-flight list request when the creation result unmounts", async () => {
     let requestSignal: AbortSignal | undefined;
+    vi.spyOn(api, "monitoringCreateAgentInstance").mockResolvedValue(created);
     vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => (
       new Promise<Response>((_resolve, reject) => {
         requestSignal = init?.signal ?? undefined;
@@ -173,12 +199,71 @@ describe("Agent invitation request lifetime", () => {
         }, { once: true });
       })
     ));
-    const { unmount } = renderWithClient(panel);
+    const { unmount, rerenderWithClient } = renderWithClient(
+      <AgentInstances activeHostIds={new Set()} addTrigger={0} />,
+    );
+    triggerAgentCreation(rerenderWithClient);
     await waitFor(() => expect(requestSignal).toBeDefined());
 
     unmount();
 
     expect(requestSignal?.aborted).toBe(true);
     await act(async () => { await Promise.resolve(); });
+  });
+});
+
+describe("managed monitoring host card", () => {
+  it("keeps registration actions inside the card and omits CPU, GPU and network rows", () => {
+    vi.spyOn(api, "monitoringAgentInstances").mockResolvedValue([]);
+    const { container } = renderWithClient(<HostRegistration host={host} />);
+    const card = screen.getByRole("article", { name: /测试主机/ });
+
+    expect(within(card).getByRole("button", { name: "重新配对" })).toBeTruthy();
+    expect(within(card).getByRole("button", { name: "撤销" })).toBeTruthy();
+    expect(within(card).getByRole("button", { name: "删除" })).toBeTruthy();
+    expect(container.textContent).not.toContain("CPU");
+    expect(container.textContent).not.toContain("GPU");
+    expect(container.textContent).not.toContain("网络");
+  });
+
+  it("edits the Server remark with the same inline interaction as Sunshine cards", async () => {
+    vi.spyOn(api, "monitoringUpdateRemark").mockResolvedValue();
+    const user = userEvent.setup();
+    renderWithClient(<HostRegistration host={host} />);
+
+    await user.click(screen.getByRole("button", { name: /修改备注/ }));
+    const input = screen.getByLabelText("备注");
+    await user.clear(input);
+    await user.type(input, "客厅工作站");
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => expect(api.monitoringUpdateRemark).toHaveBeenCalledWith(host.id, "客厅工作站"));
+  });
+
+  it("permanently deletes the selected instance after confirmation", async () => {
+    vi.spyOn(api, "monitoringDeleteHost").mockResolvedValue();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const onDeleted = vi.fn();
+    renderWithClient(<HostRegistration host={host} onDeleted={onDeleted} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+
+    await waitFor(() => expect(api.monitoringDeleteHost).toHaveBeenCalledWith(host.id));
+    await waitFor(() => expect(onDeleted).toHaveBeenCalledOnce());
+  });
+
+  it("keeps a refreshed re-pairing invitation manageable inside its host card", async () => {
+    vi.spyOn(api, "monitoringAgentInstances").mockResolvedValue([created]);
+    vi.spyOn(api, "monitoringCancelAgentInstance").mockResolvedValue();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderWithClient(<HostRegistration host={host} />);
+
+    expect(await screen.findByText(/一次性授权密钥不会再次显示/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "重新配对" }).hasAttribute("disabled")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "取消待激活邀请" }));
+
+    await waitFor(() => {
+      expect(api.monitoringCancelAgentInstance).toHaveBeenCalledWith(created.request_id);
+    });
   });
 });

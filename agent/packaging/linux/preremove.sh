@@ -5,7 +5,7 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
 service_name=unionc-agent.service
-package_version=0.3.2
+package_version=0.3.3
 account_state_dir=/var/lib/unionc-agent-package
 state_dir=/var/lib/unionc-agent
 config_dir=/etc/unionc-agent
@@ -251,9 +251,9 @@ disable_for_remove() {
 }
 
 # Debian uses the literal `upgrade <new-version>` ABI even when reinstalling
-# the exact same package. Accept only 0.3.2. RPM uses a positive remaining
+# the exact same package. Accept only 0.3.3. RPM uses a positive remaining
 # instance count for replacement; the new postinstall has already validated
-# the exact 0.3.2 ownership markers before the pre-remove scriptlet can run.
+# the exact 0.3.3 ownership markers before the pre-remove scriptlet can run.
 case "${1:-}" in
   upgrade)
     [ "$#" -eq 2 ] && [ "$2" = "$package_version" ] ||

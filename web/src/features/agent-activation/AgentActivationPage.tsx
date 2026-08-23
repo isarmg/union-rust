@@ -92,11 +92,7 @@ export function AgentActivationPage({ requestId }: { requestId: string | null })
         </div>
 
         {requestId && pairingQuery.data ? (
-          <dl className="activation-summary" aria-label="Agent 配对设备摘要">
-            <div>
-              <dt>设备</dt>
-              <dd>{pairingQuery.data.name || "未命名设备"}</dd>
-            </div>
+          <dl className="activation-summary" aria-label="Agent 配对摘要">
             <div>
               <dt>系统</dt>
               <dd>{[pairingQuery.data.os, pairingQuery.data.arch].filter(Boolean).join(" · ") || "-"}</dd>
@@ -125,7 +121,7 @@ export function AgentActivationPage({ requestId }: { requestId: string | null })
           </div>
         ) : null}
 
-        {requestId && pairingQuery.isLoading ? <LoadingBlock label="正在读取 Agent 设备信息" /> : null}
+        {requestId && pairingQuery.isLoading ? <LoadingBlock label="正在读取 Agent 配对信息" /> : null}
         {requestId && pairingQuery.error ? (
           <InlineNotice tone="danger" text={pairingQuery.error.message} />
         ) : null}

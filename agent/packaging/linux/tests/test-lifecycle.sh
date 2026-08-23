@@ -4,7 +4,7 @@ set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 packaging_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/unionc-agent-packaging-test.XXXXXX")
-package_version=0.3.2
+package_version=0.3.3
 workspace_version=$(sed -n 's/^version = "\([0-9][0-9.]*\)"$/\1/p' "$packaging_dir/../../../Cargo.toml")
 [ "$workspace_version" = "$package_version" ] || {
   echo "Linux ownership-marker version must follow the current Cargo package version" >&2
@@ -499,7 +499,7 @@ if "$test_root/preremove.sh" upgrade 0.3.1 >/dev/null 2>&1; then
 fi
 
 # RPM replacement runs pre-remove after current postinstall. A
-# positive remaining-instance count must not disable the validated 0.3.2 service.
+# positive remaining-instance count must not disable the validated 0.3.3 service.
 : >"$TEST_LOG"
 "$test_root/preremove.sh" 1
 [ ! -s "$TEST_LOG" ] || fail 'RPM same-version reinstall stopped the current service'

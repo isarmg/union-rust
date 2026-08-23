@@ -19,7 +19,6 @@ fn render_configuration() -> HttpResponse {
              <section id=pair><h2>配对或重新配对</h2><p class=hint>配对会替换此机器当前绑定，并在必要时重启 Agent 服务。</p>\
              <form data-endpoint=/pair><label for=server>服务器地址</label><input id=server name=server type=url maxlength=2048 required aria-describedby=server-hint placeholder=\"https://unionc.example.com\">\
              <p id=server-hint class=hint>填写完整管理台 Origin（协议、主机和可选端口），不要附加路径。</p>\
-             <label for=device-name>设备名称（可选）</label><input id=device-name name=name maxlength=255>\
              <label for=activation-code>一次性授权密钥</label><input id=activation-code name=activation_code type=password maxlength=256 required autocomplete=one-time-code spellcheck=false aria-describedby=code-hint placeholder=\"uci_…\">\
              <p id=code-hint class=hint>密钥只通过受保护的本地通道提交，不会保存到托盘偏好。</p>\
              <button id=pair-submit type=submit>开始配对</button></form></section>\

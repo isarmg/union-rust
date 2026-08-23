@@ -94,7 +94,6 @@ fn prepare_start(config: &AgentConfig, host: &HostIdentity) -> anyhow::Result<Pa
         pairing_endpoint: config.pairing_endpoint(),
         report_endpoint: config.endpoint.clone(),
         host: host.clone(),
-        host_name: config.host_name.clone(),
         bearer_secret: random_secret(),
         polling_secret: random_secret(),
     };
@@ -124,7 +123,6 @@ async fn finish_create_request(
         pairing_endpoint,
         report_endpoint,
         host,
-        host_name,
         bearer_secret,
         polling_secret,
     } = state
@@ -185,7 +183,6 @@ async fn finish_create_request(
         pairing_endpoint,
         report_endpoint,
         bearer_secret,
-        host_name,
         polling_secret,
     };
     compare_and_persist_creating(

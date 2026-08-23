@@ -4,7 +4,6 @@ const output=document.getElementById('result');
 const connection=document.getElementById('connection');
 const service=document.getElementById('service');
 const serverInput=document.getElementById('server');
-const nameInput=document.getElementById('device-name');
 const actionButtons=[...document.querySelectorAll('button[data-service],#pair-submit')];
 const headers=token=>({Authorization:'Bearer '+token,'Content-Type':'application/json','X-UnionC-Tray':'1'});
 let bearer=sessionStorage.getItem('unioncTrayBearer')||'';
@@ -51,7 +50,7 @@ async function refreshState(populate=false){
   service.textContent=state.service;
   serviceCode=state.service_code||'unknown';
   document.getElementById('version').textContent=state.version?'v'+state.version:'';
-  if(populate&&!initialized){serverInput.value=state.server||'';nameInput.value=state.name||'';initialized=true}
+  if(populate&&!initialized){serverInput.value=state.server||'';initialized=true}
   updateButtons();
 }
 try{
@@ -130,7 +129,7 @@ document.querySelector('form[data-endpoint]').addEventListener('submit',event=>{
   const codeInput=event.currentTarget.elements.activation_code;
   const activationCode=String(form.get('activation_code')||'');
   codeInput.value='';
-  void startOperation('/pair',{server:String(form.get('server')||''),name:String(form.get('name')||''),activation_code:activationCode});
+  void startOperation('/pair',{server:String(form.get('server')||''),activation_code:activationCode});
 });
 document.querySelectorAll('[data-service]').forEach(button=>button.addEventListener('click',()=>{
   const action=button.dataset.service;

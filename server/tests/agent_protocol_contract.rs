@@ -16,7 +16,6 @@ fn agent_report() -> AgentReport {
         collected_at: chrono::Utc::now(),
         host: HostIdentity {
             id: Uuid::new_v4().to_string(),
-            name: "agent-contract-host".into(),
             os: "linux".into(),
             os_version: Some("test".into()),
             kernel_version: None,

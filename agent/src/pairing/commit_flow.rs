@@ -12,7 +12,6 @@ fn persist_active_credentials(
         pairing_endpoint,
         report_endpoint,
         bearer_secret,
-        host_name,
         polling_secret,
         ..
     } = pending
@@ -39,7 +38,6 @@ fn persist_active_credentials(
         pairing_endpoint,
         report_endpoint: report_endpoint.clone(),
         bearer_secret,
-        host_name,
     };
     // Commit the journal before touching any long-lived credential. A crash
     // after this write is recovered locally and can never pair the new token
@@ -125,7 +123,6 @@ fn finish_activating_unlocked(
         instance_id,
         report_endpoint,
         bearer_secret,
-        host_name,
         ..
     } = state
     else {
@@ -142,7 +139,7 @@ fn finish_activating_unlocked(
         &instance_id.to_string(),
         "server-assigned host identity",
     )?;
-    persist_active_config_unlocked(config, &report_endpoint, &host_name)?;
+    persist_active_config_unlocked(config, &report_endpoint)?;
     persist_auth_state_unlocked(
         config,
         &LocalAuthState {
@@ -161,7 +158,6 @@ fn finish_activating_unlocked(
             activation_url,
             instance_id,
             report_endpoint: report_endpoint.clone(),
-            host_name,
             completed_at: Utc::now(),
         },
     )?;

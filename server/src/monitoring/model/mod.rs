@@ -8,17 +8,16 @@ pub use unionc_protocol::{
     AGENT_REPORT_MAX_FILE_SYSTEM_BYTES, AGENT_REPORT_MAX_GPU_ID_BYTES,
     AGENT_REPORT_MAX_GPU_NAME_BYTES, AGENT_REPORT_MAX_GPU_SOURCE_BYTES,
     AGENT_REPORT_MAX_GPU_VENDOR_BYTES, AGENT_REPORT_MAX_GPUS, AGENT_REPORT_MAX_HOST_ARCH_BYTES,
-    AGENT_REPORT_MAX_HOST_NAME_BYTES, AGENT_REPORT_MAX_HOST_OS_BYTES,
-    AGENT_REPORT_MAX_HOST_VERSION_BYTES, AGENT_REPORT_MAX_INTERVAL_SECONDS,
-    AGENT_REPORT_MAX_MOUNT_POINT_BYTES, AGENT_REPORT_MAX_NETWORK_NAME_BYTES,
-    AGENT_REPORT_MAX_NETWORKS, AGENT_REPORT_MAX_TEMPERATURE_ID_BYTES,
-    AGENT_REPORT_MAX_TEMPERATURE_LABEL_BYTES, AGENT_REPORT_MAX_TEMPERATURE_SOURCE_BYTES,
-    AGENT_REPORT_MAX_TEMPERATURES, AGENT_REPORT_MIN_INTERVAL_SECONDS, AGENT_REPORT_SCHEMA_VERSION,
-    ActivateAgentRequest, ActivateAgentResponse, ActivatePairingStatus, AgentHealth,
-    AgentPairingRequest, AgentPairingResponse, AgentPairingStatusResponse, AgentReport,
-    AgentReportAck, Capability, CapabilityErrorKind, CpuSnapshot, DiskSnapshot, GpuSnapshot,
-    HostIdentity, MemorySnapshot, NetworkSnapshot, PairingStatus, SystemSnapshot,
-    TemperatureSnapshot,
+    AGENT_REPORT_MAX_HOST_OS_BYTES, AGENT_REPORT_MAX_HOST_VERSION_BYTES,
+    AGENT_REPORT_MAX_INTERVAL_SECONDS, AGENT_REPORT_MAX_MOUNT_POINT_BYTES,
+    AGENT_REPORT_MAX_NETWORK_NAME_BYTES, AGENT_REPORT_MAX_NETWORKS,
+    AGENT_REPORT_MAX_TEMPERATURE_ID_BYTES, AGENT_REPORT_MAX_TEMPERATURE_LABEL_BYTES,
+    AGENT_REPORT_MAX_TEMPERATURE_SOURCE_BYTES, AGENT_REPORT_MAX_TEMPERATURES,
+    AGENT_REPORT_MIN_INTERVAL_SECONDS, AGENT_REPORT_SCHEMA_VERSION, ActivateAgentRequest,
+    ActivateAgentResponse, ActivatePairingStatus, AgentHealth, AgentPairingRequest,
+    AgentPairingResponse, AgentPairingStatusResponse, AgentReport, AgentReportAck, Capability,
+    CapabilityErrorKind, CpuSnapshot, DiskSnapshot, GpuSnapshot, HostIdentity, MemorySnapshot,
+    NetworkSnapshot, PairingStatus, SystemSnapshot, TemperatureSnapshot,
 };
 
 use crate::error::{AppError, AppResult};
@@ -60,6 +59,20 @@ impl CreateAgentInstanceRequest {
             })
             .transpose()?;
         Ok((display_name, expires_in_minutes, instance_id))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateMonitoringRemarkRequest {
+    pub remark: String,
+}
+
+impl UpdateMonitoringRemarkRequest {
+    pub fn validated_remark(&self) -> AppResult<String> {
+        let remark = self.remark.trim().to_string();
+        validate_text("monitoring instance remark", &remark, 255)?;
+        Ok(remark)
     }
 }
 
@@ -105,7 +118,6 @@ impl AgentPairingRequestExt for AgentPairingRequest {
 #[derive(Debug, Serialize)]
 pub struct AgentPairingPublicSummary {
     pub request_id: String,
-    pub name: String,
     pub os: String,
     pub arch: String,
     pub agent_version: String,
@@ -116,6 +128,7 @@ pub struct AgentPairingPublicSummary {
 #[derive(Debug, Clone, Serialize)]
 pub struct HostSummary {
     pub id: String,
+    /// Server-owned operator remark; it is not part of `HostIdentity`.
     pub name: String,
     pub os: String,
     pub os_version: Option<String>,
@@ -213,7 +226,6 @@ pub trait HostIdentityExt {
 impl HostIdentityExt for HostIdentity {
     fn validate(&self) -> AppResult<()> {
         validate_canonical_uuid("host.id", &self.id)?;
-        validate_text("host.name", &self.name, AGENT_REPORT_MAX_HOST_NAME_BYTES)?;
         validate_text("host.os", &self.os, AGENT_REPORT_MAX_HOST_OS_BYTES)?;
         validate_text("host.arch", &self.arch, AGENT_REPORT_MAX_HOST_ARCH_BYTES)?;
         validate_text(

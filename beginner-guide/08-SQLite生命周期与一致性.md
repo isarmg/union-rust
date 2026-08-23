@@ -223,7 +223,7 @@ COMMIT
         revoked ──新邀请 + 新配对──> active
 ```
 
-重新配对保留 instance 和历史；Server 撤销旧 credential，并激活 Agent 预先生成的新 secret 所对应的哈希。Server 不生成或回传 Agent secret。硬删除主机与撤销身份语义不同，当前管理台不提供按主机硬删除。
+重新配对保留 instance 和历史；Server 撤销旧 credential，并激活 Agent 预先生成的新 secret 所对应的哈希。Server 不生成或回传 Agent secret。硬删除主机与撤销身份语义不同：管理台必须二次确认，Server 在单一事务中删除实例、历史、credential、配对请求和邀请，并保留独立审计记录。
 
 ## 11. 数据保留期
 

@@ -97,7 +97,6 @@ fn start_pair_from_browser(
     let request: PairRequest =
         serde_json::from_slice(body).context("invalid pairing request JSON")?;
     let server = validate_server_base(&request.server)?;
-    let name = validate_host_name(&request.name)?;
     validate_activation_code(&request.activation_code)?;
     let pairing_slot = claim_pairing_slot(state)?;
     let callback_nonce = random_secret();
@@ -107,13 +106,8 @@ fn start_pair_from_browser(
     let successful_preferences = TrayPreferences {
         application_version: CurrentPackageVersion,
         server: server.clone(),
-        name: name.clone(),
     };
-    let process = TransferHandle::new(launch_elevated_pair(
-        &server,
-        name.as_deref(),
-        callback_nonce,
-    )?);
+    let process = TransferHandle::new(launch_elevated_pair(&server, callback_nonce)?);
     let operation_id = create_operation(
         state,
         "pair",
@@ -304,7 +298,6 @@ fn local_state_response(
             "service": service,
             "service_code": service_code,
             "server": preferences.server,
-            "name": preferences.name,
             "version": env!("CARGO_PKG_VERSION")
         }),
     ))

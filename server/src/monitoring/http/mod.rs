@@ -1,4 +1,4 @@
-//! Read-only multi-host monitoring endpoints.
+//! Multi-host telemetry reads and administrator-managed Agent lifecycle endpoints.
 
 #[cfg(test)]
 use std::time::Instant;
@@ -17,7 +17,7 @@ use crate::monitoring::{
     AgentPairingRequest, AgentPairingRequestExt, AgentPairingResponse, AgentPairingStatusResponse,
     AgentReport, AgentReportAck, AgentReportExt, CreateAgentInstanceRequest, CreatedAgentInstance,
     HistoryPoint, HistoryQuery, HistoryResponse, HostDetailResponse, HostListQuery,
-    HostListResponse, HostSummary, MetricSummary,
+    HostListResponse, HostSummary, MetricSummary, UpdateMonitoringRemarkRequest,
 };
 use crate::{
     error::{AppError, AppResult},
@@ -463,6 +463,35 @@ async fn host_history(
     Ok(Json(HistoryResponse { host_id, points }))
 }
 
+async fn update_instance_remark(
+    State(state): State<AppState>,
+    Path(host_id): Path<String>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> AppResult<StatusCode> {
+    let host_id = validate_host_id(&host_id)?;
+    require_json_content_type(&headers)?;
+    require_database(&state).await?;
+    let request: UpdateMonitoringRemarkRequest =
+        serde_json::from_slice(&body).map_err(|error| {
+            AppError::BadRequest(format!(
+                "invalid monitoring instance remark update: {error}"
+            ))
+        })?;
+    let remark = request.validated_remark()?;
+    if !crate::monitoring::store::update_monitored_host_remark(
+        state.db().as_ref(),
+        &host_id,
+        &remark,
+    )
+    .await
+    .map_err(|error| agent_database_unavailable("update monitored instance remark", error))?
+    {
+        return Err(AppError::NotFound("monitored host not found".to_string()));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn revoke_host(
     State(state): State<AppState>,
     Path(host_id): Path<String>,
@@ -472,6 +501,22 @@ async fn revoke_host(
     if !crate::monitoring::store::revoke_monitored_host(state.db().as_ref(), &host_id)
         .await
         .map_err(|error| agent_database_unavailable("revoke monitored host", error))?
+    {
+        return Err(AppError::NotFound("monitored host not found".to_string()));
+    }
+    state.agents.forget_host(&host_id).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_host(
+    State(state): State<AppState>,
+    Path(host_id): Path<String>,
+) -> AppResult<StatusCode> {
+    let host_id = validate_host_id(&host_id)?;
+    require_database(&state).await?;
+    if !crate::monitoring::store::delete_monitored_host(state.db().as_ref(), &host_id)
+        .await
+        .map_err(|error| agent_database_unavailable("delete monitored host", error))?
     {
         return Err(AppError::NotFound("monitored host not found".to_string()));
     }
@@ -489,7 +534,7 @@ fn host_summary(stored: crate::monitoring::store::StoredHost) -> HostSummary {
     };
     HostSummary {
         id: stored.identity.id,
-        name: stored.identity.name,
+        name: stored.name,
         os: stored.identity.os,
         os_version: stored.identity.os_version,
         kernel_version: stored.identity.kernel_version,

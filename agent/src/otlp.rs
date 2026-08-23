@@ -266,7 +266,6 @@ pub fn encode_report(report: &AgentReport) -> ExportMetricsServiceRequest {
             resource: Some(Resource {
                 attributes: vec![
                     attr("host.id", &report.host.id.to_string()),
-                    attr("host.name", &report.host.name),
                     attr("os.type", otel_os_type(&report.host.os)),
                     attr("host.arch", otel_host_arch(&report.host.arch)),
                     attr("service.name", "unionc-agent"),
@@ -494,7 +493,6 @@ mod tests {
             interval_seconds: 10.0,
             host: HostIdentity {
                 id: host_id.to_string(),
-                name: "host".into(),
                 os: "macos".into(),
                 os_version: None,
                 kernel_version: None,
@@ -655,7 +653,6 @@ mod tests {
             interval_seconds: 10.0,
             host: HostIdentity {
                 id: Uuid::new_v4().to_string(),
-                name: "host".into(),
                 os: "linux".into(),
                 os_version: None,
                 kernel_version: None,

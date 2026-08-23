@@ -81,9 +81,9 @@ pub(super) fn stored_host_from_row(
     };
     let metrics = metrics_from_row(&row)?;
     Ok(StoredHost {
+        name: row.try_get("name")?,
         identity: HostIdentity {
             id: row.try_get("host_id")?,
-            name: row.try_get("name")?,
             os: row.try_get("os")?,
             os_version: row.try_get("os_version")?,
             kernel_version: row.try_get("kernel_version")?,

@@ -5,7 +5,7 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
 service_name=unionc-agent.service
-package_version=0.3.2
+package_version=0.3.3
 agent_binary=/usr/bin/unionc-agent
 account_state_dir=/var/lib/unionc-agent-package
 state_dir=/var/lib/unionc-agent
@@ -486,7 +486,7 @@ else
 fi
 
 # Refuse to run the service under an unexpected pre-existing identity. An
-# existing account is accepted only when the current 0.3.2 marker binds its
+# existing account is accepted only when the current 0.3.3 marker binds its
 # exact numeric identity.
 user_uid=$(printf '%s\n' "$user_entry" | cut -d: -f3)
 user_gid=$(printf '%s\n' "$user_entry" | cut -d: -f4)

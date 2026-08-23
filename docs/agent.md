@@ -28,20 +28,22 @@ cargo build --release -p unionc-agent \
 ## 首次配对与运行
 
 Agent 软件先通过操作系统包管理器、组织软件中心或其他可信渠道独立安装。UnionC 管理台
-不托管安装包，也不生成 shell/PowerShell 安装命令。管理员在“监控主机 → 创建 Agent”
+不托管安装包，也不生成 shell/PowerShell 安装命令。管理员进入“主机”页面后点击侧栏“+”
 生成一次性激活码后，在目标主机执行：
 
 ```bash
 sudo unionc-agent pair \
   --config /etc/unionc-agent/config.json \
-  --server https://unionc.example.com \
-  --name sunshine-room-01
+  --server https://unionc.example.com
 ```
 
 `pair` 会在本机生成两份 256-bit secret，把**哈希**发给 Server，然后输出专属激活页面。
-用户在浏览器核对主机名、平台和架构，输入管理台生成的 `uci_...` 激活码。浏览器不会
+用户在浏览器核对平台和架构，输入管理台生成的 `uci_...` 激活码。浏览器不会
 得到长期 Agent secret；Server 也从未接收该 secret 的明文。激活成功后 Agent 保存
 Server 分配的稳定 `instance_id`，并继续使用现有 `/api/agent/v1/report` 数据面。
+
+Agent 不采集、不配置也不上报设备名称。管理台主机名称是 Server 自己持有的备注，由邀请
+创建并可在主机卡片内编辑；遥测上报与重新配对都不会改写它。
 
 配对请求与 secret 在首次 POST 前就写入私有状态文件，因此命令中断或响应丢失后，重新
 执行 `pair` 会恢复同一个请求。常驻的 `run` 进程也能继续轮询尚未批准的请求。完整协议见
@@ -82,9 +84,9 @@ macOS 使用相同命令，但服务账户是 `_unioncagent`、配置位于
 `UNIONC_AGENT_TLS_CA_PEM`、`UNIONC_AGENT_TLS_IDENTITY_PEM`、
 `UNIONC_AGENT_TLS_IDENTITY_PKCS12`、`UNIONC_AGENT_TLS_IDENTITY_PASSWORD`、
 `UNIONC_AGENT_ALLOW_INSECURE_HTTP`。
-配置文件一旦存在，就必须是当前 0.3.2 的完整结构，并包含
-`"application_version": "0.3.2"`；缺字段、未知字段或其他应用版本都会在读取时被拒绝，
-环境变量不会替旧结构补字段。只有配置文件不存在时才使用编译进 0.3.2 的完整默认配置，
+配置文件一旦存在，就必须是当前 0.3.3 的完整结构，并包含
+`"application_version": "0.3.3"`；缺字段、未知字段或其他应用版本都会在读取时被拒绝，
+环境变量不会替旧结构补字段。只有配置文件不存在时才使用编译进 0.3.3 的完整默认配置，
 配对成功后再原子写入当前结构。
 未指定状态目录时使用 Linux `/var/lib/unionc-agent`、Windows
 `%ProgramData%\UnionC Agent` 或 macOS `/Library/Application Support/UnionC Agent`。

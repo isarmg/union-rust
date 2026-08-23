@@ -1,10 +1,9 @@
 {
-  "application_version": "0.3.2",
+  "application_version": "0.3.3",
   "endpoint": "https://unionc.example.com/api/agent/v1/report",
   "pairing_endpoint": "https://unionc.example.com/api/agent/v2/pairing-requests",
   "otlp_endpoint": null,
   "otlp_token": null,
-  "host_name": null,
   "interval_seconds": 10,
   "slow_interval_seconds": 30,
   "request_timeout_seconds": 10,

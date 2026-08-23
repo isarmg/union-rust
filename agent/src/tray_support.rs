@@ -24,7 +24,6 @@ pub enum TrayCommand {
     },
     ElevatedPair {
         server: String,
-        name: Option<String>,
         callback_nonce: String,
     },
     ElevatedService {
@@ -77,7 +76,6 @@ where
 
 fn parse_elevated_pair(arguments: &[String]) -> anyhow::Result<TrayCommand> {
     let mut server = None;
-    let mut name = None;
     let mut callback_nonce = None;
     let mut index = 0;
     while index < arguments.len() {
@@ -93,12 +91,6 @@ fn parse_elevated_pair(arguments: &[String]) -> anyhow::Result<TrayCommand> {
                 let value = decode_base64url(value).context("invalid encoded server URL")?;
                 let value = String::from_utf8(value).context("server URL is not valid UTF-8")?;
                 server = Some(validate_server_base(&value)?);
-            }
-            "--name-b64" => {
-                ensure!(name.is_none(), "--name-b64 may be specified only once");
-                let value = decode_base64url(value).context("invalid encoded host name")?;
-                let value = String::from_utf8(value).context("host name is not valid UTF-8")?;
-                name = Some(validate_host_name(&value)?.context("encoded host name is empty")?);
             }
             "--callback-nonce" => {
                 ensure!(
@@ -118,7 +110,6 @@ fn parse_elevated_pair(arguments: &[String]) -> anyhow::Result<TrayCommand> {
     let callback_nonce = callback_nonce.context("--elevated-pair requires --callback-nonce")?;
     Ok(TrayCommand::ElevatedPair {
         server,
-        name,
         callback_nonce,
     })
 }
@@ -188,19 +179,6 @@ pub fn browser_url_matches_server_origin(browser_url: &str, server: &str) -> boo
         && browser_url.host_str().map(str::to_ascii_lowercase)
             == server.host_str().map(str::to_ascii_lowercase)
         && browser_url.port_or_known_default() == server.port_or_known_default()
-}
-
-pub fn validate_host_name(value: &str) -> anyhow::Result<Option<String>> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Ok(None);
-    }
-    ensure!(value.len() <= 255, "host name must not exceed 255 bytes");
-    ensure!(
-        !value.chars().any(char::is_control),
-        "host name must not contain control characters"
-    );
-    Ok(Some(value.to_string()))
 }
 
 /// Validate the one-time authorization key entered in the local tray page.
@@ -454,15 +432,12 @@ mod tests {
                 "--elevated-pair".into(),
                 "--server-b64".into(),
                 encode_base64url(b"https://unionc.example"),
-                "--name-b64".into(),
-                encode_base64url("工作站".as_bytes()),
                 "--callback-nonce".into(),
                 "ab".repeat(32),
             ])
             .unwrap(),
             TrayCommand::ElevatedPair {
                 server: "https://unionc.example".into(),
-                name: Some("工作站".into()),
                 callback_nonce: "ab".repeat(32),
             }
         );

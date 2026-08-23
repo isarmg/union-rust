@@ -31,10 +31,9 @@ function renderPage() {
 function mockWaitingPairing() {
   vi.spyOn(api, "agentPairingRequest").mockResolvedValue({
     request_id: "pairing-request",
-    name: "Workstation",
     os: "linux",
     arch: "x86_64",
-    agent_version: "0.3.2",
+    agent_version: "0.3.3",
     status: "waiting",
     expires_at: "2026-08-22T12:15:00Z",
   });

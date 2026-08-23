@@ -158,11 +158,6 @@ fn normalize_scalars_and_text(report: &mut AgentReport) -> bool {
     }
 
     changed |= bound_required_text(
-        &mut report.host.name,
-        AGENT_REPORT_MAX_HOST_NAME_BYTES,
-        &report.host.id,
-    );
-    changed |= bound_required_text(
         &mut report.host.os,
         AGENT_REPORT_MAX_HOST_OS_BYTES,
         "unknown",
@@ -533,7 +528,6 @@ mod tests {
             collected_at: Utc::now(),
             host: HostIdentity {
                 id: Uuid::new_v4().to_string(),
-                name: "contract-host".into(),
                 os: "linux".into(),
                 os_version: Some("test".into()),
                 kernel_version: None,
@@ -698,7 +692,7 @@ mod tests {
     #[test]
     fn bounding_is_idempotent_and_utf8_safe() {
         let mut value = report();
-        value.host.name = format!("bad\n{}", "界".repeat(200));
+        value.host.os = format!("bad\n{}", "界".repeat(200));
         value.capabilities.push(Capability {
             name: "empty-message".into(),
             available: false,
@@ -711,8 +705,8 @@ mod tests {
         value.system.cpu.per_core_percent.clear();
 
         assert!(bound_report(&mut value));
-        assert!(value.host.name.len() <= AGENT_REPORT_MAX_HOST_NAME_BYTES);
-        assert!(!value.host.name.chars().any(char::is_control));
+        assert!(value.host.os.len() <= AGENT_REPORT_MAX_HOST_OS_BYTES);
+        assert!(!value.host.os.chars().any(char::is_control));
         assert_eq!(value.capabilities[1].message, None);
         let once = value.clone();
         assert!(!bound_report(&mut value));

@@ -61,7 +61,7 @@ Agent 是**单向只读**的：它不监听端口、不执行服务端下发的�
   支持密钥环轮换（见 `infra/secrets.rs`）
 - CSRF 令牌使用恒定时间比较
 
-浏览器激活页面只显示主机名、OS、架构、Agent 版本和 request ID，不读取监控数据。输入的
+浏览器激活页面只显示 OS、架构、Agent 版本和 request ID，不读取监控数据或设备名称。输入的
 激活码只放在 POST body，响应带 `Cache-Control: no-store`。Agent 创建请求在发出前先把
 本地 secret 与创建状态可靠落盘，避免 Server 已接受哈希而 Agent 丢失明文。
 

@@ -45,7 +45,6 @@ fn report() -> AgentReport {
             id: Uuid::parse_str("00000000-0000-4000-8000-0000000000ff")
                 .unwrap()
                 .to_string(),
-            name: "cross-check-host".into(),
             os: "macos".into(),
             os_version: Some("15.0".into()),
             kernel_version: Some("24.0.0".into()),
@@ -168,10 +167,7 @@ fn official_definitions_decode_our_resource_attributes() {
         string_attr(attributes, "host.id").as_deref(),
         Some("00000000-0000-4000-8000-0000000000ff")
     );
-    assert_eq!(
-        string_attr(attributes, "host.name").as_deref(),
-        Some("cross-check-host")
-    );
+    assert_eq!(string_attr(attributes, "host.name"), None);
     assert_eq!(
         string_attr(attributes, "service.name").as_deref(),
         Some("unionc-agent")

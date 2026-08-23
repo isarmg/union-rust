@@ -59,7 +59,7 @@ Agent 不负责：
 内置默认值
   → 配置文件
   → UNIONC_AGENT_* 环境变量
-  → CLI 覆盖（例如 --server、--endpoint、--name）
+  → CLI 覆盖（例如 --server、--endpoint）
   → 按命令做完整校验
 ```
 
@@ -98,7 +98,6 @@ query 参数语义不受这个配对专用限制影响。
 - slow interval 不小于普通 interval；
 - timeout 在 1 到 300 秒；
 - spool 至少 1 MiB；
-- 若配置 host name，则必须为 1–255 字节、去首尾后非空且无控制字符；
 - 非回环 endpoint 默认必须 HTTPS；
 - TLS identity 格式不能同时配置 PEM 与 PKCS#12；
 - 未编译 `otlp` feature 时不允许留下 OTLP 配置。

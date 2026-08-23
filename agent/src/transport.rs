@@ -409,7 +409,6 @@ mod tests {
             collected_at: Utc::now(),
             host: HostIdentity {
                 id: Uuid::new_v4().to_string(),
-                name: "ack-test".into(),
                 os: "test".into(),
                 os_version: None,
                 kernel_version: None,

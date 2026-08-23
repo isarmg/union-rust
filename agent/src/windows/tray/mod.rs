@@ -152,7 +152,7 @@ mod windows_tray {
             MAX_LOCAL_HTTP_BODY_BYTES, MAX_LOCAL_HTTP_HEAD_BYTES, ServiceAction, TrayCommand,
             browser_url_matches_server_origin, constant_time_eq, encode_base64url,
             parse_tray_arguments, quote_windows_argument, validate_activation_code,
-            validate_browser_url, validate_host_name, validate_server_base,
+            validate_browser_url, validate_server_base,
         },
     };
     use windows::{

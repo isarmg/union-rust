@@ -2,12 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authApi } from "../features/auth/api";
 import { agentActivationApi } from "../features/agent-activation/api";
 import { sunshineApi } from "../features/sunshine/api";
+import { monitoringApi } from "../features/monitoring/api";
 import {
   advanceAuthSessionGeneration,
   currentAuthSessionGeneration,
 } from "../shared/api/client";
 
-const api = { ...authApi, ...agentActivationApi, ...sunshineApi };
+const api = { ...authApi, ...agentActivationApi, ...monitoringApi, ...sunshineApi };
 
 describe("API request contracts", () => {
   const dispatchEvent = vi.fn((event: Event) => Boolean(event.type));
@@ -85,18 +86,16 @@ describe("API request contracts", () => {
   it("reads the limited public pairing summary without requiring a console session", async () => {
     fetchMock.mockResolvedValue(jsonResponse({
       request_id: "pairing-request",
-      name: "workstation",
       os: "linux",
       arch: "x86_64",
-      agent_version: "0.3.2",
+      agent_version: "0.3.3",
       status: "waiting",
       expires_at: "2026-08-15T12:00:00Z",
     }));
 
-    await expect(api.agentPairingRequest("pairing/request")).resolves.toMatchObject({
-      name: "workstation",
-      status: "waiting",
-    });
+    const summary = await api.agentPairingRequest("pairing/request");
+    expect(summary).toMatchObject({ status: "waiting" });
+    expect(summary).not.toHaveProperty("name");
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
       "/api/agent/v2/pairing-requests/pairing%2Frequest",
     );
@@ -123,6 +122,23 @@ describe("API request contracts", () => {
     expect(path).toBe("/api/services/sunshine/hosts/sunshine%2Fone");
     expect(init.method).toBe("PATCH");
     expect(JSON.parse(String(init.body))).toEqual({ name: "Living room" });
+  });
+
+  it("renames and permanently deletes an encoded monitoring host", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    await api.monitoringUpdateRemark("host/one", "客厅工作站");
+    await api.monitoringDeleteHost("host/one");
+
+    const [renamePath, renameInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(renamePath).toBe("/api/monitoring/managed-instances/host%2Fone");
+    expect(renameInit.method).toBe("PATCH");
+    expect(JSON.parse(String(renameInit.body))).toEqual({ remark: "客厅工作站" });
+    const [deletePath, deleteInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(deletePath).toBe("/api/monitoring/managed-instances/host%2Fone");
+    expect(deleteInit.method).toBe("DELETE");
   });
 
   it("rejects a successful status outside the current endpoint contract", async () => {

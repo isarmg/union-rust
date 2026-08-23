@@ -23,7 +23,6 @@ mod tests {
     fn test_host() -> HostIdentity {
         HostIdentity {
             id: Uuid::new_v4().to_string(),
-            name: "pairing-contract-test".into(),
             os: "test".into(),
             os_version: None,
             kernel_version: None,
@@ -193,7 +192,6 @@ mod tests {
     fn create_request_contract_contains_hashes_but_not_raw_secrets() {
         let host = HostIdentity {
             id: Uuid::new_v4().to_string(),
-            name: "contract-test".into(),
             os: "test".into(),
             os_version: None,
             kernel_version: None,
@@ -504,7 +502,6 @@ mod tests {
                 pairing_endpoint: config.pairing_endpoint(),
                 report_endpoint: config.endpoint.clone(),
                 bearer_secret: random_secret(),
-                host_name: None,
                 polling_secret: random_secret(),
             },
         )
@@ -532,7 +529,6 @@ mod tests {
                 activation_url: format!("{server}/agent/activate/{request_id}"),
                 instance_id,
                 report_endpoint: config.endpoint.clone(),
-                host_name: None,
                 completed_at: Utc::now(),
             },
         )
@@ -557,7 +553,6 @@ mod tests {
             pairing_endpoint: config.pairing_endpoint(),
             report_endpoint: config.endpoint.clone(),
             bearer_secret: random_secret(),
-            host_name: None,
             polling_secret: random_secret(),
         };
         persist_state(&config, &state).unwrap();
@@ -593,14 +588,12 @@ mod tests {
             report_endpoint: config.endpoint.clone(),
             host: HostIdentity {
                 id: Uuid::new_v4().to_string(),
-                name: "resume-test".into(),
                 os: "test".into(),
                 os_version: None,
                 kernel_version: None,
                 arch: "test".into(),
                 agent_version: "test".into(),
             },
-            host_name: None,
             bearer_secret: bearer_secret.clone(),
             polling_secret: polling_secret.clone(),
         };
@@ -641,7 +634,6 @@ mod tests {
             pairing_endpoint: "https://old.example/api/agent/v2/pairing-requests".into(),
             report_endpoint: "https://old.example/api/agent/v1/report".into(),
             bearer_secret: random_secret(),
-            host_name: None,
             polling_secret: random_secret(),
         };
         persist_state(&config, &state).unwrap();
@@ -674,7 +666,6 @@ mod tests {
             pairing_endpoint: "https://old.example/api/agent/v2/pairing-requests".into(),
             report_endpoint: "https://old.example/api/agent/v1/report".into(),
             host: test_host(),
-            host_name: None,
             bearer_secret: random_secret(),
             polling_secret: random_secret(),
         };
@@ -710,7 +701,6 @@ mod tests {
                     pairing_endpoint: config.pairing_endpoint(),
                     report_endpoint: config.endpoint.clone(),
                     host: test_host(),
-                    host_name: None,
                     bearer_secret: old_bearer.clone(),
                     polling_secret: old_polling.clone(),
                 }
@@ -728,7 +718,6 @@ mod tests {
                     pairing_endpoint: config.pairing_endpoint(),
                     report_endpoint: config.endpoint.clone(),
                     bearer_secret: old_bearer.clone(),
-                    host_name: None,
                     polling_secret: old_polling.clone(),
                 }
             };
@@ -809,7 +798,6 @@ mod tests {
                     pairing_endpoint: "https://old.example/api/agent/v2/pairing-requests".into(),
                     report_endpoint: "https://old.example/api/agent/v1/report".into(),
                     host: test_host(),
-                    host_name: None,
                     bearer_secret: random_secret(),
                     polling_secret: random_secret(),
                 }
@@ -824,7 +812,6 @@ mod tests {
                     pairing_endpoint: "https://old.example/api/agent/v2/pairing-requests".into(),
                     report_endpoint: "https://old.example/api/agent/v1/report".into(),
                     bearer_secret: random_secret(),
-                    host_name: None,
                     polling_secret: random_secret(),
                 }
             };
@@ -878,7 +865,6 @@ mod tests {
             pairing_endpoint: old_pairing_endpoint.clone(),
             report_endpoint: old_report_endpoint.clone(),
             bearer_secret: random_secret(),
-            host_name: None,
             polling_secret: random_secret(),
         };
         persist_state(&old_config, &old_state).unwrap();
@@ -939,7 +925,6 @@ mod tests {
             let config_path = directory.join("config.json");
             let mut config = AgentConfig {
                 endpoint: "https://old.example/api/agent/v1/report".into(),
-                host_name: Some("old-service-name".into()),
                 state_dir: directory.clone(),
                 config_path: Some(config_path.clone()),
                 ..AgentConfig::default()
@@ -966,7 +951,6 @@ mod tests {
                     pairing_endpoint: "https://new.example/api/agent/v2/pairing-requests".into(),
                     report_endpoint: "https://new.example/api/agent/v1/report".into(),
                     bearer_secret: new_token.clone(),
-                    host_name: Some("tray-selected-name".into()),
                 },
             )
             .unwrap();
@@ -994,7 +978,6 @@ mod tests {
             let durable: AgentConfig =
                 serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
             assert_eq!(durable.endpoint, "https://new.example/api/agent/v1/report");
-            assert_eq!(durable.host_name.as_deref(), Some("tray-selected-name"));
             assert!(matches!(
                 load_state(&config).unwrap(),
                 Some(StoredPairingState::Active {
@@ -1012,13 +995,11 @@ mod tests {
                 "https://new.example/api/agent/v1/report",
             )
             .unwrap();
-            assert_eq!(config.host_name.as_deref(), Some("tray-selected-name"));
-            assert_eq!(host.name, "tray-selected-name");
             let durable_after_snapshot: AgentConfig =
                 serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
             assert_eq!(
-                durable_after_snapshot.host_name.as_deref(),
-                Some("tray-selected-name")
+                durable_after_snapshot.endpoint,
+                "https://new.example/api/agent/v1/report"
             );
             fs::remove_dir_all(directory).unwrap();
         }
@@ -1040,7 +1021,6 @@ mod tests {
                 pairing_endpoint: config.pairing_endpoint(),
                 report_endpoint: config.endpoint.clone(),
                 host: test_host(),
-                host_name: None,
                 bearer_secret: random_secret(),
                 polling_secret: random_secret(),
             },
@@ -1054,7 +1034,6 @@ mod tests {
                 pairing_endpoint: config.pairing_endpoint(),
                 report_endpoint: config.endpoint.clone(),
                 bearer_secret: random_secret(),
-                host_name: None,
                 polling_secret: random_secret(),
             },
         ];
@@ -1131,7 +1110,6 @@ mod tests {
                 activation_url: "https://unionc.example/agent/activate/test".into(),
                 instance_id: Uuid::new_v4(),
                 report_endpoint: config.endpoint.clone(),
-                host_name: None,
                 completed_at: Utc::now(),
             },
         )
@@ -1153,7 +1131,6 @@ mod tests {
             activation_url: "https://unionc.example/agent/activate/test".into(),
             instance_id: Uuid::new_v4(),
             report_endpoint: config.endpoint.clone(),
-            host_name: None,
             completed_at: Utc::now(),
         };
         persist_state(&config, &active(old_generation, old_request)).unwrap();
@@ -1188,7 +1165,6 @@ mod tests {
                 pairing_endpoint: config.pairing_endpoint(),
                 report_endpoint: config.endpoint.clone(),
                 bearer_secret: random_secret(),
-                host_name: None,
                 polling_secret: random_secret(),
             },
         )
@@ -1215,7 +1191,6 @@ mod tests {
                 pairing_endpoint: config.pairing_endpoint(),
                 report_endpoint: config.endpoint.clone(),
                 bearer_secret: random_secret(),
-                host_name: None,
             },
         )
         .unwrap();
@@ -1271,7 +1246,6 @@ mod tests {
             pairing_endpoint: config.pairing_endpoint(),
             report_endpoint: config.endpoint.clone(),
             bearer_secret: random_secret(),
-            host_name: None,
         };
         persist_state(&config, &state).unwrap();
         let state_path = state_path(&config);
@@ -1314,7 +1288,6 @@ mod tests {
                 pairing_endpoint: pairing_endpoint.clone(),
                 report_endpoint: config.endpoint.clone(),
                 bearer_secret: bearer_secret.clone(),
-                host_name: None,
                 polling_secret: polling_secret.clone(),
             },
         )

@@ -37,7 +37,7 @@ export function SunshineView({ addTrigger = 0 }: { addTrigger?: number }) {
   });
   const hosts = hostsQuery.data ?? [];
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const handledAddTriggerRef = useRef(addTrigger);
+  const handledAddTriggerRef = useRef(0);
   const panelOpen = selectedId !== null;
 
   const createMutation = useMutation({
@@ -179,8 +179,6 @@ export function SunshineView({ addTrigger = 0 }: { addTrigger?: number }) {
         <MutationError mutation={deleteMutation} />
         {hostsQuery.error ? <InlineNotice tone="danger" text={hostsQuery.error.message} /> : null}
         {hostsQuery.isLoading ? <LoadingBlock label="读取主机" /> : null}
-        {!hostsQuery.isLoading && !hosts.length ? <p className="muted-inline">暂无主机，点击 + 新建</p> : null}
-
         <div className="instance-list-title"><ContentTitle icon={Boxes} title="实例" /></div>
         <div className={`sunshine-master-detail${panelOpen ? " has-panel" : ""}`}>
           <div className="content-grid sunshine-host-grid">

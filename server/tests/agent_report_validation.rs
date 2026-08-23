@@ -25,12 +25,11 @@ fn valid_report() -> Value {
         "collected_at": Utc::now(),
         "host": {
             "id": Uuid::new_v4(),
-            "name": "valid-host",
             "os": "linux",
             "os_version": "6.1.0",
             "kernel_version": "6.1.0",
             "arch": "x86_64",
-            "agent_version": "0.3.2"
+            "agent_version": "0.3.3"
         },
         "interval_seconds": 10.0,
         "system": {
@@ -134,19 +133,19 @@ fn baseline_report_is_valid() {
 
 #[test]
 fn rejects_invalid_identity_fields() {
-    let long_name = "n".repeat(256);
     let long_os = "o".repeat(65);
     let long_arch = "a".repeat(65);
     let long_version = "v".repeat(129);
+    let mut legacy_name = valid_report();
+    legacy_name["host"]
+        .as_object_mut()
+        .expect("host fixture must be an object")
+        .insert("name".into(), json!("legacy-name"));
+    assert_rejected("已移除的 host.name", legacy_name);
 
     for (case, pointer, value) in [
         ("host.id 非 UUID", "/host/id", json!("not-a-uuid")),
         ("host.id 为空", "/host/id", json!("")),
-        ("host.name 为空", "/host/name", json!("")),
-        ("host.name 仅空白", "/host/name", json!("   ")),
-        ("host.name 超长", "/host/name", json!(long_name)),
-        ("host.name 含控制字符", "/host/name", json!("host\u{0}name")),
-        ("host.name 含换行", "/host/name", json!("host\nname")),
         ("host.os 为空", "/host/os", json!("")),
         ("host.os 超长", "/host/os", json!(long_os)),
         ("host.arch 为空", "/host/arch", json!("")),
@@ -745,12 +744,11 @@ fn programmatic_report() -> AgentReport {
         collected_at: Utc::now(),
         host: HostIdentity {
             id: Uuid::new_v4().to_string(),
-            name: "valid-host".into(),
             os: "linux".into(),
             os_version: None,
             kernel_version: None,
             arch: "x86_64".into(),
-            agent_version: "0.3.2".into(),
+            agent_version: "0.3.3".into(),
         },
         interval_seconds: 10.0,
         system: SystemSnapshot {

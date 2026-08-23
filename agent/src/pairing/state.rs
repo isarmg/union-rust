@@ -46,7 +46,6 @@ pub(super) enum StoredPairingState {
         pairing_endpoint: String,
         report_endpoint: String,
         host: HostIdentity,
-        host_name: Option<String>,
         bearer_secret: String,
         polling_secret: String,
     },
@@ -60,7 +59,6 @@ pub(super) enum StoredPairingState {
         pairing_endpoint: String,
         report_endpoint: String,
         bearer_secret: String,
-        host_name: Option<String>,
         polling_secret: String,
     },
     /// Durable local commit journal. Once this phase exists, no network I/O is
@@ -77,7 +75,6 @@ pub(super) enum StoredPairingState {
         pairing_endpoint: String,
         report_endpoint: String,
         bearer_secret: String,
-        host_name: Option<String>,
     },
     Active {
         version: PairingStateVersion,
@@ -86,7 +83,6 @@ pub(super) enum StoredPairingState {
         activation_url: String,
         instance_id: Uuid,
         report_endpoint: String,
-        host_name: Option<String>,
         completed_at: DateTime<Utc>,
     },
     Denied {

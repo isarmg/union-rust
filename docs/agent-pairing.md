@@ -62,7 +62,6 @@ Windows 托盘打开只监听随机 `127.0.0.1` 端口的本机配置页。用�
 
 - UnionC Server HTTPS 地址；
 - 管理台创建实例时显示一次的授权密钥；
-- 可选的本机显示名称。
 
 用户提交并确认 UAC 后，提权 Agent 在同一次操作中建立 pairing request、调用
 `POST /api/agent/v2/activate` 提交授权密钥，再用 polling secret 轮询到 `active`。
@@ -92,7 +91,7 @@ CLI 和其他平台输出专属 `/agent/activate/{request_id}`，时序如下：
     │                        │                       ├──────────────────────>│
     │                        │ GET request summary   │                       │
     │                        │<──────────────────────────────────────────────┤
-    │                        │ name/os/arch/version  │                       │
+    │                        │ os/arch/version       │                       │
     │                        ├──────────────────────────────────────────────>│
     │                        │ POST activate(code)   │                       │
     │                        │<──────────────────────────────────────────────┤
@@ -148,6 +147,8 @@ X-CSRF-Token: ...
 ```
 
 `activation_code` 只在创建响应出现一次，响应设置 `Cache-Control: no-store`。
+`display_name` 是 Server 为该实例持有的备注，不来自 Agent。首次激活用它初始化主机卡片
+名称；重新配对不会用新邀请的值覆盖既有备注。
 
 ### 列出与取消邀请
 
@@ -158,14 +159,18 @@ DELETE /api/monitoring/agent-instances/{invite_request_id}
 
 列表不返回激活码。过期但尚未清理的数据库记录在响应中表示为 `expired`。
 
-### 撤销主机
+### 管理主机
 
 ```http
 POST /api/monitoring/hosts/{instance_id}/revoke
+PATCH /api/monitoring/managed-instances/{instance_id}
+DELETE /api/monitoring/managed-instances/{instance_id}
 ```
 
 撤销会使所有当前凭据失效并把主机标记为 `revoked`，但保留身份和历史。重新启用必须创建
 绑定同一 `instance_id` 的新邀请并完成新的浏览器配对。
+`PATCH` 的 JSON 为 `{"remark":"..."}`，只更新 Server 持有的备注；Agent 上报和重新配对
+都不会覆盖。`DELETE` 则永久删除实例、历史、凭据和全部关联邀请，不可恢复。
 
 ## Agent 接口
 
@@ -180,12 +185,11 @@ Content-Type: application/json
 {
   "host": {
     "id": "本地临时安装 UUID",
-    "name": "workstation-01",
     "os": "linux",
     "os_version": "...",
     "kernel_version": "...",
     "arch": "x86_64",
-    "agent_version": "0.3.2"
+    "agent_version": "0.3.3"
   },
   "token_hash": "64位小写SHA-256十六进制",
   "polling_secret_hash": "另一份64位小写SHA-256十六进制"
@@ -220,10 +224,9 @@ GET /api/agent/v2/pairing-requests/{request_id}
 ```json
 {
   "request_id": "...",
-  "name": "workstation-01",
   "os": "linux",
   "arch": "x86_64",
-  "agent_version": "0.3.2",
+  "agent_version": "0.3.3",
   "status": "waiting",
   "expires_at": "2026-08-15T12:15:00Z"
 }
@@ -329,8 +332,8 @@ Agent 可以安全删除对应 spool 项。
 1. 管理员对现有 `instance_id` 创建新邀请；
 2. 新安装或修复后的 Agent 建立新 pairing request；
 3. 浏览器完成绑定；
-4. Server 在同一事务中插入新 credential、撤销旧 credential、更新主机身份并把生命周期
-   改回 active；
+4. Server 在同一事务中插入新 credential、撤销旧 credential、更新 Agent 平台元数据并把
+   生命周期改回 active；Server 备注保持不变；
 5. 历史报告和 `instance_id` 保持不变。
 
 只有第 4 步成功提交才会撤销旧 credential。重新配对仍在 creating/pending，或最终被拒绝、
@@ -383,7 +386,7 @@ Agent 可以安全删除对应 spool 项。
 - 在 JSON 解析与数据库写入前执行来源限流；
 - 状态轮询校验 polling secret，Agent 遵守 Server 返回的间隔，Server 另有来源限流；
 - 激活页不加载第三方脚本，使用严格 CSP 和 `Referrer-Policy: no-referrer`；
-- 激活前展示主机名、OS、架构、Agent 版本和配对 request；
+- 激活前展示 OS、架构、Agent 版本和配对 request；
 - 操作写入审计日志，但审计 detail 不包含激活码或任何 secret；
 - mTLS 若在站点级强制，bootstrap/pairing 必须使用不要求客户端证书的独立入口。
 

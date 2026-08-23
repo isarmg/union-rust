@@ -91,8 +91,6 @@ pub struct AgentConfig {
     pub pairing_endpoint: Option<String>,
     pub otlp_endpoint: Option<String>,
     pub otlp_token: Option<String>,
-    /// 可选显示名称；不改变稳定 host-id。
-    pub host_name: Option<String>,
     pub interval_seconds: u64,
     pub slow_interval_seconds: u64,
     pub request_timeout_seconds: u64,
@@ -152,7 +150,6 @@ impl Default for AgentConfig {
             pairing_endpoint: None,
             otlp_endpoint: None,
             otlp_token: None,
-            host_name: None,
             interval_seconds: 10,
             slow_interval_seconds: 30,
             request_timeout_seconds: 10,
@@ -185,7 +182,6 @@ impl AgentConfig {
         let mut windows_service = false;
         let mut config_path = env::var_os("UNIONC_AGENT_CONFIG").map(PathBuf::from);
         let mut server_override = None;
-        let mut host_name_override = None;
         let mut endpoint_override = None;
         let mut allow_insecure_http = false;
         let mut tray_events = false;
@@ -224,9 +220,6 @@ impl AgentConfig {
                 "--endpoint" => {
                     endpoint_override =
                         Some(args.next().context("--endpoint requires a report URL")?);
-                }
-                "--name" => {
-                    host_name_override = Some(args.next().context("--name requires a host name")?);
                 }
                 "--allow-insecure-http" => allow_insecure_http = true,
                 "--tray-events" => {
@@ -371,9 +364,6 @@ impl AgentConfig {
         config.output_mode = output_mode;
         config.doctor_delivery = doctor_delivery;
         config.config_issue = config_issue;
-        if let Some(name) = host_name_override {
-            config.host_name = non_empty(name);
-        }
         if allow_insecure_http {
             config.allow_insecure_http = true;
         }
@@ -418,9 +408,6 @@ impl AgentConfig {
         }
         if let Ok(value) = env::var("UNIONC_AGENT_OTLP_TOKEN") {
             self.otlp_token = non_empty(value);
-        }
-        if let Ok(value) = env::var("UNIONC_AGENT_HOST_NAME") {
-            self.host_name = non_empty(value);
         }
         if let Ok(value) = env::var("UNIONC_AGENT_STATE_DIR") {
             self.state_dir = PathBuf::from(value);
@@ -542,11 +529,6 @@ impl AgentConfig {
                 "the native TLS backend requires tls_identity_pkcs12 instead of \
                  tls_identity_pem"
             );
-        }
-        if let Some(name) = &self.host_name
-            && (name.len() > 255 || name.trim().is_empty() || name.chars().any(char::is_control))
-        {
-            bail!("host_name must be 1 to 255 bytes without control characters");
         }
         Ok(())
     }
@@ -809,7 +791,7 @@ fn print_help() {
            unionc-agent pair --server https://unionc.example.com\n\n\
          Common options: --config PATH [--endpoint REPORT_URL] [--output human|json]\n\
          Doctor delivery opt-in: --delivery (sends one report and may drain queued reports)\n\
-         Pair options: [--server URL | --endpoint REPORT_URL] [--name NAME]\n\
+         Pair options: [--server URL | --endpoint REPORT_URL]\n\
            [--replace-pending-pairing]\n\
          --replace-pending-pairing explicitly abandons an incomplete saved request and\n\
            creates a fresh request with new secrets; browser authorization is required again.\n\
@@ -999,6 +981,7 @@ mod tests {
             "token",
             "enrollment_token",
             "host_id",
+            "host_name",
         ] {
             let mut document = serde_json::to_value(AgentConfig::default()).unwrap();
             document

@@ -37,6 +37,7 @@ CREATE INDEX idx_external_hosts_kind_position
 
 CREATE TABLE monitored_hosts (
     host_id                 TEXT PRIMARY KEY CHECK (length(host_id) = 36),
+    -- Server-owned operator remark; Agent pairing and reports carry no device name.
     name                    TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 255),
     os                      TEXT NOT NULL CHECK (length(trim(os)) BETWEEN 1 AND 64),
     os_version              TEXT,
@@ -154,7 +155,6 @@ CREATE UNIQUE INDEX idx_agent_instance_invites_one_pending_per_instance
 CREATE TABLE agent_pairing_requests (
     request_id          TEXT PRIMARY KEY CHECK (length(request_id) = 36),
     requested_host_id   TEXT NOT NULL CHECK (length(requested_host_id) = 36),
-    name                TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 255),
     os                  TEXT NOT NULL CHECK (length(trim(os)) BETWEEN 1 AND 64),
     os_version          TEXT,
     kernel_version      TEXT,

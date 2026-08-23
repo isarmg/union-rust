@@ -19,7 +19,6 @@ pub const AGENT_REPORT_MAX_TEMPERATURES: usize = 4096;
 pub const AGENT_REPORT_MAX_GPUS: usize = 128;
 
 /// Text limits use UTF-8 bytes, matching JSON trust-boundary validation.
-pub const AGENT_REPORT_MAX_HOST_NAME_BYTES: usize = 255;
 pub const AGENT_REPORT_MAX_HOST_OS_BYTES: usize = 64;
 pub const AGENT_REPORT_MAX_HOST_VERSION_BYTES: usize = 128;
 pub const AGENT_REPORT_MAX_HOST_ARCH_BYTES: usize = 64;
@@ -60,7 +59,6 @@ pub struct HostIdentity {
     /// Canonical lowercase, hyphenated UUID text.
     #[serde(deserialize_with = "deserialize_canonical_uuid")]
     pub id: String,
-    pub name: String,
     pub os: String,
     pub os_version: Option<String>,
     pub kernel_version: Option<String>,
@@ -254,12 +252,11 @@ mod tests {
             collected_at: "2026-01-01T00:00:00Z".parse().unwrap(),
             host: HostIdentity {
                 id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(),
-                name: "host".into(),
                 os: "linux".into(),
                 os_version: Some("1".into()),
                 kernel_version: None,
                 arch: "x86_64".into(),
-                agent_version: "0.3.2".into(),
+                agent_version: "0.3.3".into(),
             },
             interval_seconds: 0.5,
             system: SystemSnapshot {

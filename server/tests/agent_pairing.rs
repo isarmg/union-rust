@@ -168,9 +168,9 @@ async fn anonymous_pairing_storage_is_bounded_and_reclaims_expired_rows() {
         query(
             r#"
             INSERT INTO agent_pairing_requests(
-                request_id,requested_host_id,name,os,arch,agent_version,
+                request_id,requested_host_id,os,arch,agent_version,
                 token_hash,polling_secret_hash,expires_at,created_at
-            ) VALUES(?1,?2,'bounded-host','linux','x86_64','test',?3,?4,?5,?6)
+            ) VALUES(?1,?2,'linux','x86_64','test',?3,?4,?5,?6)
             "#,
         )
         .bind(
@@ -285,9 +285,9 @@ async fn pairing_cleanup_reclaims_only_stale_denied_rows() {
         query(
             r#"
             INSERT INTO agent_pairing_requests(
-                request_id,requested_host_id,name,os,arch,agent_version,
+                request_id,requested_host_id,os,arch,agent_version,
                 token_hash,polling_secret_hash,status,expires_at,created_at
-            ) VALUES(?1,?2,'denied-host','linux','x86_64','test',?3,?4,'denied',?5,?6)
+            ) VALUES(?1,?2,'linux','x86_64','test',?3,?4,'denied',?5,?6)
             "#,
         )
         .bind(request_id)
@@ -411,35 +411,33 @@ fn hash(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
 }
 
-fn pairing_body(token: &str, polling_secret: &str, name: &str) -> serde_json::Value {
+fn pairing_body(token: &str, polling_secret: &str, _fixture_label: &str) -> serde_json::Value {
     serde_json::json!({
         "host": {
             "id": Uuid::new_v4(),
-            "name": name,
             "os": "linux",
             "os_version": "test",
             "kernel_version": "test-kernel",
             "arch": "x86_64",
-            "agent_version": "0.3.2"
+            "agent_version": "0.3.3"
         },
         "token_hash": hash(token),
         "polling_secret_hash": hash(polling_secret)
     })
 }
 
-fn report_body(instance_id: &str, name: &str) -> serde_json::Value {
+fn report_body(instance_id: &str, _fixture_label: &str) -> serde_json::Value {
     serde_json::json!({
         "schema_version": 1,
         "report_id": Uuid::new_v4(),
         "collected_at": Utc::now(),
         "host": {
             "id": instance_id,
-            "name": name,
             "os": "linux",
             "os_version": "test",
             "kernel_version": "test-kernel",
             "arch": "x86_64",
-            "agent_version": "0.3.2"
+            "agent_version": "0.3.3"
         },
         "interval_seconds": 10.0,
         "system": {
@@ -706,7 +704,7 @@ async fn pairing_is_atomic_replay_safe_and_creation_is_idempotent() {
     )
     .await;
     assert_eq!(public_status, StatusCode::OK, "{public}");
-    assert_eq!(public["name"], "paired-host");
+    assert!(public.get("name").is_none());
     assert_eq!(public["status"], "waiting");
     assert!(public.get("token_hash").is_none());
     assert!(public.get("polling_secret_hash").is_none());
@@ -909,6 +907,176 @@ async fn expired_pairing_and_invite_are_never_activated() {
 }
 
 #[tokio::test]
+async fn administrators_can_update_remark_then_permanently_delete_an_instance() {
+    let url = common::test_database_url("administrators_can_update_remark_then_delete_an_instance");
+    let (app, pool) = app_with_database(url.to_string()).await;
+    let invite = create_invite(&app, "managed instance", None).await;
+    let instance_id = invite["instance_id"].as_str().unwrap();
+    let token = secret();
+    let polling_secret = secret();
+    let (_, pairing) =
+        create_pairing(&app, pairing_body(&token, &polling_secret, "reported-name")).await;
+    let request_id = pairing["request_id"].as_str().unwrap();
+    assert_eq!(
+        activate(
+            &app,
+            request_id,
+            invite["activation_code"].as_str().unwrap(),
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        report(&app, instance_id, &token).await.0,
+        StatusCode::ACCEPTED
+    );
+
+    let (read_resource_patch, _) = call_json(
+        &app,
+        console("PATCH", &format!("/api/monitoring/hosts/{instance_id}")),
+        serde_json::json!({"remark": "must not be accepted here"}),
+    )
+    .await;
+    assert_eq!(read_resource_patch, StatusCode::METHOD_NOT_ALLOWED);
+    let (read_resource_delete, _) = call_empty(
+        &app,
+        console("DELETE", &format!("/api/monitoring/hosts/{instance_id}")),
+    )
+    .await;
+    assert_eq!(read_resource_delete, StatusCode::METHOD_NOT_ALLOWED);
+
+    let (invalid_name, _) = call_json(
+        &app,
+        console(
+            "PATCH",
+            &format!("/api/monitoring/managed-instances/{instance_id}"),
+        ),
+        serde_json::json!({"remark": "  "}),
+    )
+    .await;
+    assert_eq!(invalid_name, StatusCode::BAD_REQUEST);
+    let (renamed, _) = call_json(
+        &app,
+        console(
+            "PATCH",
+            &format!("/api/monitoring/managed-instances/{instance_id}"),
+        ),
+        serde_json::json!({"remark": " 客厅工作站 "}),
+    )
+    .await;
+    assert_eq!(renamed, StatusCode::NO_CONTENT);
+
+    let mut later_report = report_body(instance_id, "agent-reported-name-changed");
+    later_report["collected_at"] = serde_json::to_value(Utc::now() + Duration::seconds(1)).unwrap();
+    assert_eq!(
+        call_json(
+            &app,
+            Request::post("/api/agent/v1/report")
+                .header("authorization", format!("Bearer {token}")),
+            later_report,
+        )
+        .await
+        .0,
+        StatusCode::ACCEPTED
+    );
+    let (detail_status, detail) = call_empty(
+        &app,
+        console("GET", &format!("/api/monitoring/hosts/{instance_id}")),
+    )
+    .await;
+    assert_eq!(detail_status, StatusCode::OK, "{detail}");
+    assert_eq!(detail["host"]["name"], "客厅工作站");
+
+    let pending_invite = create_invite(&app, "pending replacement", Some(instance_id)).await;
+    let pending_token = secret();
+    let pending_poll = secret();
+    let mut pending_body = pairing_body(&pending_token, &pending_poll, "pending replacement");
+    pending_body["host"]["id"] = serde_json::Value::String(instance_id.to_string());
+    assert_eq!(
+        create_pairing(&app, pending_body).await.0,
+        StatusCode::CREATED
+    );
+
+    let (deleted, _) = call_empty(
+        &app,
+        console(
+            "DELETE",
+            &format!("/api/monitoring/managed-instances/{instance_id}"),
+        ),
+    )
+    .await;
+    assert_eq!(deleted, StatusCode::NO_CONTENT);
+    for table in [
+        "monitored_hosts",
+        "agent_metric_reports",
+        "agent_credentials",
+        "agent_pairing_requests",
+        "agent_instance_invites",
+    ] {
+        let count: i64 = query(&format!(
+            "SELECT COUNT(*) AS count FROM {table} WHERE {}=?1",
+            match table {
+                "monitored_hosts" => "host_id",
+                "agent_metric_reports" | "agent_credentials" => "host_id",
+                "agent_pairing_requests" => "requested_host_id",
+                "agent_instance_invites" => "instance_id",
+                _ => unreachable!(),
+            }
+        ))
+        .bind(instance_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count deleted instance state")
+        .try_get("count")
+        .unwrap();
+        assert_eq!(count, 0, "{table} retained deleted instance state");
+    }
+    let first_request_count: i64 =
+        query("SELECT COUNT(*) AS count FROM agent_pairing_requests WHERE request_id=?1")
+            .bind(request_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count activated pairing")
+            .try_get("count")
+            .unwrap();
+    assert_eq!(first_request_count, 0);
+    let invite_count: i64 =
+        query("SELECT COUNT(*) AS count FROM agent_instance_invites WHERE invite_id IN (?1,?2)")
+            .bind(invite["request_id"].as_str().unwrap())
+            .bind(pending_invite["request_id"].as_str().unwrap())
+            .fetch_one(&pool)
+            .await
+            .expect("count deleted invites")
+            .try_get("count")
+            .unwrap();
+    assert_eq!(invite_count, 0);
+    let audit_count: i64 = query(
+        "SELECT COUNT(*) AS count FROM audit_logs WHERE action='monitoring.instance.delete' AND target=?1",
+    )
+    .bind(instance_id)
+    .fetch_one(&pool)
+    .await
+    .expect("count deletion audit")
+    .try_get("count")
+    .unwrap();
+    assert_eq!(audit_count, 1);
+    assert_eq!(
+        call_empty(
+            &app,
+            console("GET", &format!("/api/monitoring/hosts/{instance_id}")),
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        report(&app, instance_id, &token).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
 async fn revoke_is_terminal_until_an_admin_re_pairs_the_same_instance() {
     let url =
         common::test_database_url("revoke_is_terminal_until_an_admin_re_pairs_the_same_instance");
@@ -1085,7 +1253,7 @@ async fn revoke_is_terminal_until_an_admin_re_pairs_the_same_instance() {
         .await
         .expect("read current host")
         .expect("current host exists");
-    assert_eq!(current.identity.name, "new-generation-host");
+    assert_eq!(current.name, "stable instance");
     assert_eq!(current.capabilities.len(), 1);
     assert_eq!(current.capabilities[0].name, "new-generation-capability");
     assert_eq!(

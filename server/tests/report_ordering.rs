@@ -1,7 +1,7 @@
 //! 乱序 / 重放报文不得回写主机的当前状态。
 //!
 //! 断线恢复时 spool 会补传一批**历史**报文，重放也可能把同一份报文再送一次。
-//! 无条件覆盖 `name` / `os` / `capabilities` / `last_seen_at` 会导致：
+//! 无条件覆盖 `os` / `capabilities` / `last_seen_at` 会导致：
 //!
 //! * 一份小时前的旧报文能把刚更新的能力清单覆盖回去；
 //! * 任何一次重放都会把 `last_seen_at` 刷成当前时间，让离线主机显示为 online。
@@ -24,22 +24,21 @@ fn hex_hash(seed: &str) -> String {
         .collect()
 }
 
-fn identity(host_id: Uuid, name: &str) -> HostIdentity {
+fn identity(host_id: Uuid, _fixture_label: &str) -> HostIdentity {
     HostIdentity {
         id: host_id.to_string(),
-        name: name.into(),
         os: "linux".into(),
         os_version: Some("6.1.0".into()),
         kernel_version: Some("6.1.0".into()),
         arch: "x86_64".into(),
-        agent_version: "0.3.2".into(),
+        agent_version: "0.3.3".into(),
     }
 }
 
 /// `capability` 用于区分"新报文"与"旧报文"写入的元数据。
 fn report(
     host_id: Uuid,
-    name: &str,
+    _state_label: &str,
     collected_at: chrono::DateTime<Utc>,
     capability: &str,
 ) -> serde_json::Value {
@@ -48,9 +47,9 @@ fn report(
         "report_id": Uuid::new_v4(),
         "collected_at": collected_at,
         "host": {
-            "id": host_id, "name": name, "os": "linux",
+            "id": host_id, "os": "linux",
             "os_version": "6.1.0", "kernel_version": "6.1.0",
-            "arch": "x86_64", "agent_version": "0.3.2"
+            "arch": "x86_64", "agent_version": "0.3.3"
         },
         "interval_seconds": 10.0,
         "system": {
@@ -105,7 +104,7 @@ async fn a_late_arriving_old_report_is_stored_without_rewriting_host_state() {
         .await
         .expect("read")
         .expect("host exists");
-    assert_eq!(after_current.identity.name, "current-name");
+    assert_eq!(after_current.name, "测试实例");
     let last_seen_after_current = after_current.last_seen_at;
     let latest_collected_after_current = after_current.latest_collected_at;
 
@@ -127,10 +126,7 @@ async fn a_late_arriving_old_report_is_stored_without_rewriting_host_state() {
         .await
         .expect("read")
         .expect("host exists");
-    assert_eq!(
-        after_stale.identity.name, "current-name",
-        "旧报文不得覆盖主机名"
-    );
+    assert_eq!(after_stale.name, "测试实例", "旧报文不得覆盖 Server 备注");
     assert_eq!(
         after_stale
             .capabilities
@@ -176,8 +172,8 @@ async fn a_late_arriving_old_report_is_stored_without_rewriting_host_state() {
         .expect("read")
         .expect("host exists");
     assert_eq!(
-        after_newer.identity.name, "newer-name",
-        "更新的报文必须仍能推进主机状态——守卫不应把正常上报也挡掉"
+        after_newer.name, "测试实例",
+        "更新的报文也不得覆盖 Server 备注"
     );
     assert!(
         after_newer.last_seen_at >= last_seen_after_current,
@@ -274,7 +270,7 @@ async fn equal_timestamps_choose_the_same_latest_report_in_both_arrival_orders()
 
     let collected_at = Utc::now();
 
-    for (high_arrives_first, host_name, lower_id, higher_id) in [
+    for (high_arrives_first, case_label, lower_id, higher_id) in [
         (
             false,
             "equal-time-low-first",
@@ -292,7 +288,7 @@ async fn equal_timestamps_choose_the_same_latest_report_in_both_arrival_orders()
         let marker = Uuid::new_v4();
         common::insert_active_monitoring_host(
             &pool,
-            &identity(host_id, host_name),
+            &identity(host_id, case_label),
             &hex_hash(&format!("{marker}-token")),
         )
         .await
@@ -331,7 +327,7 @@ async fn equal_timestamps_choose_the_same_latest_report_in_both_arrival_orders()
             .await
             .expect("detail query")
             .expect("host exists");
-        assert_eq!(detail.identity.name, "higher-id-state");
+        assert_eq!(detail.name, "测试实例");
         assert_eq!(
             detail
                 .latest
@@ -527,9 +523,9 @@ async fn replaying_the_same_report_is_idempotent() {
         sqlx_core::row::Row::try_get(&before, "capabilities").unwrap();
 
     // Reusing the same id with a different body is still a duplicate and must
-    // not mutate host identity, capabilities or heartbeat state.
+    // not mutate host identity, capabilities, Server remark or heartbeat state.
     let mut replay = parsed.clone();
-    replay.host.name = "replay-must-not-overwrite".to_string();
+    replay.host.os = "replay-must-not-overwrite".to_string();
     replay.capabilities.clear();
     replay.collected_at += Duration::minutes(1);
 

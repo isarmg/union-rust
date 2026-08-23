@@ -1,4 +1,4 @@
-//! Persistence for read-only host metric reports.
+//! Persistence for host telemetry, pairing and administrator-managed instance lifecycle.
 
 use chrono::{DateTime, Utc};
 use sqlx_core::{query::query, row::Row};
@@ -79,9 +79,9 @@ mod activation_expiry_tests {
         query(
             r#"
             INSERT INTO agent_pairing_requests(
-                request_id,requested_host_id,name,os,arch,agent_version,
+                request_id,requested_host_id,os,arch,agent_version,
                 token_hash,polling_secret_hash,expires_at,created_at
-            ) VALUES(?1,?2,'expiring host','linux','x86_64','test',?3,?4,?5,?6)
+            ) VALUES(?1,?2,'linux','x86_64','test',?3,?4,?5,?6)
             "#,
         )
         .bind(&request_id)

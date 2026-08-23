@@ -54,7 +54,8 @@ function AuthedApp({
 }) {
   const [view, setView] = useState<ViewKey>("overview");
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
-  const [addTrigger, setAddTrigger] = useState(0);
+  const [monitoringAddTrigger, setMonitoringAddTrigger] = useState(0);
+  const [sunshineAddTrigger, setSunshineAddTrigger] = useState(0);
   const queryClient = useQueryClient();
   const eventStream = useEventStream();
 
@@ -87,7 +88,7 @@ function AuthedApp({
               className={view === key ? "nav-item active" : "nav-item"}
               aria-current={view === key ? "page" : undefined}
               type="button"
-              onClick={() => { setView(key); setAddTrigger(0); }}
+              onClick={() => setView(key)}
               title={label}
             >
               <Icon size={18} /><span>{label}</span>
@@ -95,8 +96,17 @@ function AuthedApp({
           ))}
         </nav>
         <div className="sidebar-footer">
-          {view === "sunshine" && (
-            <button className="icon-button" type="button" title="新建实例" aria-label="新建 Sunshine 实例" onClick={() => setAddTrigger((value) => value + 1)}>
+          {(view === "sunshine" || view === "monitoring") && (
+            <button
+              className="icon-button"
+              type="button"
+              title={view === "sunshine" ? "新建 Sunshine 实例" : "创建 Agent"}
+              aria-label={view === "sunshine" ? "新建 Sunshine 实例" : "创建 Agent"}
+              onClick={() => {
+                if (view === "sunshine") setSunshineAddTrigger((value) => value + 1);
+                else setMonitoringAddTrigger((value) => value + 1);
+              }}
+            >
               <Plus size={18} />
             </button>
           )}
@@ -134,8 +144,8 @@ function AuthedApp({
         )}
         {/* 懒加载的分块在切换视图时才请求，用 Suspense 兜住这段空窗。 */}
         <Suspense fallback={<LoadingBlock label="正在加载视图…" />}>
-          {view === "monitoring" && <MonitoringView />}
-          {view === "sunshine" && <SunshineView addTrigger={addTrigger} />}
+          {view === "monitoring" && <MonitoringView addTrigger={monitoringAddTrigger} />}
+          {view === "sunshine" && <SunshineView addTrigger={sunshineAddTrigger} />}
           {view === "logs" && <LogsView />}
           {view === "settings" && <SettingsView onPasswordChanged={onPasswordChanged} />}
         </Suspense>

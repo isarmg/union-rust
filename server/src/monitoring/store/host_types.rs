@@ -4,6 +4,8 @@ use crate::monitoring::{AgentReport, Capability, HostIdentity, MetricSummary};
 
 #[derive(Debug)]
 pub struct StoredHost {
+    /// Server-owned operator remark; the Agent wire protocol carries no device name.
+    pub name: String,
     pub identity: HostIdentity,
     pub lifecycle_status: String,
     pub capabilities: Vec<Capability>,

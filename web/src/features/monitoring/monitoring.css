@@ -1,4 +1,11 @@
-/* 只读主机监控。延续全站 3:2 内容块，只补充“选择主机”的交互状态。 */
+/* 主机监控内容块：选择、改名和生命周期操作保持在同一实例卡片内。 */
+
+.monitoring-host-entry {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  gap: 10px;
+}
 
 .monitoring-host-card {
   width: 100%;
@@ -6,8 +13,6 @@
   padding: 0;
   color: var(--text);
   text-align: left;
-  appearance: none;
-  cursor: pointer;
   transition: background-color 120ms ease, box-shadow 120ms ease;
 }
 
@@ -17,11 +22,6 @@
 
 .monitoring-host-card.selected {
   box-shadow: inset 0 0 0 2px var(--primary);
-}
-
-.monitoring-host-card:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--primary) 38%, transparent);
-  outline-offset: 3px;
 }
 
 .monitoring-detail-card .card-row-content {
@@ -37,39 +37,15 @@
   margin-top: var(--content-block-gap);
 }
 
-.agent-instance-form {
-  display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(150px, 220px) minmax(150px, auto);
-  align-items: end;
-  gap: 12px;
-}
-
-.agent-instance-form label {
-  display: grid;
-  gap: 6px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.agent-instance-form input,
-.agent-instance-form select {
-  width: 100%;
-  min-height: 38px;
-  padding: 0 10px;
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-}
-
-.agent-created-instance,
-.agent-pending-instances {
-  display: grid;
-  gap: 12px;
-}
-
 .agent-created-instance {
+  display: grid;
+  gap: 12px;
   margin-top: 14px;
+}
+
+.monitoring-host-invite {
+  display: grid;
+  gap: 10px;
 }
 
 .agent-instance-details {
@@ -108,31 +84,6 @@
   letter-spacing: 0.04em;
 }
 
-.agent-pending-instances {
-  margin-top: 18px;
-}
-
-.agent-pending-instance {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(90px, auto);
-  align-items: center;
-  gap: 12px;
-  padding: 11px 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-}
-
-.agent-pending-instance > div:first-child {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-
-.agent-pending-instance-actions {
-  display: flex;
-}
-
 .agent-instance-activated {
   display: flex;
   align-items: center;
@@ -150,8 +101,6 @@
 }
 
 @media (max-width: 760px) {
-  .agent-instance-form,
-  .agent-pending-instance,
   .agent-instance-details > div {
     grid-template-columns: 1fr;
   }

@@ -34,33 +34,33 @@ mod tests {
     #[test]
     fn serde_dtos_accept_only_the_current_wire_shape() {
         let current_preferences = format!(
-            r#"{{"application_version":"{}","server":"","name":null}}"#,
+            r#"{{"application_version":"{}","server":""}}"#,
             env!("CARGO_PKG_VERSION")
         );
         assert!(serde_json::from_str::<TrayPreferences>(&current_preferences).is_ok());
-        assert!(serde_json::from_str::<TrayPreferences>(r#"{"server":"","name":null}"#).is_err());
+        assert!(serde_json::from_str::<TrayPreferences>(r#"{"server":""}"#).is_err());
         assert!(
             serde_json::from_str::<TrayPreferences>(
-                r#"{"application_version":"0.3.1","server":"","name":null}"#
+                r#"{"application_version":"0.3.1","server":""}"#
             )
             .is_err()
         );
         assert!(
             serde_json::from_str::<TrayPreferences>(
-                r#"{"application_version":"0.3.2","server":"","name":null,"legacy":true}"#
+                r#"{"application_version":"0.3.3","server":"","legacy":true}"#
             )
             .is_err()
         );
 
         assert!(
             serde_json::from_str::<PairRequest>(
-                r#"{"server":"https://server.example","name":"host","activation_code":"secret"}"#
+                r#"{"server":"https://server.example","activation_code":"secret"}"#
             )
             .is_ok()
         );
         assert!(
             serde_json::from_str::<PairRequest>(
-                r#"{"server":"https://server.example","activation_code":"secret"}"#
+                r#"{"server":"https://server.example","name":"host","activation_code":"secret"}"#
             )
             .is_err()
         );
@@ -86,19 +86,19 @@ mod tests {
 
         assert!(
             serde_json::from_str::<PairEvent>(
-                r#"{"event":"pairing_waiting","version":"0.3.2","request_id":"request","generation":"generation","activation_url":"https://server.example/agent/activate/request","pairing_endpoint":"https://server.example/api/agent/v2/pairing-requests","expires_at":"2026-08-20T00:00:00Z","poll_interval":2}"#
+                r#"{"event":"pairing_waiting","version":"0.3.3","request_id":"request","generation":"generation","activation_url":"https://server.example/agent/activate/request","pairing_endpoint":"https://server.example/api/agent/v2/pairing-requests","expires_at":"2026-08-20T00:00:00Z","poll_interval":2}"#
             )
             .is_ok()
         );
         assert!(
             serde_json::from_str::<PairEvent>(
-                r#"{"event":"pairing_waiting","version":"0.3.2","request_id":"request","generation":"generation","activation_url":"https://server.example/agent/activate/request","pairing_endpoint":"https://server.example/api/agent/v2/pairing-requests","poll_interval":2}"#
+                r#"{"event":"pairing_waiting","version":"0.3.3","request_id":"request","generation":"generation","activation_url":"https://server.example/agent/activate/request","pairing_endpoint":"https://server.example/api/agent/v2/pairing-requests","poll_interval":2}"#
             )
             .is_err()
         );
         assert!(
             serde_json::from_str::<PairEvent>(
-                r#"{"event":"paired","version":"0.3.2","request_id":"request","instance_id":"instance","endpoint":"https://server.example/api/agent/v1/report","legacy":true}"#
+                r#"{"event":"paired","version":"0.3.3","request_id":"request","instance_id":"instance","endpoint":"https://server.example/api/agent/v1/report","legacy":true}"#
             )
             .is_err()
         );
@@ -113,7 +113,7 @@ mod tests {
 
         assert!(
             serde_json::from_str::<ServerHealthResponse>(
-                r#"{"status":"ok","version":"0.3.2","uptime_seconds":1}"#
+                r#"{"status":"ok","version":"0.3.3","uptime_seconds":1}"#
             )
             .is_ok()
         );
@@ -123,7 +123,7 @@ mod tests {
         );
         assert!(
             serde_json::from_str::<ServerHealthResponse>(
-                r#"{"status":"ok","version":"0.3.2","uptime_seconds":1,"legacy":true}"#
+                r#"{"status":"ok","version":"0.3.3","uptime_seconds":1,"legacy":true}"#
             )
             .is_err()
         );
@@ -137,18 +137,15 @@ mod tests {
         let first = TrayPreferences {
             application_version: CurrentPackageVersion,
             server: "https://first.example".into(),
-            name: Some("first".into()),
         };
         let second = TrayPreferences {
             application_version: CurrentPackageVersion,
             server: "https://second.example".into(),
-            name: Some("second".into()),
         };
         save_preferences(&path, &first).unwrap();
         save_preferences(&path, &second).unwrap();
         let loaded = load_preferences(&path).unwrap();
         assert_eq!(loaded.server, second.server);
-        assert_eq!(loaded.name, second.name);
         fs::remove_dir_all(directory).unwrap();
     }
 

@@ -316,7 +316,6 @@ mod tests {
             collected_at: Utc::now(),
             host: HostIdentity {
                 id: Uuid::new_v4().to_string(),
-                name: "test".into(),
                 os: "test".into(),
                 os_version: None,
                 kernel_version: None,
@@ -610,7 +609,7 @@ mod tests {
     fn growing_a_bounded_old_report_cannot_exceed_the_spool_budget() {
         let directory = temp_dir();
         let mut old = report();
-        old.host.name.clear();
+        old.host.os.clear();
         let old_body = serde_json::to_vec(&old).unwrap();
         let budget = old_body.len() as u64;
         let spool = Spool::open(&directory, budget).unwrap();
@@ -624,7 +623,7 @@ mod tests {
             .oldest()
             .unwrap()
             .expect("the in-memory bounded report remains available for this send attempt");
-        assert_eq!(pending.report.host.name, pending.report.host.id);
+        assert_eq!(pending.report.host.os, "unknown");
         let total: u64 = [spool.paths(INVALID).unwrap(), spool.paths(JSON).unwrap()]
             .concat()
             .iter()

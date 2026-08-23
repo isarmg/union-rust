@@ -26,7 +26,6 @@ pub async fn poll_existing(config: &AgentConfig) -> anyhow::Result<Option<Pairin
         pairing_endpoint,
         report_endpoint,
         bearer_secret: _,
-        host_name: _,
         polling_secret,
     } = state
     else {

@@ -82,9 +82,6 @@ async fn run_agent(ready: Option<fn() -> anyhow::Result<bool>>) -> anyhow::Resul
     } else {
         transient_host_identity(Uuid::new_v4())
     };
-    if let Some(name) = &config.host_name {
-        host.name.clone_from(name);
-    }
     if shutdown.is_requested() {
         return Ok(());
     }
@@ -157,7 +154,6 @@ async fn run_agent(ready: Option<fn() -> anyhow::Result<bool>>) -> anyhow::Resul
                 "status": "healthy",
                 "mode": "delivery",
                 "host_id": host.id,
-                "host_name": host.name,
                 "endpoint": config.endpoint,
                 "spool_pending_batches": spool.pending_count()?,
                 "checks": [
@@ -195,7 +191,7 @@ async fn run_agent(ready: Option<fn() -> anyhow::Result<bool>>) -> anyhow::Resul
         return Ok(());
     }
 
-    info!(host_id = %host.id, host_name = %host.name, "read-only telemetry agent started");
+    info!(host_id = %host.id, "read-only telemetry agent started");
     run_loop(
         config,
         host,

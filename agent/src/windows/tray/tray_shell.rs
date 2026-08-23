@@ -342,7 +342,6 @@ fn open_pair_configuration() -> anyhow::Result<()> {
 
 fn launch_elevated_pair(
     server: &str,
-    name: Option<&str>,
     callback_nonce: String,
 ) -> anyhow::Result<KernelHandle> {
     let mut arguments = vec![
@@ -350,10 +349,6 @@ fn launch_elevated_pair(
         "--server-b64".to_string(),
         encode_base64url(server.as_bytes()),
     ];
-    if let Some(name) = name {
-        arguments.push("--name-b64".into());
-        arguments.push(encode_base64url(name.as_bytes()));
-    }
     arguments.extend(["--callback-nonce".into(), callback_nonce]);
     launch_elevated_process(&arguments, true)?
         .context("Windows did not return the elevated pairing process handle")

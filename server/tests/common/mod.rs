@@ -81,7 +81,7 @@ pub async fn insert_active_monitoring_host(
         "#,
     )
     .bind(&host.id)
-    .bind(&host.name)
+    .bind("测试实例")
     .bind(&host.os)
     .bind(host.os_version.as_deref())
     .bind(host.kernel_version.as_deref())

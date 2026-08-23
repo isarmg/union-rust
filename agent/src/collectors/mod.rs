@@ -178,7 +178,6 @@ pub fn load_host_identity(state_dir: &Path) -> anyhow::Result<HostIdentity> {
 pub fn transient_host_identity(id: Uuid) -> HostIdentity {
     HostIdentity {
         id: id.to_string(),
-        name: System::host_name().unwrap_or_else(|| id.to_string()),
         os: std::env::consts::OS.to_string(),
         os_version: System::os_version(),
         kernel_version: System::kernel_version(),

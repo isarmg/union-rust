@@ -57,7 +57,7 @@ OTLP；当前报告得到 UnionC ACK 后才同步尝试 OTLP，因而可能等�
 
 ## 导出的指标
 
-资源属性：`host.id`、`host.name`、`os.type`、`host.arch`、`service.name`、
+资源属性：`host.id`、`os.type`、`host.arch`、`service.name`、
 `service.version`。注意 `os.type` / `host.arch` 按 OTLP 语义约定转写
 （`macos`→`darwin`、`x86_64`→`amd64`、`aarch64`→`arm64`）。
 

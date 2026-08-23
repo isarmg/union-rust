@@ -53,6 +53,70 @@ pub async fn get_monitored_host(
     row.map(|row| stored_host_from_row(row, true)).transpose()
 }
 
+pub async fn update_monitored_host_remark(
+    pool: &DbPool,
+    host_id: &str,
+    remark: &str,
+) -> anyhow::Result<bool> {
+    let host_id = canonical_uuid(host_id)?;
+    let mut tx = database::begin_write(pool).await?;
+    let updated = query("UPDATE monitored_hosts SET name=?2 WHERE host_id=?1")
+        .bind(&host_id)
+        .bind(remark)
+        .execute(tx.connection())
+        .await?
+        .rows_affected();
+    if updated == 0 {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+    crate::infra::database::insert_audit_in_transaction(
+        tx.connection(),
+        "monitoring.instance.remark.update",
+        &host_id,
+        Some("administrator updated the server-owned instance remark"),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+pub async fn delete_monitored_host(pool: &DbPool, host_id: &str) -> anyhow::Result<bool> {
+    let host_id = canonical_uuid(host_id)?;
+    let mut tx = database::begin_write(pool).await?;
+    let exists = query("SELECT 1 FROM monitored_hosts WHERE host_id=?1")
+        .bind(&host_id)
+        .fetch_optional(tx.connection())
+        .await?
+        .is_some();
+    if !exists {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+
+    crate::infra::database::insert_audit_in_transaction(
+        tx.connection(),
+        "monitoring.instance.delete",
+        &host_id,
+        Some("host, report history, credentials, pairing requests and invites permanently deleted"),
+    )
+    .await?;
+    query("DELETE FROM agent_pairing_requests WHERE requested_host_id=?1 OR instance_id=?1")
+    .bind(&host_id)
+    .execute(tx.connection())
+    .await?;
+    query("DELETE FROM agent_instance_invites WHERE instance_id=?1")
+        .bind(&host_id)
+        .execute(tx.connection())
+        .await?;
+    query("DELETE FROM monitored_hosts WHERE host_id=?1")
+        .bind(&host_id)
+        .execute(tx.connection())
+        .await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
 fn history_query_sql(has_from: bool, has_to: bool) -> String {
     let (range_predicate, limit_parameter) = match (has_from, has_to) {
         (false, false) => ("", "?2"),

@@ -1,23 +1,14 @@
 fn elevated_pair(
     server: String,
-    name: Option<String>,
     callback_nonce: String,
 ) -> anyhow::Result<()> {
     ensure_process_is_elevated()?;
     let _pair_mutex = create_single_instance_mutex(PRIVILEGED_OPERATION_MUTEX, true)?
         .context("another UnionC Agent pairing operation is already running")?;
     let server = validate_server_base(&server)?;
-    let name = name
-        .as_deref()
-        .map(validate_host_name)
-        .transpose()?
-        .flatten();
     let origin = reqwest::Url::parse(&server)?.origin().ascii_serialization();
     let confirmation = format!(
-        "即将把此 Windows 设备配对到：\n\n{origin}\n\n{}\n\n重新配对成功会替换当前设备绑定。只有确认该地址属于你的 UnionC 服务器时才继续。",
-        name.as_deref()
-            .map(|name| format!("设备名称：{name}"))
-            .unwrap_or_else(|| "设备名称：使用本机名称".into())
+        "即将把此 Windows 设备配对到：\n\n{origin}\n\n重新配对成功会替换当前设备绑定。只有确认该地址属于你的 UnionC 服务器时才继续。",
     );
     match message_box(
         &confirmation,
@@ -38,7 +29,7 @@ fn elevated_pair(
         "Agent service is in unsupported state {}",
         original_state.label()
     );
-    let outcome = run_hidden_pair(&server, name.as_deref(), &callback_nonce);
+    let outcome = run_hidden_pair(&server, &callback_nonce);
     match outcome {
         Ok(()) => {
             if original_state == ServiceState::Running {
@@ -86,7 +77,7 @@ fn elevated_stop_for_exit() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_hidden_pair(server: &str, name: Option<&str>, callback_nonce: &str) -> anyhow::Result<()> {
+fn run_hidden_pair(server: &str, callback_nonce: &str) -> anyhow::Result<()> {
     let agent = installed_program_root()?.join(AGENT_EXE);
     let state_root = installed_state_root()?;
     let config = state_root.join(CONFIG_FILE);
@@ -118,9 +109,6 @@ fn run_hidden_pair(server: &str, name: Option<&str>, callback_nonce: &str) -> an
         .arg("--tray-deadline-seconds")
         .arg(PAIR_OPERATION_TIMEOUT.as_secs().to_string())
         .arg("--replace-pending-pairing");
-    if let Some(name) = name {
-        command.arg("--name").arg(name);
-    }
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

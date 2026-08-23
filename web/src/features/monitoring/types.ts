@@ -1,5 +1,5 @@
-// Read-only telemetry API. Nullable values mean the agent could not collect the
-// metric; the UI deliberately distinguishes those values from a real zero.
+// Telemetry values are read-only snapshots. Nullable values mean the agent could
+// not collect the metric; the UI deliberately distinguishes those values from a real zero.
 export interface MonitoringCapability {
   name: string;
   available: boolean;
@@ -10,6 +10,7 @@ export interface MonitoringCapability {
 
 export interface MonitoringHostSummary {
   id: string;
+  /** Server-owned operator remark; the Agent does not report a device name. */
   name: string;
   os: string;
   os_version: string | null;
@@ -173,4 +174,3 @@ export interface MonitoringHistoryResponse {
   host_id: string;
   points: MonitoringHistoryPoint[];
 }
-

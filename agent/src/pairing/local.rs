@@ -97,10 +97,9 @@ pub fn commit_active_configuration(
     report_endpoint: &str,
 ) -> anyhow::Result<PathBuf> {
     let _lock = lock_state(config)?;
-    let host_name =
-        ensure_active_is_current(config, generation, request_id, instance_id, report_endpoint)?;
-    let path = persist_active_config_unlocked(config, report_endpoint, &host_name)?;
-    apply_active_config(config, report_endpoint, &host_name);
+    ensure_active_is_current(config, generation, request_id, instance_id, report_endpoint)?;
+    let path = persist_active_config_unlocked(config, report_endpoint)?;
+    apply_active_config(config, report_endpoint);
     Ok(path)
 }
 
@@ -119,12 +118,11 @@ pub fn activate_reporter_snapshot(
     if local_auth_state_unlocked(config)?.is_none_or(|state| state.status != "authorized") {
         bail!("current Active pairing state has no current authorized identity state");
     }
-    let host_name =
-        ensure_active_is_current(config, generation, request_id, instance_id, report_endpoint)?;
+    ensure_active_is_current(config, generation, request_id, instance_id, report_endpoint)?;
     // Active is written only after config in the journal transaction. Do not
     // rewrite it from this potentially stale service snapshot.
-    apply_active_config(config, report_endpoint, &host_name);
-    let mut durable_host = load_host_identity(&config.state_dir)?;
+    apply_active_config(config, report_endpoint);
+    let durable_host = load_host_identity(&config.state_dir)?;
     let durable_host_id = Uuid::parse_str(&durable_host.id)
         .context("durable host identity contains an invalid UUID")?;
     if durable_host_id != instance_id {
@@ -132,9 +130,6 @@ pub fn activate_reporter_snapshot(
             "paired host identity mismatch: state contains {}, server assigned {instance_id}; run pair again",
             durable_host.id
         );
-    }
-    if let Some(name) = &host_name {
-        durable_host.name.clone_from(name);
     }
     *host = durable_host;
     Reporter::for_existing_credential(config)?
@@ -147,26 +142,23 @@ fn ensure_active_is_current(
     request_id: Uuid,
     instance_id: Uuid,
     report_endpoint: &str,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<()> {
     let current = load_state(config)?;
-    let host_name = match current {
+    match current {
         Some(StoredPairingState::Active {
             generation: current_generation,
             request_id: current_request_id,
             instance_id: current_instance_id,
             report_endpoint: current_report_endpoint,
-            host_name,
             ..
         }) if current_generation == generation
             && current_request_id == request_id
             && current_instance_id == instance_id
-            && current_report_endpoint == report_endpoint =>
-        {
-            host_name
-        }
+            && current_report_endpoint == report_endpoint
+        => {}
         _ => return Err(PairingSuperseded.into()),
-    };
-    Ok(host_name)
+    }
+    Ok(())
 }
 
 pub fn mark_reauth_required(config: &AgentConfig, reason: impl Into<String>) -> anyhow::Result<()> {

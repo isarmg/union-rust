@@ -7,7 +7,7 @@ import { monitoringApi as api } from "./api";
 import { AgentInstances, HostRegistration } from "./components/AgentInstances";
 import { CapabilityDetails, HardwareDetails } from "./components/HardwareDetails";
 import { HistoryMetrics } from "./components/HistoryMetrics";
-import { LiveMetrics, MonitoringHostCard } from "./components/HostSummary";
+import { LiveMetrics } from "./components/HostSummary";
 import { NA, statusMeta } from "./model";
 import { monitoringQueryKeys as queryKeys } from "./queryKeys";
 
@@ -20,7 +20,7 @@ export {
 
 const HOST_PAGE_SIZE = 20;
 
-export function MonitoringView() {
+export function MonitoringView({ addTrigger = 0 }: { addTrigger?: number }) {
   const [offset, setOffset] = useState(0);
   const [preferredHostId, setPreferredHostId] = useState<string | null>(null);
   const hostsQuery = useQuery({
@@ -70,7 +70,7 @@ export function MonitoringView() {
 
   return (
     <section className="view-stack monitoring-view">
-      <AgentInstances activeHostIds={activeHostIds} />
+      <AgentInstances activeHostIds={activeHostIds} addTrigger={addTrigger} />
       <section className="section-band">
         <SectionHeader icon={MonitorDot} title="主机监控" description={`只读采集 · ${onlineCount}/${hosts.length} 台在线`} />
         {hostsQuery.isLoading ? <LoadingBlock label="正在读取主机状态" /> : null}
@@ -99,11 +99,14 @@ export function MonitoringView() {
         ) : null}
         <div className="content-grid monitoring-host-grid">
           {hosts.map((host) => (
-            <MonitoringHostCard
+            <HostRegistration
               key={host.id}
               host={host}
               selected={host.id === selectedHostId}
               onSelect={() => setPreferredHostId(host.id)}
+              onDeleted={() => {
+                if (preferredHostId === host.id) setPreferredHostId(null);
+              }}
             />
           ))}
         </div>
@@ -129,7 +132,6 @@ export function MonitoringView() {
             {historyQuery.error ? <InlineNotice tone="danger" text={historyQuery.error.message} /> : null}
             <HistoryMetrics points={historyPoints} />
           </section>
-          <HostRegistration key={selectedHost.id} host={selectedHost} />
         </>
       ) : null}
     </section>

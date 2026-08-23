@@ -1,17 +1,17 @@
 # 管理前端
 
-UnionC 的 React 管理前端，提供总览、只读主机监控、Sunshine、Sunshine 日志和设置页面。
+UnionC 的 React 管理前端，提供总览、主机监控、Sunshine、Sunshine 日志和设置页面。
 主机页显示 CPU、内存、GPU、逐接口网络、逐挂载磁盘、温度、采集能力和历史趋势；
-缺失能力显示 `N/A`，没有任何远程控制按钮。
+缺失能力显示 `N/A`，不提供任何向 Agent 下发远程命令的能力。
 
-“创建 Agent”流程预留稳定实例并签发默认 15 分钟有效的一次性激活码。Agent 软件由用户
+主机页侧栏的“+”预留稳定实例并签发默认 15 分钟有效的一次性激活码。Agent 软件由用户
 通过平台包管理器、MDM 或组织软件中心独立安装；管理台不托管安装包、不识别客户端平台，
 也不生成 shell、PowerShell 或 pkg 安装命令。
 
 已安装的 Agent 会给出 `/agent/activate/{requestId}` 页面。该页面无需管理员会话，只读取
 有限的设备摘要供用户核对，并把一次性激活码提交给 Server。页面永远不会收到长期 Agent
-secret。管理页还能取消待激活邀请、为同一实例重新配对，以及把实例持久标记为 `revoked`、
-吊销其全部 credential，同时保留 tombstone 和历史。
+secret。每个主机内容块可内联改名、重新配对或撤销；管理员也可明确确认永久删除该实例、
+历史、credential 和关联邀请。
 当前 Windows Agent 中，管理台将该一次性值标为“授权密钥”，并引导用户到目标设备的
 本机配置页同时填写 Server 地址和密钥；`/agent/activate/{request_id}` 仍保留给 CLI 和其他平台。
 管理台不会向目标机器发起 SSH、WinRM 或任何远程命令。

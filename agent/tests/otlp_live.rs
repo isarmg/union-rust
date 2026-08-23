@@ -35,7 +35,6 @@ fn otlp_test_config(endpoint: String) -> (AgentConfig, std::path::PathBuf) {
             "activation_url": format!("https://unionc.example/agent/activate/{request_id}"),
             "instance_id": instance_id,
             "report_endpoint": report_endpoint,
-            "host_name": null,
             "completed_at": chrono::Utc::now()
         }))
         .unwrap(),
@@ -90,7 +89,6 @@ async fn collector_accepts_the_agent_otlp_protobuf() {
             id: Uuid::parse_str("00000000-0000-4000-8000-000000000001")
                 .unwrap()
                 .to_string(),
-            name: "otlp-ci-host".into(),
             os: "linux".into(),
             os_version: None,
             kernel_version: None,
@@ -193,7 +191,6 @@ async fn collector_accepts_a_fully_populated_report_with_every_device_type() {
             id: Uuid::parse_str("00000000-0000-4000-8000-000000000002")
                 .unwrap()
                 .to_string(),
-            name: "otlp-ci-host-full".into(),
             os: "linux".into(),
             os_version: Some("6.1.0".into()),
             kernel_version: Some("6.1.0-generic".into()),

@@ -11,9 +11,8 @@ pub fn entry() -> anyhow::Result<()> {
         TrayCommand::Tray { open } => run_tray(open),
         TrayCommand::ElevatedPair {
             server,
-            name,
             callback_nonce,
-        } => elevated_pair(server, name, callback_nonce),
+        } => elevated_pair(server, callback_nonce),
         TrayCommand::ElevatedService { action, notify } => elevated_service(action, notify),
         TrayCommand::ElevatedStopForExit => elevated_stop_for_exit(),
     }

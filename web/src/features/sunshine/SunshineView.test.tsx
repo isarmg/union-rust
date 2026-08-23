@@ -48,6 +48,45 @@ function mutationCacheSnapshot(queryClient: QueryClient) {
   })));
 }
 
+describe("Sunshine empty state", () => {
+  it("does not repeat the sidebar plus-button instruction", () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    });
+    queryClient.setQueryData(queryKeys.sunshine.hosts, []);
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SunshineView />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.queryByText("暂无主机，点击 + 新建")).toBeNull();
+    expect(screen.getByText("实例")).toBeTruthy();
+  });
+
+  it("honors an add trigger already present on first mount", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    });
+    queryClient.setQueryData(queryKeys.sunshine.hosts, []);
+    vi.spyOn(api, "sunshineCreateHost").mockResolvedValue(host("new", "Sunshine 1"));
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SunshineView addTrigger={1} />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(api.sunshineCreateHost).toHaveBeenCalledWith({
+      name: "Sunshine 1",
+      host: "192.168.1.2",
+      web_port: 47990,
+      username: "admin",
+      password: null,
+      verify_tls: true,
+    }));
+  });
+});
+
 describe("Sunshine inline password editing", () => {
   it("treats an untouched empty password blur as cancel", async () => {
     const save = vi.fn(async () => undefined);

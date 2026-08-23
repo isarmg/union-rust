@@ -3,6 +3,35 @@
 本文件记录 UnionC 的显著变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.3] — 2026-08-23
+
+### 修复
+
+- Agent 投递重试到期后不再让已过期的定时器继续参与 `tokio::select!`，避免等待
+  DNS、TCP 或 TLS 的 HTTP 投递 Future 被循环立即取消，导致后台 Agent 持续离线而
+  `doctor --delivery` 单次诊断仍能成功。
+
+### 新增
+
+- 主机实例内容块支持内联编辑 Server 备注，并提供明确的永久删除操作；删除在单一事务中
+  清除该实例的历史报文、凭据、配对请求和邀请，同时保留独立审计记录。
+
+### 变更
+
+- 主机页移除独立“创建 Agent”表单，改为与 Sunshine 相同的侧栏“+”入口，默认创建
+  15 分钟邀请；重新配对、撤销和删除均移动到各自主机内容块内。
+- 主机内容块移除 CPU、GPU 和网络三行摘要；完整实时指标仍保留在选中主机的详情区。
+- Sunshine 空列表不再重复显示“暂无主机，点击 + 新建”提示。
+- 主机名称明确改为仅由 Server 持有的备注：初次邀请创建备注，后续 Agent 上报和重新配对
+  都不会覆盖。备注修改与永久删除使用独立的 `/api/monitoring/managed-instances/{id}`
+  管理端点，原 `/api/monitoring/hosts/{id}` 继续只接受 GET。
+
+### 移除
+
+- Agent 不再采集、配置或上报设备名称：移除配置文件 `host_name`、环境变量
+  `UNIONC_AGENT_HOST_NAME`、`pair --name`、Windows 托盘名称输入，以及 JSON 配对/报告和
+  OTLP 资源中的 `host.name`。公开激活摘要也不再暴露设备名称。
+
 ## [0.3.2] — 2026-08-22
 
 ### 修复

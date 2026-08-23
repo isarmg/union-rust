@@ -28,9 +28,9 @@ fn bulky_report(
         "report_id": report_id,
         "collected_at": collected_at,
         "host": {
-            "id": host_id, "name": "bulk-host", "os": "linux",
+            "id": host_id, "os": "linux",
             "os_version": "6.1.0-generic-very-long-version-string",
-            "kernel_version": "6.1.0", "arch": "x86_64", "agent_version": "0.3.2"
+            "kernel_version": "6.1.0", "arch": "x86_64", "agent_version": "0.3.3"
         },
         "interval_seconds": 10.0,
         "system": {
@@ -76,14 +76,14 @@ fn bulky_report(
 }
 
 fn identity(host_id: Uuid, index: usize) -> HostIdentity {
+    let _ = index;
     HostIdentity {
         id: host_id.to_string(),
-        name: format!("bulk-host-{index:03}"),
         os: "linux".into(),
         os_version: Some("6.1.0".into()),
         kernel_version: Some("6.1.0".into()),
         arch: "x86_64".into(),
-        agent_version: "0.3.2".into(),
+        agent_version: "0.3.3".into(),
     }
 }
 

@@ -9,8 +9,8 @@ mod tests {
             "collected_at": "2026-01-01T00:00:00Z",
             "host": {
                 "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-                "name": "host", "os": "windows", "os_version": null,
-                "kernel_version": null, "arch": "x86_64", "agent_version": "0.3.2"
+                "os": "windows", "os_version": null,
+                "kernel_version": null, "arch": "x86_64", "agent_version": "0.3.3"
             },
             "interval_seconds": 10.0,
             "system": {
@@ -46,8 +46,8 @@ mod tests {
             "collected_at": "2026-01-01T00:00:00Z",
             "host": {
                 "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-                "name": "host", "os": "linux", "os_version": null,
-                "kernel_version": null, "arch": "x86_64", "agent_version": "0.3.2"
+                "os": "linux", "os_version": null,
+                "kernel_version": null, "arch": "x86_64", "agent_version": "0.3.3"
             },
             "interval_seconds": 10.0,
             "system": {
@@ -89,12 +89,11 @@ mod tests {
             serde_json::from_value::<AgentPairingRequest>(serde_json::json!({
                 "host": {
                     "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-                    "name": "host",
                     "os": "linux",
                     "os_version": null,
                     "kernel_version": null,
                     "arch": "x86_64",
-                    "agent_version": "0.3.2"
+                    "agent_version": "0.3.3"
                 },
                 "token_hash": "a".repeat(64),
                 "polling_secret_hash": "b".repeat(64),

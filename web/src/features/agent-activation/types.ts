@@ -7,11 +7,9 @@ export interface AgentActivationResponse {
 /** 浏览器激活页可读取的有限设备摘要；不得包含令牌或本机敏感信息。 */
 export interface AgentPairingRequestSummary {
   request_id: string;
-  name: string;
   os: string;
   arch: string;
   agent_version: string;
   status: "waiting" | "expired" | "denied" | "active";
   expires_at: string;
 }
-

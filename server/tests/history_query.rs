@@ -28,12 +28,11 @@ async fn register(pool: &database::DbPool, host_id: Uuid) {
         pool,
         &HostIdentity {
             id: host_id.to_string(),
-            name: "history-host".into(),
             os: "linux".into(),
             os_version: None,
             kernel_version: None,
             arch: "x86_64".into(),
-            agent_version: "0.3.2".into(),
+            agent_version: "0.3.3".into(),
         },
         &hex_hash(&format!("{host_id}-token")),
     )
@@ -47,9 +46,9 @@ fn report(host_id: Uuid, collected_at: chrono::DateTime<Utc>, cpu: f64) -> serde
         "report_id": Uuid::new_v4(),
         "collected_at": collected_at,
         "host": {
-            "id": host_id, "name": "history-host", "os": "linux",
+            "id": host_id, "os": "linux",
             "os_version": null, "kernel_version": null,
-            "arch": "x86_64", "agent_version": "0.3.2"
+            "arch": "x86_64", "agent_version": "0.3.3"
         },
         "interval_seconds": 10.0,
         "system": {

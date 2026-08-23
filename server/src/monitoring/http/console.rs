@@ -3,8 +3,8 @@ use axum::{Router, extract::DefaultBodyLimit, routing::get};
 use crate::state::AppState;
 
 use super::{
-    cancel_agent_instance, create_agent_instance, host_detail, host_history, list_agent_instances,
-    list_hosts, revoke_host,
+    cancel_agent_instance, create_agent_instance, delete_host, host_detail, host_history,
+    list_agent_instances, list_hosts, revoke_host, update_instance_remark,
 };
 
 pub(super) fn router() -> Router<AppState> {
@@ -23,6 +23,10 @@ pub(super) fn router() -> Router<AppState> {
         .route(
             "/api/monitoring/agent-instances/{request_id}",
             axum::routing::delete(cancel_agent_instance),
+        )
+        .route(
+            "/api/monitoring/managed-instances/{host_id}",
+            axum::routing::patch(update_instance_remark).delete(delete_host),
         )
         .layer(DefaultBodyLimit::max(16 * 1024))
 }

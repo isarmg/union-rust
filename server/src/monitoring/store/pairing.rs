@@ -194,7 +194,7 @@ pub async fn create_agent_pairing_request(
     const CLEANUP_BATCH_SIZE: i64 = 512;
     const EXISTING_BY_POLLING_SECRET: &str = r#"
         SELECT request_id,requested_host_id,
-               name,os,os_version,kernel_version,arch,agent_version,token_hash,status,expires_at
+               os,os_version,kernel_version,arch,agent_version,token_hash,status,expires_at
         FROM agent_pairing_requests
         WHERE polling_secret_hash=?1
     "#;
@@ -270,16 +270,15 @@ pub async fn create_agent_pairing_request(
     let inserted = query(
         r#"
         INSERT INTO agent_pairing_requests(
-            request_id,requested_host_id,name,os,os_version,kernel_version,arch,
+            request_id,requested_host_id,os,os_version,kernel_version,arch,
             agent_version,token_hash,polling_secret_hash,expires_at,created_at
-        ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+        ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
         ON CONFLICT DO NOTHING
         RETURNING request_id
         "#,
     )
     .bind(&request_id)
     .bind(&requested_host_id)
-    .bind(request.host.name.trim())
     .bind(request.host.os.trim())
     .bind(request.host.os_version.as_deref())
     .bind(request.host.kernel_version.as_deref())
@@ -338,7 +337,6 @@ fn pairing_creation_matches(
 ) -> anyhow::Result<bool> {
     Ok(
         row.try_get::<String, _>("requested_host_id")? == requested_host_id
-            && row.try_get::<String, _>("name")? == request.host.name.trim()
             && row.try_get::<String, _>("os")? == request.host.os.trim()
             && row.try_get::<Option<String>, _>("os_version")?.as_deref()
                 == request.host.os_version.as_deref()
@@ -408,7 +406,7 @@ pub async fn public_agent_pairing_request(
     let now_micros = database::to_epoch_micros(Utc::now());
     let row = query(
         r#"
-        SELECT p.request_id,p.name,p.os,p.arch,p.agent_version,p.expires_at,
+        SELECT p.request_id,p.os,p.arch,p.agent_version,p.expires_at,
                CASE
                  WHEN p.status='pending' AND p.expires_at <= ?2 THEN 'expired'
                  WHEN p.status='pending' THEN 'waiting'
@@ -431,7 +429,6 @@ pub async fn public_agent_pairing_request(
     row.map(|row| {
         Ok(AgentPairingPublicSummary {
             request_id: row.try_get("request_id")?,
-            name: row.try_get("name")?,
             os: row.try_get("os")?,
             arch: row.try_get("arch")?,
             agent_version: row.try_get("agent_version")?,
@@ -468,7 +465,7 @@ where
     let now_micros = database::to_epoch_micros(now);
     let pairing = query(
         r#"
-        SELECT request_id,name,os,os_version,kernel_version,arch,
+        SELECT request_id,os,os_version,kernel_version,arch,
                agent_version,token_hash,status,
                invite_id,instance_id,expires_at
         FROM agent_pairing_requests
@@ -578,7 +575,6 @@ where
             lifecycle_status,revoked_at,registered_at,last_seen_at
         ) VALUES(?1,?2,?3,?4,?5,?6,?7,'active',NULL,?8,?8)
         ON CONFLICT(host_id) DO UPDATE SET
-            name=EXCLUDED.name,
             os=EXCLUDED.os,
             os_version=EXCLUDED.os_version,
             kernel_version=EXCLUDED.kernel_version,
@@ -594,7 +590,7 @@ where
         "#,
     )
     .bind(&instance_id)
-    .bind(pairing.try_get::<String, _>("name")?)
+    .bind(invite.try_get::<String, _>("display_name")?)
     .bind(pairing.try_get::<String, _>("os")?)
     .bind(pairing.try_get::<Option<String>, _>("os_version")?)
     .bind(pairing.try_get::<Option<String>, _>("kernel_version")?)
