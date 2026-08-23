@@ -500,10 +500,8 @@ else
 fi
 
 current_group_gid=""
-current_group_name=""
 if [ "$group_record_state" = "present" ]; then
   current_group_gid="$(dscl_value "/Groups/$group" PrimaryGroupID || true)"
-  current_group_name="$(dscl_value "/Groups/$group" RealName || true)"
   case "$current_group_gid" in
     ''|*[!0-9]*) current_group_gid="" ;;
   esac
@@ -511,15 +509,14 @@ fi
 
 if [ "$user_record_state" = "present" ]; then
   if [ "$user_created" -eq 1 ]; then
-    real_name="$(dscl_value "/Users/$user" RealName || true)"
     user_uid="$(dscl_value "/Users/$user" UniqueID || true)"
     user_gid="$(dscl_value "/Users/$user" PrimaryGroupID || true)"
     user_shell="$(dscl_value "/Users/$user" UserShell || true)"
     user_home="$(dscl_value "/Users/$user" NFSHomeDirectory || true)"
     hidden="$(dscl_value "/Users/$user" IsHidden || true)"
-    if [ "$real_name" = "UnionC Agent" ] && [ "$user_shell" = "/usr/bin/false" ] &&
+    if [ "$user_shell" = "/usr/bin/false" ] &&
       [ "$user_home" = "/var/empty" ] && [ "$hidden" = "1" ] &&
-      [ "$current_group_name" = "UnionC Agent" ] && [ -n "$current_group_gid" ] &&
+      [ -n "$current_group_gid" ] &&
       [ "$user_uid" = "$created_user_uid" ] &&
       [ "$user_gid" = "$created_user_primary_gid" ] &&
       [ "$user_gid" = "$current_group_gid" ]; then
@@ -558,7 +555,6 @@ fi
 
 if [ "$group_record_state" = "present" ]; then
   if [ "$group_created" -eq 1 ]; then
-    group_name="$(dscl_value "/Groups/$group" RealName || true)"
     group_gid="$(dscl_value "/Groups/$group" PrimaryGroupID || true)"
     group_in_use=0
     group_usage_status=0
@@ -582,7 +578,7 @@ if [ "$group_record_state" = "present" ]; then
         fi
         ;;
     esac
-    if [ "$group_name" = "UnionC Agent" ] && [ "$group_gid" = "$created_group_gid" ] &&
+    if [ "$group_gid" = "$created_group_gid" ] &&
       [ "$group_in_use" -eq 0 ]; then
       if dscl . -delete "/Groups/$group"; then
         group_created=0

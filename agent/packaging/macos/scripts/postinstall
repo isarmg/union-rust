@@ -944,9 +944,10 @@ EOF
 
 existing_group_matches_marker() {
   actual_gid="$1"
-  actual_real_name="$2"
   is_reserved_service_id "$actual_gid" || return 1
-  [ "$actual_real_name" = "UnionC Agent" ] || return 1
+  # RealName is display metadata, not an account identity or authorization
+  # boundary. Bind the already-enumerated record name to its exact numeric ID
+  # and root-only package marker instead.
   [ "$ownership_marker_present" -eq 1 ] &&
     [ "$group_created" -eq 1 ] &&
     [ "$actual_gid" = "$created_group_gid" ]
@@ -955,16 +956,14 @@ existing_group_matches_marker() {
 existing_user_matches_marker() {
   actual_uid="$1"
   actual_primary_gid="$2"
-  actual_real_name="$3"
-  actual_shell="$4"
-  actual_home="$5"
-  actual_hidden="$6"
-  service_group_gid="$7"
+  actual_shell="$3"
+  actual_home="$4"
+  actual_hidden="$5"
+  service_group_gid="$6"
   for numeric_id in "$actual_uid" "$actual_primary_gid" "$service_group_gid"; do
     is_reserved_service_id "$numeric_id" || return 1
   done
-  [ "$actual_real_name" = "UnionC Agent" ] &&
-    [ "$actual_shell" = "/usr/bin/false" ] &&
+  [ "$actual_shell" = "/usr/bin/false" ] &&
     [ "$actual_home" = "/var/empty" ] &&
     [ "$actual_hidden" = "1" ] &&
     [ "$actual_primary_gid" = "$service_group_gid" ] || return 1
@@ -1036,8 +1035,7 @@ if ! listing_contains_name "$local_group_names" "$group"; then
   group_record_pending=0
 else
   gid="$(dscl_value "/Groups/$group" PrimaryGroupID)"
-  group_name="$(dscl_value "/Groups/$group" RealName || true)"
-  if ! existing_group_matches_marker "$gid" "$group_name"; then
+  if ! existing_group_matches_marker "$gid"; then
     echo "Existing $group group does not match the installer ownership binding" >&2
     exit 1
   fi
@@ -1083,11 +1081,10 @@ if ! listing_contains_name "$local_user_names" "$user"; then
 else
   existing_uid="$(dscl_value "/Users/$user" UniqueID)"
   existing_gid="$(dscl_value "/Users/$user" PrimaryGroupID)"
-  existing_real_name="$(dscl_value "/Users/$user" RealName || true)"
   existing_shell="$(dscl_value "/Users/$user" UserShell || true)"
   existing_home="$(dscl_value "/Users/$user" NFSHomeDirectory || true)"
   existing_hidden="$(dscl_value "/Users/$user" IsHidden || true)"
-  if ! existing_user_matches_marker "$existing_uid" "$existing_gid" "$existing_real_name" \
+  if ! existing_user_matches_marker "$existing_uid" "$existing_gid" \
     "$existing_shell" "$existing_home" "$existing_hidden" "$gid"; then
     echo "Existing $user account does not match the installer ownership binding" >&2
     exit 1

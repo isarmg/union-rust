@@ -172,14 +172,13 @@ run_group_binding_case() {
   marker_owned="$3"
   marker_gid="$4"
   actual_gid="$5"
-  actual_name="$6"
   set +e
   sh -c "$binding_functions
 ownership_marker_present=\"\$1\"
 group_created=\"\$1\"
 created_group_gid=\"\$2\"
-existing_group_matches_marker \"\$3\" \"\$4\"" sh \
-    "$marker_owned" "$marker_gid" "$actual_gid" "$actual_name" >/dev/null 2>&1
+existing_group_matches_marker \"\$3\"" sh \
+    "$marker_owned" "$marker_gid" "$actual_gid" >/dev/null 2>&1
   actual="$?"
   set -e
   if [ "$actual" -ne "$expected" ]; then
@@ -203,7 +202,7 @@ ownership_marker_present=\"\$1\"
 user_created=\"\$1\"
 created_user_uid=\"\$2\"
 created_user_primary_gid=\"\$3\"
-existing_user_matches_marker \"\$4\" \"\$5\" 'UnionC Agent' \
+existing_user_matches_marker \"\$4\" \"\$5\" \
   /usr/bin/false /var/empty 1 \"\$6\"" sh \
     "$marker_owned" "$marker_uid" "$marker_primary_gid" "$actual_uid" \
     "$actual_primary_gid" "$service_group_gid" >/dev/null 2>&1
@@ -217,12 +216,11 @@ existing_user_matches_marker \"\$4\" \"\$5\" 'UnionC Agent' \
 
 # A package-owned identity must stay bound to the exact numeric IDs recorded when it was
 # created. A matching-name replacement with different numeric IDs must never receive secrets.
-run_group_binding_case exact 0 1 450 450 'UnionC Agent'
-run_group_binding_case replaced_gid 1 1 450 451 'UnionC Agent'
-run_group_binding_case unowned_preexisting 1 0 - 451 'UnionC Agent'
-run_group_binding_case wrong_name 1 1 450 450 'Different Account'
-run_group_binding_case root_gid 1 1 0 0 'UnionC Agent'
-run_group_binding_case above_reserved_gid 1 1 451 451 'UnionC Agent'
+run_group_binding_case exact 0 1 450 450
+run_group_binding_case replaced_gid 1 1 450 451
+run_group_binding_case unowned_preexisting 1 0 - 451
+run_group_binding_case root_gid 1 1 0 0
+run_group_binding_case above_reserved_gid 1 1 451 451
 
 run_user_binding_case exact 0 1 450 450 450 450 450
 run_user_binding_case replaced_uid 1 1 450 450 451 450 450
