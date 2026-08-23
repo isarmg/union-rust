@@ -188,7 +188,7 @@
       Timeout="10"
       RebootPrompt="yes" />
 
-    <!-- The same signed helper is embedded once and is never left behind as another utility. -->
+    <!-- The same helper is embedded once and is never left behind as another utility. -->
     <Binary Id="UnionCAgentMaintenance.exe" SourceFile="$(var.MaintenanceExe)" />
 
     <CustomAction

@@ -306,7 +306,7 @@ if (@($trayComponent.SelectNodes(".//w:ServiceInstall", $namespace)).Count -ne 0
 $trayFile = Select-One "//w:File[@Id='TrayExecutable']"
 Assert-Equal $trayFile.Source '$(var.TrayExe)' "The MSI tray input variable drifted."
 Assert-Equal $trayFile.Name "unionc-agent-tray.exe" "Unexpected installed tray filename."
-Assert-Equal $trayFile.KeyPath "yes" "The signed tray executable must be its component key path."
+Assert-Equal $trayFile.KeyPath "yes" "The tray executable must be its component key path."
 $null = Select-One "//w:Feature[@Id='AgentFeature']/w:ComponentRef[@Id='AgentTrayComponent']"
 
 $trayRun = Select-One `
@@ -527,15 +527,15 @@ Assert-Equal $defaultProductVersions[0].InnerText `
 Assert-Contains $releaseText 'Where-Object name -eq "unionc-agent"' `
     "The release workflow must resolve the Windows MSI version from unionc-agent Cargo metadata."
 Assert-Contains $releaseText '$version = $agentPackage[0].version' `
-    "The development MSI version must default to the unionc-agent Cargo package version."
+    "The unsigned MSI version must default to the unionc-agent Cargo package version."
 Assert-Contains $releaseText 'if ($agentPackage[0].version -ne $version)' `
     "The release workflow must reject a tag that differs from the unionc-agent Cargo package version."
 $productVersionBindings = [regex]::Matches(
     $releaseText,
     '(?m)^\s+PRODUCT_VERSION:\s+\$\{\{\s+steps\.version\.outputs\.version\s+\}\}\s*$'
 )
-if ($productVersionBindings.Count -ne 2) {
-    throw "Expected the resolved MSI version to feed both Windows MSI build steps; found $($productVersionBindings.Count)."
+if ($productVersionBindings.Count -ne 1) {
+    throw "Expected the resolved MSI version to feed the single unsigned Windows MSI build step; found $($productVersionBindings.Count)."
 }
 $lifecycleVersionBindings = [regex]::Matches(
     $releaseText,
@@ -560,7 +560,7 @@ if ($buildText -match '(?i)powershell(?:\.exe)?|pwsh(?:\.exe)?') {
     throw "The MSI build entrypoint must not require PowerShell."
 }
 Assert-Contains $projectText '<TrayExe Condition=' `
-    "The WiX project must accept the signed tray executable as an explicit input."
+    "The WiX project must accept the tray executable as an explicit input."
 Assert-Contains $projectText "!Exists('`$(TrayExe)')" `
     "The WiX build must fail when the tray executable input is missing."
 Assert-Contains $buildText 'TRAY_EXE=%~f4' `

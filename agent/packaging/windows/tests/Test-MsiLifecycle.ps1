@@ -225,7 +225,7 @@ function Assert-TrayIntegration {
     }
 
     # The service/config remains isolated, but every interactive user must be able
-    # to execute the signed tray image from the protected Program Files tree.
+    # to execute the tray image from the protected Program Files tree.
     $usersRules = @((Get-Acl -LiteralPath $installedTray).Access | Where-Object {
         $_.AccessControlType -eq `
             [System.Security.AccessControl.AccessControlType]::Allow -and

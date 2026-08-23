@@ -6,7 +6,7 @@
     <Cultures>en-US</Cultures>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
 
-    <!-- Callers must provide signed x64 executables for this exact package version. -->
+    <!-- Callers must provide x64 executables for this exact package version. -->
     <ProductVersion Condition="'$(ProductVersion)' == ''">0.3.2</ProductVersion>
     <AgentExe Condition="'$(AgentExe)' == ''">$(MSBuildThisFileDirectory)..\..\..\..\target\x86_64-pc-windows-msvc\release\unionc-agent.exe</AgentExe>
     <MaintenanceExe Condition="'$(MaintenanceExe)' == ''">$(MSBuildThisFileDirectory)..\..\..\..\target\x86_64-pc-windows-msvc\release\unionc-agent-maintenance.exe</MaintenanceExe>
