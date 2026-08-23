@@ -101,7 +101,15 @@ pub async fn delete_monitored_host(pool: &DbPool, host_id: &str) -> anyhow::Resu
         Some("host, report history, credentials, pairing requests and invites permanently deleted"),
     )
     .await?;
-    query("DELETE FROM agent_pairing_requests WHERE requested_host_id=?1 OR instance_id=?1")
+    // A new pairing starts with the Agent's current durable host id but binds a newly
+    // allocated instance id on activation. Deleting the old instance may retire that
+    // still-pending attempt, but an active row belongs to its bound instance: removing
+    // it here would make a response-lost activation impossible for the Agent to recover.
+    query(
+        "DELETE FROM agent_pairing_requests \
+         WHERE instance_id=?1 \
+            OR (requested_host_id=?1 AND status IN ('pending','denied'))",
+    )
     .bind(&host_id)
     .execute(tx.connection())
     .await?;

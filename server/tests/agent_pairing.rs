@@ -779,6 +779,73 @@ async fn pairing_is_atomic_replay_safe_and_creation_is_idempotent() {
 }
 
 #[tokio::test]
+async fn deleting_an_old_instance_preserves_an_activated_new_pairing() {
+    let url =
+        common::test_database_url("deleting_an_old_instance_preserves_an_activated_new_pairing");
+    let (app, _pool) = app_with_database(url.to_string()).await;
+
+    let old_invite = create_invite(&app, "old instance").await;
+    let old_instance_id = old_invite["instance_id"].as_str().unwrap();
+    let old_token = secret();
+    let old_polling_secret = secret();
+    let (_, old_pairing) =
+        create_pairing(&app, pairing_body(&old_token, &old_polling_secret)).await;
+    assert_eq!(
+        activate(
+            &app,
+            old_pairing["request_id"].as_str().unwrap(),
+            old_invite["activation_code"].as_str().unwrap(),
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+
+    // A subsequent pairing request carries the Agent's old durable host id, while
+    // activation deliberately binds it to the newly allocated invite instance.
+    let new_invite = create_invite(&app, "new instance").await;
+    let new_instance_id = new_invite["instance_id"].as_str().unwrap();
+    let new_token = secret();
+    let new_polling_secret = secret();
+    let mut new_pairing_body = pairing_body(&new_token, &new_polling_secret);
+    new_pairing_body["host"]["id"] = serde_json::json!(old_instance_id);
+    let (_, new_pairing) = create_pairing(&app, new_pairing_body).await;
+    let new_request_id = new_pairing["request_id"].as_str().unwrap();
+    assert_eq!(
+        activate(
+            &app,
+            new_request_id,
+            new_invite["activation_code"].as_str().unwrap(),
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+
+    // Model deletion after the activation transaction committed but before the
+    // Agent received its status response. Polling must still recover the binding.
+    assert_eq!(
+        call_empty(
+            &app,
+            console(
+                "DELETE",
+                &format!("/api/monitoring/managed-instances/{old_instance_id}"),
+            ),
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let recovered = poll(&app, new_request_id, &new_polling_secret).await;
+    assert_eq!(recovered["status"], "active");
+    assert_eq!(recovered["instance_id"], new_instance_id);
+    assert_eq!(
+        report(&app, new_instance_id, &new_token).await.0,
+        StatusCode::ACCEPTED
+    );
+}
+
+#[tokio::test]
 async fn expired_pairing_and_invite_are_never_activated() {
     let url = common::test_database_url("expired_pairing_and_invite_are_never_activated");
     let (app, pool) = app_with_database(url.to_string()).await;
