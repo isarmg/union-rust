@@ -5,7 +5,9 @@ use std::collections::HashSet;
 
 use anyhow::Context;
 use chrono::Utc;
-use sysinfo::{Components, Disks, Networks, System};
+use sysinfo::{
+    Components, CpuRefreshKind, Disks, MemoryRefreshKind, Networks, RefreshKind, System,
+};
 use uuid::Uuid;
 
 use crate::model::{
@@ -37,7 +39,14 @@ pub struct SystemSampler {
 impl SystemSampler {
     pub fn new() -> Self {
         Self {
-            system: System::new_all(),
+            // The Agent never reads process data. `new_all()` eagerly walks
+            // every process (and Linux task) and retains that unused snapshot
+            // for the lifetime of this sampler.
+            system: System::new_with_specifics(
+                RefreshKind::nothing()
+                    .with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
+                    .with_memory(MemoryRefreshKind::everything()),
+            ),
             networks: Networks::new_with_refreshed_list(),
             disks: Disks::new_with_refreshed_list(),
             components: {
@@ -413,6 +422,18 @@ fn finite(value: f64) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sampler_initialization_does_not_enumerate_processes() {
+        let sampler = SystemSampler::new();
+        assert!(sampler.system.processes().is_empty());
+        if sysinfo::IS_SUPPORTED_SYSTEM {
+            assert!(
+                !sampler.system.cpus().is_empty(),
+                "the narrow refresh policy must still initialize CPU telemetry"
+            );
+        }
+    }
 
     #[test]
     fn rate_uses_actual_interval() {
