@@ -280,18 +280,23 @@ Content-Type: application/json
 |---|---|---|
 | `host-id` | Server 分配的最终 `instance_id` | 原子替换，Unix 0600 |
 | `agent-token` | Agent 本地生成的通信 secret | 原子写入，Unix 0600 |
+| `active-binding.json` | 当前 credential generation、instance ID 与 report endpoint | 原子替换，Unix 0600 |
 | `pairing-state.json` | request ID、polling secret、Server origin、到期时间 | 配对期间私有保存，成功后删除或标记完成 |
+| `auth-state.json` | `authorized` 或 `reauth_required` 诊断状态 | 原子替换，Unix 0600 |
 | `spool/` | 未送达的报告 | 私有目录、容量受限 |
 
 配对完成前生成的 agent secret 必须先可靠落盘，再把它的哈希提交给 Server。顺序反过来会
 在本机写盘失败时创建一个 Server 已认可但 Agent 已丢失明文的 credential。
 
-配对完成使用 `Activating` 作为 crash-safe 提交日志：token、host ID、完整配置和授权状态各自
-以原子文件替换幂等写入，最后才把 pairing state 写成 `Active`。这是可恢复的多文件提交，
-不是一次覆盖全部文件的文件系统原子事务。成功时还会把持久化 JSON 的
-`pairing_endpoint` 清空。若 `UNIONC_AGENT_PAIRING_ENDPOINT` 长期存在，下次配置加载会重新
-应用该覆盖；否则 pairing/report 分域部署须在下一次配对前通过配置或环境变量恢复 bootstrap
-endpoint。pairing origin 必须能提供 Server 相对路径指向的 `/agent/activate/...` SPA。
+配对完成使用 `Activating` 作为 crash-safe 提交日志：token、host ID、`active-binding.json`
+和授权状态各自以原子文件替换幂等写入，最后才把 pairing state 写成 `Active`。这是可恢复的
+多文件提交，不是一次覆盖全部文件的文件系统原子事务。服务恢复只需要写私有状态目录；
+root 管理的系统配置不属于该事务。`active-binding.json` 是当前 credential 投递端点的权威
+记录，主配置继续提供 TLS、超时和采样设置。显式 `pair` 命令完成完整代际核对后，才把
+report endpoint 同步到持久化 JSON 并清空其中的 `pairing_endpoint`。若
+`UNIONC_AGENT_PAIRING_ENDPOINT` 长期存在，下次配置加载会重新应用该覆盖；否则
+pairing/report 分域部署须在下一次配对前通过配置或环境变量恢复 bootstrap endpoint。
+pairing origin 必须能提供 Server 相对路径指向的 `/agent/activate/...` SPA。
 
 ## 报告认证与 ACK
 
@@ -323,7 +328,7 @@ Agent 可以安全删除对应 spool 项。
 1. 管理员点击“+”创建新邀请，Server 预留新的 `instance_id`；
 2. Agent 建立新的 pairing request，浏览器或 Windows 本机页完成绑定；
 3. Server 在同一事务中创建新主机和唯一 credential；
-4. Agent 以可恢复的 `Activating` 日志替换本地 host ID、token 与 report endpoint；
+4. Agent 以可恢复的 `Activating` 日志替换本地 host ID、token 与 credential endpoint 绑定；
 5. 旧 Server 实例及其历史保持原样，直到管理员明确删除。
 
 新配对仍在 creating/pending，或最终被拒绝、过期时，本地 `auth-state` 已是 `authorized`
@@ -406,7 +411,8 @@ Server 与 Agent 的合同测试至少覆盖：
 - 激活响应和状态响应丢失后的重试；
 - 永久删除级联清理历史与 credential，旧 secret 随后收到 401；
 - Server/Agent 在配对中途重启；
-- Activating 日志能在任意多文件提交中断点幂等恢复，且 `Active` 最后写入；
+- Activating 日志能在任意私有状态文件提交中断点幂等恢复，不依赖系统配置可写，且
+  `Active` 最后写入；
 - 错路由 200 响应不能被当作报告成功；
 - 首次报告失败不回滚配对；
 - 旧状态名、旧 pairing-state 字段及旧身份端点被严格拒绝。

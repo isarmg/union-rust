@@ -121,6 +121,7 @@ report token。不要复制或重用另一台机器的整个状态目录。
 |---|---|
 | `host-id` | Server 分配的稳定实例 UUID |
 | `agent-token` | Agent 本地生成的长期通信 secret |
+| `active-binding.json` | 当前 credential 的 generation、instance ID 与 report endpoint 绑定 |
 | `pairing-state.json` | 可恢复的创建/等待/完成状态；等待期内含 polling secret |
 | `auth-state.json` | `authorized` 或 `reauth_required` 诊断状态 |
 | `spool/` | 断线续传队列（`*.json` 待发、`*.invalid` 隔离） |
@@ -129,6 +130,9 @@ report token。不要复制或重用另一台机器的整个状态目录。
 spool 变更另有跨进程文件锁，打开与容量核算会回收崩溃遗留的无主原子临时文件。systemd
 unit 用 `StateDirectory` + `StateDirectoryMode=0700` + `UMask=0077` 保证权限——不显式声明时
 systemd 用 0755 并**每次启动都重设**，而 Agent 的 chmod 要等到第一次写凭据，中间存在窗口。
+`active-binding.json` 是已激活 credential 的权威投递端点；服务恢复只更新私有状态目录，
+不会尝试改写 root 管理的 `/etc/unionc-agent/config.json`。显式 `pair` 命令成功后才在完整
+代际核对下同步主配置，主配置中的 TLS、超时和采样设置仍会与该绑定合并使用。
 
 ## 投递与失败处理
 
