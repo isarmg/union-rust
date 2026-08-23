@@ -176,7 +176,20 @@ EOF
 #!/bin/sh
 printf '%s\n' "$*" >>"$CASE_ROOT/pkgutil-calls"
 case "${1:-}" in
-  --pkg-info|--forget) exit 0 ;;
+  --pkgs=*)
+    [ "$1" = '--pkgs=^com[.]unionc[.]agent$' ] || exit 64
+    case "${PKGUTIL_RECEIPT_STATE:-present}" in
+      present) printf 'com.unionc.agent\n' ;;
+      absent) ;;
+      error)
+        printf 'package database unavailable\n' >&2
+        exit 74
+        ;;
+      unexpected) printf 'com.unionc.agent.helper\n' ;;
+      *) exit 64 ;;
+    esac
+    ;;
+  --forget) exit 0 ;;
   *) exit 64 ;;
 esac
 EOF
@@ -325,6 +338,43 @@ grep -Fx -- '--forget com.unionc.agent' "$case_root/pkgutil-calls" >/dev/null ||
   fail 'complete purge retained the helper'
 [ ! -e "$case_root/var/db/unionc-agent" ] ||
   fail 'complete purge retained an empty ownership directory'
+
+case_root="$test_root/receipt-absent"
+make_case "$case_root"
+write_marker "$case_root" 0 0
+run_case "$case_root" PKGUTIL_RECEIPT_STATE=absent
+[ "$run_status" -eq 0 ] || fail "absent receipt purge returned $run_status"
+[ ! -e "$case_root/usr/local/share/unionc-agent/uninstall.sh" ] ||
+  fail 'absent receipt retained the maintenance helper'
+if grep -Fx -- '--forget com.unionc.agent' "$case_root/pkgutil-calls" >/dev/null 2>&1; then
+  fail 'absent receipt was unnecessarily forgotten'
+fi
+
+case_root="$test_root/receipt-query-failure"
+make_case "$case_root"
+write_marker "$case_root" 0 0
+run_case "$case_root" PKGUTIL_RECEIPT_STATE=error
+[ "$run_status" -eq 2 ] || fail "receipt query failure returned $run_status instead of 2"
+[ -e "$case_root/usr/local/share/unionc-agent/uninstall.sh" ] ||
+  fail 'receipt query failure removed the maintenance helper'
+if grep -Fx -- '--forget com.unionc.agent' "$case_root/pkgutil-calls" >/dev/null 2>&1; then
+  fail 'receipt query failure forgot an unknown receipt'
+fi
+grep -F 'pkgutil status 74' "$case_root/output.log" >/dev/null ||
+  fail 'receipt query failure did not report the pkgutil status'
+
+case_root="$test_root/receipt-unexpected-output"
+make_case "$case_root"
+write_marker "$case_root" 0 0
+run_case "$case_root" PKGUTIL_RECEIPT_STATE=unexpected
+[ "$run_status" -eq 2 ] || fail "unexpected receipt output returned $run_status instead of 2"
+[ -e "$case_root/usr/local/share/unionc-agent/uninstall.sh" ] ||
+  fail 'unexpected receipt output removed the maintenance helper'
+if grep -Fx -- '--forget com.unionc.agent' "$case_root/pkgutil-calls" >/dev/null 2>&1; then
+  fail 'unexpected receipt output forgot an unverified receipt'
+fi
+grep -F 'pkgutil returned unexpected output' "$case_root/output.log" >/dev/null ||
+  fail 'unexpected receipt output was not diagnosed'
 
 case_root="$test_root/missing-proof-present"
 make_case "$case_root"

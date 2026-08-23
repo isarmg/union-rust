@@ -44,6 +44,24 @@ die() {
   exit 1
 }
 
+inspect_package_receipt() {
+  receipt_listing=""
+  if receipt_listing="$(LC_ALL=C pkgutil --pkgs='^com[.]unionc[.]agent$' 2>&1)"; then
+    case "$receipt_listing" in
+      "$identifier") return 0 ;;
+      '') return 1 ;;
+      *)
+        echo "Could not inspect package receipt $identifier: pkgutil returned unexpected output: $receipt_listing" >&2
+        return 2
+        ;;
+    esac
+  else
+    receipt_status="$?"
+    echo "Could not inspect package receipt $identifier (pkgutil status $receipt_status): $receipt_listing" >&2
+    return 2
+  fi
+}
+
 read_path_metadata() {
   metadata_path="$1"
   path_metadata="$(stat -f '%u:%g:%Mp:%Lp' "$metadata_path" 2>/dev/null)" || return 1
@@ -719,9 +737,19 @@ EOF
   exit 2
 fi
 
-if pkgutil --pkg-info "$identifier" >/dev/null 2>&1; then
-  pkgutil --forget "$identifier" >/dev/null
+if inspect_package_receipt; then
+  receipt_state=0
+else
+  receipt_state="$?"
 fi
+case "$receipt_state" in
+  0) pkgutil --forget "$identifier" >/dev/null ;;
+  1) ;;
+  *)
+    echo "Package receipt state is unknown; the receipt and maintenance helper were retained for repair and retry." >&2
+    exit 2
+    ;;
+esac
 
 rm -f "$share/uninstall.sh"
 rmdir "$share" >/dev/null 2>&1 || true

@@ -141,7 +141,8 @@ name, exact numeric IDs, service shell/home attributes, and marker.
 
 If a marker-owned account was modified, or its group still has primary/supplementary members or
 nested-group references, purge returns exit status `2` and reports `incomplete`. Directory
-Service query failures, missing proof for a still-present account, and any directory/marker
-metadata or ACL drift have the same fail-closed result. Program/state/log removal has still
-occurred, but the bookkeeping path, package receipt, and uninstall helper remain so an
-administrator can repair the conflict and safely retry.
+Service or package-receipt database query failures, missing proof for a still-present account,
+and any directory/marker metadata or ACL drift have the same fail-closed result.
+Program/state/log removal may already have occurred; any still-needed safety bookkeeping, the
+package receipt (when present), and the uninstall helper remain so an administrator can repair
+the conflict and safely retry.
