@@ -1,6 +1,6 @@
 //! Windows WDDM GPU Engine 的只读 PDH consumer。
 
-use std::mem;
+use std::mem::{self, MaybeUninit};
 
 use windows::{
     Win32::System::Performance::{
@@ -12,6 +12,8 @@ use windows::{
 };
 
 use crate::model::{Capability, CapabilityErrorKind, GpuSnapshot};
+
+use super::pdh_buffer::{plan_pdh_buffer, validate_pdh_result};
 
 const ERROR_SUCCESS: u32 = 0;
 
@@ -166,12 +168,22 @@ fn formatted_values(counter: PDH_HCOUNTER) -> Result<Vec<f64>, String> {
         };
     }
 
-    let align = mem::align_of::<PDH_FMT_COUNTERVALUE_ITEM_W>();
-    let words = (byte_len as usize).div_ceil(align);
-    let mut buffer = vec![0_usize; words];
+    let item_size = mem::size_of::<PDH_FMT_COUNTERVALUE_ITEM_W>();
+    let layout = plan_pdh_buffer(byte_len, item_count, item_size)?;
+    let mut buffer = Vec::<MaybeUninit<PDH_FMT_COUNTERVALUE_ITEM_W>>::new();
+    buffer.try_reserve_exact(layout.slots).map_err(|_| {
+        format!(
+            "PDH array could not reserve its bounded {} byte buffer",
+            layout.capacity_bytes
+        )
+    })?;
+    buffer.resize_with(layout.slots, MaybeUninit::uninit);
     let pointer = buffer.as_mut_ptr().cast::<PDH_FMT_COUNTERVALUE_ITEM_W>();
-    // SAFETY: buffer has at least byte_len writable bytes and the pointer has the alignment
-    // required by PDH_FMT_COUNTERVALUE_ITEM_W. PDH returns item_count initialized entries.
+    byte_len = u32::try_from(layout.capacity_bytes)
+        .map_err(|_| "PDH array capacity does not fit the API's u32 range".to_string())?;
+    // SAFETY: the typed MaybeUninit allocation provides both the byte capacity passed to PDH and
+    // the alignment required by PDH_FMT_COUNTERVALUE_ITEM_W. PDH returns item_count initialized
+    // entries followed by the instance-name storage in the same backing allocation.
     let result = unsafe {
         PdhGetFormattedCounterArrayW(
             counter,
@@ -184,13 +196,11 @@ fn formatted_values(counter: PDH_HCOUNTER) -> Result<Vec<f64>, String> {
     if result != ERROR_SUCCESS {
         return Err(format!("PDH array read returned 0x{result:08x}"));
     }
-    if item_count as usize
-        > (buffer.len() * mem::size_of::<usize>()) / mem::size_of::<PDH_FMT_COUNTERVALUE_ITEM_W>()
-    {
-        return Err("PDH returned an invalid item count".into());
-    }
+    let item_count = validate_pdh_result(layout.capacity_bytes, byte_len, item_count, item_size)?;
 
-    let items = unsafe { std::slice::from_raw_parts(pointer, item_count as usize) };
+    // SAFETY: a successful PDH call initialized item_count complete entries, and the checked
+    // returned byte count proves that those entries fit inside the still-live typed allocation.
+    let items = unsafe { std::slice::from_raw_parts(pointer, item_count) };
     let values = items
         .iter()
         .filter(|item| {

@@ -21,6 +21,8 @@ mod linux_gpu;
 mod linux_hwmon;
 #[cfg(feature = "nvidia")]
 mod nvidia;
+#[cfg(any(target_os = "windows", test))]
+mod pdh_buffer;
 #[cfg(target_os = "windows")]
 mod windows_gpu;
 
