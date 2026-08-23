@@ -182,8 +182,8 @@ impl Spool {
         Ok(smallest)
     }
 
-    /// 收集并排序全部路径。**只**给容量核算用——它本来就要遍历全部文件算大小，
-    /// 排序是为了"先淘汰最老的"。热路径请用 `count()` / `min_path()`。
+    /// 测试辅助：收集并排序某类 spool 路径。
+    #[cfg(test)]
     fn paths(&self, extension: &str) -> io::Result<Vec<PathBuf>> {
         let mut paths = Vec::new();
         for entry in fs::read_dir(&self.directory)? {
@@ -209,39 +209,49 @@ impl Spool {
     /// 时有用，保留最近的少量样本即可。
     fn enforce_limit(&self) -> io::Result<()> {
         private_fs::cleanup_atomic_temporaries(&self.directory)?;
-        let quarantined = self
-            .paths(INVALID)?
-            .into_iter()
-            .map(|path| {
-                let size = file_size(&path);
-                (path, size)
-            })
-            .collect::<Vec<_>>();
-        let pending = self
-            .paths(JSON)?
-            .into_iter()
-            .map(|path| {
-                let size = file_size(&path);
-                (path, size)
-            })
-            .collect::<Vec<_>>();
-        let mut total = [quarantined.as_slice(), pending.as_slice()]
-            .concat()
-            .iter()
-            .fold(0_u64, |total, (_, size)| total.saturating_add(*size));
+        let mut quarantined = Vec::new();
+        let mut pending = Vec::new();
+        let mut total = 0_u64;
+        let mut entries = 0_u64;
+        // One directory scan accounts for both classes. Every file is charged
+        // at least one conservative filesystem block; on Unix the actual
+        // allocated blocks are also included. This prevents zero/tiny files
+        // from bypassing the byte budget through block and inode overhead.
+        for entry in fs::read_dir(&self.directory)? {
+            let path = entry?.path();
+            let target = match path.extension().and_then(|value| value.to_str()) {
+                Some(INVALID) => &mut quarantined,
+                Some(JSON) => &mut pending,
+                _ => continue,
+            };
+            let size = match file_size(&path) {
+                Ok(size) => size,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            total = total.saturating_add(size);
+            entries = entries.saturating_add(1);
+            target.push((path, size));
+        }
+        quarantined.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        pending.sort_unstable_by(|left, right| left.0.cmp(&right.0));
 
         // 淘汰顺序：先隔离文件（最老的先删），再是最老的待发报文。
         for (path, size) in quarantined.iter().chain(pending.iter()) {
-            if total <= self.max_bytes {
+            if !spool_over_budget(total, entries, self.max_bytes) {
                 break;
             }
             match fs::remove_file(path) {
-                Ok(()) => total = total.saturating_sub(*size),
+                Ok(()) => {
+                    total = total.saturating_sub(*size);
+                    entries = entries.saturating_sub(1);
+                }
                 // An external cleanup may have removed a file after the
                 // snapshot. Subtract its snapshotted size, not a fresh zero,
                 // so that race cannot evict one additional valid report.
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    total = total.saturating_sub(*size)
+                    total = total.saturating_sub(*size);
+                    entries = entries.saturating_sub(1);
                 }
                 Err(error) => return Err(error),
             }
@@ -292,10 +302,30 @@ const JSON: &str = "json";
 /// 反序列化失败后隔离的报文，仅供排查，不再参与补传。
 const INVALID: &str = "invalid";
 
-fn file_size(path: &Path) -> u64 {
-    fs::metadata(path)
-        .map(|metadata| metadata.len())
-        .unwrap_or(0)
+/// Bound directory/inode overhead even where allocated-block metadata is not
+/// exposed by the standard library.
+const MIN_ACCOUNTED_FILE_BYTES: u64 = 4 * 1024;
+/// A byte setting alone can still permit millions of tiny files when an
+/// operator configures a huge budget. Keep scans and inode use absolutely bounded.
+const MAX_SPOOL_ENTRIES: u64 = 4_096;
+
+fn spool_over_budget(total_bytes: u64, entries: u64, max_bytes: u64) -> bool {
+    total_bytes > max_bytes || entries > MAX_SPOOL_ENTRIES
+}
+
+fn accounted_file_size(metadata: &fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    let allocated = {
+        use std::os::unix::fs::MetadataExt;
+        metadata.blocks().saturating_mul(512)
+    };
+    #[cfg(not(unix))]
+    let allocated = 0;
+    metadata.len().max(allocated).max(MIN_ACCOUNTED_FILE_BYTES)
+}
+
+fn file_size(path: &Path) -> io::Result<u64> {
+    fs::metadata(path).map(|metadata| accounted_file_size(&metadata))
 }
 
 #[cfg(test)]
@@ -405,7 +435,7 @@ mod tests {
         let directory = temp_dir();
         let spool = Spool::open(&directory, 4096).unwrap();
 
-        // 造 20 个各 1 KiB 的隔离文件，总量远超 4 KiB 预算。
+        // 造 20 个各 1 KiB 的隔离文件；每个至少按一个 4 KiB 块记账。
         for index in 0..20 {
             let path = directory
                 .join("spool")
@@ -427,7 +457,7 @@ mod tests {
         let total: u64 = [spool.paths(INVALID).unwrap(), spool.paths(JSON).unwrap()]
             .concat()
             .iter()
-            .map(|path| file_size(path))
+            .map(|path| file_size(path).unwrap())
             .sum();
         assert!(
             total <= 4096,
@@ -438,6 +468,20 @@ mod tests {
         assert_eq!(spool.pending_count().unwrap(), 1);
 
         drop(spool);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn tiny_files_and_huge_configurations_still_have_resource_bounds() {
+        let directory = temp_dir();
+        fs::create_dir_all(&directory).unwrap();
+        let empty = directory.join("empty");
+        fs::write(&empty, []).unwrap();
+        let metadata = fs::metadata(&empty).unwrap();
+        assert_eq!(accounted_file_size(&metadata), MIN_ACCOUNTED_FILE_BYTES);
+
+        assert!(!spool_over_budget(0, MAX_SPOOL_ENTRIES, u64::MAX));
+        assert!(spool_over_budget(0, MAX_SPOOL_ENTRIES + 1, u64::MAX));
         fs::remove_dir_all(directory).unwrap();
     }
 

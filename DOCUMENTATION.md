@@ -1134,7 +1134,7 @@ purge；Windows x64 WiX MSI 把只读程序与可变状态分离，以原生 SCM
 | `slow_interval_seconds` | `UNIONC_AGENT_SLOW_INTERVAL_SECONDS` | 30 | 温度等慢速指标周期，不得小于 `interval_seconds` |
 | `request_timeout_seconds` | — | 10 | 单次 HTTP 请求超时 |
 | `jitter_percent` | — | 10 | 抖动，上限 50，避免机队同步上报 |
-| `spool_max_bytes` | — | 64 MiB | 断线队列上限，最小 1 MiB |
+| `spool_max_bytes` | — | 64 MiB | 断线队列记账上限，最小 1 MiB；每文件至少按 4 KiB 计费且绝对不超过 4096 个文件 |
 | `state_dir` | `UNIONC_AGENT_STATE_DIR` | 平台默认 | 存放 host-id、凭据、spool |
 | `otlp_endpoint` / `otlp_token` | `UNIONC_AGENT_OTLP_ENDPOINT` / `_TOKEN` | — | 可选 OTLP 导出 |
 | `tls_ca_pem` | `UNIONC_AGENT_TLS_CA_PEM` | — | 自签 CA |
