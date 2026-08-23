@@ -30,7 +30,9 @@ fail() {
 }
 
 source_postinstall="$packaging_dir/postinstall.sh"
+source_preremove="$packaging_dir/preremove.sh"
 sh -n "$source_postinstall"
+sh -n "$source_preremove"
 grep -Fx 'PATH=/usr/sbin:/usr/bin:/sbin:/bin' "$source_postinstall" >/dev/null ||
   fail 'root postinstall does not replace the caller PATH'
 grep -Fx 'server_binary=/usr/bin/unionc' "$source_postinstall" >/dev/null ||
@@ -69,6 +71,11 @@ sed \
   -e "s#__TRUSTED_BIN__#$test_root/trusted-bin#g" \
   "$source_postinstall" >"$test_root/postinstall.sh"
 chmod 0755 "$test_root/postinstall.sh"
+
+sed \
+  -e "s#/run/systemd/system#$test_root/run/systemd/system#g" \
+  "$source_preremove" >"$test_root/preremove.sh"
+chmod 0755 "$test_root/preremove.sh"
 
 mkdir -p \
   "$test_root/trusted-bin" \
@@ -494,12 +501,23 @@ EOF
 cat >"$test_root/trusted-bin/systemctl" <<'EOF'
 #!/bin/sh
 printf 'systemctl %s\n' "$*" >>"$TEST_LOG"
-case "${1:-}" in
+systemctl_command=${1:-}
+if [ "$systemctl_command" = --quiet ]; then
+  shift
+  systemctl_command=${1:-}
+fi
+case "$systemctl_command" in
   is-enabled)
     [ "${SERVICE_ENABLED:-0}" -eq 1 ]
     ;;
   restart)
     [ "${FAIL_RESTART:-0}" -ne 1 ]
+    ;;
+  stop)
+    [ "${FAIL_STOP:-0}" -ne 1 ]
+    ;;
+  disable)
+    [ "${FAIL_DISABLE:-0}" -ne 1 ]
     ;;
   is-active)
     [ "${FAIL_ACTIVE:-0}" -ne 1 ]
@@ -573,6 +591,32 @@ grep -Fx 'systemctl is-active --quiet unionc.service' "$TEST_LOG" >/dev/null ||
   fail 'postinstall did not verify the restarted service state'
 grep -F 'did not remain active' "$test_root/inactive-service.log" >/dev/null ||
   fail 'postinstall did not diagnose the inactive service'
+
+# Removing package files while an old process remains active leaves an
+# unmanageable service running from a deleted binary. Both replacement and
+# removal must stop at the pre-remove boundary on systemctl failure.
+: >"$TEST_LOG"
+if PATH="$test_root/trusted-bin:/usr/bin:/bin" FAIL_STOP=1 \
+  "$test_root/preremove.sh" upgrade "$package_version" \
+  >"$test_root/preremove-stop-failure.log" 2>&1; then
+  fail 'preremove ignored a service stop failure before replacement'
+fi
+grep -Fx 'systemctl --quiet stop unionc.service' "$TEST_LOG" >/dev/null ||
+  fail 'preremove did not request a service stop before replacement'
+grep -F 'failed to stop unionc.service' "$test_root/preremove-stop-failure.log" >/dev/null ||
+  fail 'preremove did not diagnose the replacement stop failure'
+
+: >"$TEST_LOG"
+if PATH="$test_root/trusted-bin:/usr/bin:/bin" FAIL_DISABLE=1 \
+  "$test_root/preremove.sh" remove \
+  >"$test_root/preremove-disable-failure.log" 2>&1; then
+  fail 'preremove ignored a service disable failure before removal'
+fi
+grep -Fx 'systemctl --quiet disable --now unionc.service' "$TEST_LOG" >/dev/null ||
+  fail 'preremove did not disable and stop the service before removal'
+grep -F 'failed to disable and stop unionc.service' \
+  "$test_root/preremove-disable-failure.log" >/dev/null ||
+  fail 'preremove did not diagnose the removal stop failure'
 rmdir "$test_root/run/systemd/system" "$test_root/run/systemd"
 
 # A root hook must reject foreign ownership proof before changing its metadata.

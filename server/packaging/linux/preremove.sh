@@ -16,12 +16,14 @@ case "${1:-}" in
       # Debian passes the incoming version while reinstalling this exact package.
       # Stop the running process before replacement; postinstall restarts it
       # only when its enabled state was preserved.
-      systemctl --quiet stop unionc.service >/dev/null 2>&1 || true
+      systemctl --quiet stop unionc.service >/dev/null 2>&1 ||
+        die "failed to stop unionc.service before replacing package files"
     fi
     ;;
   0|''|remove|deconfigure|*[!0-9]*)
     if [ -d /run/systemd/system ]; then
-      systemctl --quiet disable --now unionc.service >/dev/null 2>&1 || true
+      systemctl --quiet disable --now unionc.service >/dev/null 2>&1 ||
+        die "failed to disable and stop unionc.service before removing package files"
     fi
     ;;
   *)
