@@ -366,30 +366,8 @@ impl AgentConfig {
                 config_path = Some(default);
             }
         }
-        let mut config_issue = None;
-        let mut config = if let Some(path) = config_path.as_ref().filter(|path| path.is_file()) {
-            match fs::read(path).and_then(|bytes| {
-                serde_json::from_slice(&bytes)
-                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
-            }) {
-                Ok(config) => config,
-                Err(error) if command == AgentCommand::Status => {
-                    config_issue = Some(format!("failed to load {}: {error}", path.display()));
-                    Self::default()
-                }
-                Err(error) => {
-                    return Err(error)
-                        .with_context(|| format!("failed to load config {}", path.display()));
-                }
-            }
-        } else {
-            if command == AgentCommand::Status
-                && let Some(path) = config_path.as_ref()
-            {
-                config_issue = Some(format!("configuration file {} is missing", path.display()));
-            }
-            Self::default()
-        };
+        let (mut config, config_issue) =
+            Self::load_selected_config(config_path.as_deref(), command)?;
         config.apply_environment()?;
         config.config_path = config_path;
         config.server_override = server_override;
@@ -412,6 +390,40 @@ impl AgentConfig {
         }
         config.validate(command)?;
         Ok((config, command))
+    }
+
+    fn load_selected_config(
+        config_path: Option<&Path>,
+        command: AgentCommand,
+    ) -> anyhow::Result<(Self, Option<String>)> {
+        let Some(path) = config_path else {
+            return Ok((Self::default(), None));
+        };
+        let loaded = fs::metadata(path)
+            .and_then(|metadata| {
+                if metadata.is_file() {
+                    fs::read(path)
+                } else {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "configuration path is not a regular file",
+                    ))
+                }
+            })
+            .and_then(|bytes| {
+                serde_json::from_slice(&bytes)
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+            });
+        match loaded {
+            Ok(config) => Ok((config, None)),
+            Err(error) if command == AgentCommand::Status => Ok((
+                Self::default(),
+                Some(format!("failed to load {}: {error}", path.display())),
+            )),
+            Err(error) => {
+                Err(error).with_context(|| format!("failed to load config {}", path.display()))
+            }
+        }
     }
 
     fn apply_pair_options(&mut self) -> anyhow::Result<()> {
@@ -859,6 +871,44 @@ mod tests {
             .expect_err("a second command must not override the first one");
         assert!(error.to_string().contains("multiple commands"));
         assert_eq!(selected, Some(AgentCommand::Run));
+    }
+
+    #[test]
+    fn explicit_missing_or_non_regular_config_is_lenient_only_for_status() {
+        let root = std::env::temp_dir().join(format!(
+            "unionc-agent-explicit-config-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let directory = root.join("directory-config");
+        fs::create_dir_all(&directory).unwrap();
+        let missing = root.join("missing-config.json");
+
+        for path in [&missing, &directory] {
+            for command in [
+                AgentCommand::Run,
+                AgentCommand::Once,
+                AgentCommand::Probe,
+                AgentCommand::Pair,
+                AgentCommand::Doctor,
+            ] {
+                let error = AgentConfig::load_selected_config(Some(path), command)
+                    .err()
+                    .expect("an explicit unusable config must stop non-status commands");
+                assert!(format!("{error:#}").contains(&path.display().to_string()));
+            }
+
+            let (config, issue) =
+                AgentConfig::load_selected_config(Some(path), AgentCommand::Status)
+                    .expect("status must remain available for configuration diagnostics");
+            assert_eq!(config.endpoint, DEFAULT_ENDPOINT);
+            assert!(
+                issue
+                    .as_deref()
+                    .is_some_and(|message| message.contains(&path.display().to_string()))
+            );
+        }
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
