@@ -174,27 +174,13 @@ async fn read_limited(
 }
 
 pub(crate) fn build_client(config: &AgentConfig) -> anyhow::Result<Client> {
-    build_client_with_redirects(config, true)
-}
-
-/// Build the client used for the one-time authorization-key exchange. A
-/// redirect could replay the JSON body (and its key) to another origin, so the
-/// activation path always disables redirects while retaining the Agent's
-/// configured CA, client identity, timeout, and TLS backend.
-pub(crate) fn build_activation_client(config: &AgentConfig) -> anyhow::Result<Client> {
-    build_client_with_redirects(config, false)
-}
-
-fn build_client_with_redirects(
-    config: &AgentConfig,
-    follow_redirects: bool,
-) -> anyhow::Result<Client> {
     let mut builder = Client::builder()
         .timeout(config.request_timeout())
-        .user_agent(format!("unionc-agent/{}", env!("CARGO_PKG_VERSION")));
-    if !follow_redirects {
-        builder = builder.redirect(reqwest::redirect::Policy::none());
-    }
+        .user_agent(format!("unionc-agent/{}", env!("CARGO_PKG_VERSION")))
+        // Every Agent endpoint is an exact API address. Following a 307/308
+        // can replay report or pairing JSON to an unvalidated origin even if
+        // reqwest strips the Authorization header on the cross-origin hop.
+        .redirect(reqwest::redirect::Policy::none());
     if config.tls_identity_password.is_some() && config.tls_identity_pkcs12.is_none() {
         bail!("tls_identity_password requires tls_identity_pkcs12");
     }
@@ -387,6 +373,16 @@ mod tests {
 
     use super::*;
     use crate::model::{AgentHealth, CpuSnapshot, HostIdentity, MemorySnapshot, SystemSnapshot};
+
+    #[test]
+    fn agent_api_client_never_follows_redirects() {
+        let client = build_client(&AgentConfig::default()).expect("build Agent API client");
+        let configuration = format!("{client:?}");
+        assert!(
+            configuration.contains("Policy(None)"),
+            "Agent API client unexpectedly permits redirects: {configuration}"
+        );
+    }
 
     fn report() -> AgentReport {
         AgentReport {

@@ -62,7 +62,7 @@ pub async fn activate_pending_with_code(
     validate_activation_url_request(&activation_url, &pairing_endpoint, request_id)?;
     let endpoint = activation_endpoint(&pairing_endpoint)?;
     let endpoint_display = endpoint.as_str().to_string();
-    let client = build_activation_client(config)?;
+    let client = build_client(config)?;
     let request_id_text = request_id.to_string();
     let response = client
         .post(endpoint)

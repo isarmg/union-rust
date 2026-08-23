@@ -22,7 +22,7 @@ use crate::{
     config::AgentConfig,
     model::HostIdentity,
     state_lock,
-    transport::{Reporter, build_activation_client, build_client, persist_private_value},
+    transport::{Reporter, build_client, persist_private_value},
 };
 
 mod activation;
