@@ -508,7 +508,15 @@ if [ "$systemctl_command" = --quiet ]; then
 fi
 case "$systemctl_command" in
   is-enabled)
-    [ "${SERVICE_ENABLED:-0}" -eq 1 ]
+    if [ "${FAIL_IS_ENABLED:-0}" -eq 1 ]; then
+      exit 69
+    fi
+    if [ "${SERVICE_ENABLED:-0}" -eq 1 ]; then
+      printf 'enabled\n'
+      exit 0
+    fi
+    printf 'disabled\n'
+    exit 1
     ;;
   restart)
     [ "${FAIL_RESTART:-0}" -ne 1 ]
@@ -572,6 +580,20 @@ grep -Fx "chmod 0640 $test_root/etc/unionc/unionc.env" "$TEST_LOG" >/dev/null ||
 # An enabled reinstall must fail unless the notify-aware startup job reaches
 # readiness and the resulting service remains active.
 mkdir -p "$test_root/run/systemd/system"
+: >"$TEST_LOG"
+if FAIL_IS_ENABLED=1 "$test_root/postinstall.sh" \
+  >"$test_root/enablement-query-failure.log" 2>&1; then
+  fail 'postinstall treated a failed service enablement query as disabled'
+fi
+grep -Fx 'systemctl is-enabled unionc.service' "$TEST_LOG" >/dev/null ||
+  fail 'postinstall did not query the previous service enablement state'
+grep -F 'failed to determine whether unionc.service was enabled' \
+  "$test_root/enablement-query-failure.log" >/dev/null ||
+  fail 'postinstall did not diagnose the service enablement query failure'
+if grep -Fx 'systemctl restart unionc.service' "$TEST_LOG" >/dev/null; then
+  fail 'postinstall restarted a service after an indeterminate enablement query'
+fi
+
 : >"$TEST_LOG"
 if SERVICE_ENABLED=1 FAIL_RESTART=1 "$test_root/postinstall.sh" \
   >"$test_root/restart-failure.log" 2>&1; then

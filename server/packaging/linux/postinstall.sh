@@ -975,7 +975,29 @@ fi
 # Fresh installs remain disabled until the administrator configures the
 # production secret. Reinstalling this exact package restarts an already
 # enabled service without enabling a previously disabled installation.
-if [ -d /run/systemd/system ] && systemctl is-enabled --quiet "$service_name"; then
+service_was_enabled=0
+if [ -d /run/systemd/system ]; then
+  if service_enablement=$(LC_ALL=C systemctl is-enabled "$service_name" 2>/dev/null); then
+    service_enablement_status=0
+  else
+    service_enablement_status=$?
+  fi
+  case "$service_enablement" in
+    enabled|enabled-runtime)
+      [ "$service_enablement_status" -eq 0 ] ||
+        die "systemctl returned a contradictory enabled state for $service_name"
+      service_was_enabled=1
+      ;;
+    disabled|masked|masked-runtime)
+      [ "$service_enablement_status" -ne 0 ] ||
+        die "systemctl returned a contradictory disabled state for $service_name"
+      ;;
+    *)
+      die "failed to determine whether $service_name was enabled (systemctl status $service_enablement_status)"
+      ;;
+  esac
+fi
+if [ "$service_was_enabled" -eq 1 ]; then
   systemctl restart "$service_name" ||
     die "enabled service did not reach readiness after reinstall; inspect systemctl status unionc and journalctl -u unionc"
   systemctl is-active --quiet "$service_name" ||
