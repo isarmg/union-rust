@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { MonitorDot } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { InlineNotice, LoadingBlock, SectionHeader } from "../../shared/components/ui";
@@ -28,6 +28,8 @@ export function MonitoringView({
   const [openHostId, setOpenHostId] = useState<string | null>(null);
   const hostGridRef = useRef<HTMLDivElement>(null);
   const detailPanelRef = useRef<HTMLElement>(null);
+  const detailPanelOpenerRef = useRef<HTMLButtonElement | null>(null);
+  const restoreDetailFocusRef = useRef(false);
   const hostsQuery = useQuery({
     queryKey: queryKeys.monitoring.hostPage(HOST_PAGE_SIZE, offset),
     queryFn: () => api.monitoringHosts(HOST_PAGE_SIZE, offset),
@@ -71,13 +73,26 @@ export function MonitoringView({
     [historyQuery.data],
   );
 
+  const closeDetailPanel = useCallback(() => {
+    restoreDetailFocusRef.current = true;
+    setOpenHostId(null);
+  }, []);
+
   useEffect(() => {
     if (!selectedHost) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpenHostId(null);
+      if (event.key === "Escape") closeDetailPanel();
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [closeDetailPanel, selectedHost]);
+
+  useLayoutEffect(() => {
+    if (selectedHost || !restoreDetailFocusRef.current) return;
+    restoreDetailFocusRef.current = false;
+    const opener = detailPanelOpenerRef.current;
+    detailPanelOpenerRef.current = null;
+    if (opener?.isConnected && !opener.disabled) opener.focus();
   }, [selectedHost]);
 
   useLayoutEffect(() => {
@@ -169,8 +184,14 @@ export function MonitoringView({
                 key={host.id}
                 host={host}
                 selected={host.id === selectedHostId}
-                onOpenDetails={() => {
-                  setOpenHostId((current) => current === host.id ? null : host.id);
+                onOpenDetails={(trigger) => {
+                  if (openHostId === host.id) {
+                    closeDetailPanel();
+                    return;
+                  }
+                  detailPanelOpenerRef.current = trigger;
+                  restoreDetailFocusRef.current = false;
+                  setOpenHostId(host.id);
                 }}
                 onDeleted={() => {
                   if (openHostId === host.id) setOpenHostId(null);
@@ -194,7 +215,7 @@ export function MonitoringView({
                 detailError={detailQuery.error}
                 historyLoading={historyQuery.isLoading}
                 historyError={historyQuery.error}
-                onClose={() => setOpenHostId(null)}
+                onClose={closeDetailPanel}
               />
             </aside>
           ) : null}

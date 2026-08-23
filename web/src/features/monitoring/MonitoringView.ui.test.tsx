@@ -171,15 +171,15 @@ describe("monitoring host detail panel", () => {
 
     await user.click(card);
     expect(screen.queryByRole("dialog")).toBeNull();
-    await user.click(within(card).getByRole("button", { name: "详情" }));
+    const detailTrigger = within(card).getByRole("button", { name: "详情" });
+    await user.click(detailTrigger);
 
     const dialog = await screen.findByRole("dialog", { name: "书房主机 详情面板" });
     expect(dialog.closest(".monitoring-master-detail")).toBeTruthy();
     expect(within(dialog).queryByText("书房主机 详情")).toBeNull();
-    expect(
-      within(dialog).getByRole("button", { name: "关闭详情面板" })
-        .closest(".sunshine-panel-nav-row"),
-    ).toBeTruthy();
+    const closeButton = within(dialog).getByRole("button", { name: "关闭详情面板" });
+    expect(closeButton.closest(".sunshine-panel-nav-row")).toBeTruthy();
+    expect(document.activeElement).toBe(closeButton);
     expect(within(dialog).getByRole("table", { name: "实例信息" })).toBeTruthy();
     expect(within(dialog).getByRole("table", { name: "实时指标" })).toBeTruthy();
 
@@ -202,5 +202,6 @@ describe("monitoring host detail panel", () => {
 
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "书房主机 详情面板" })).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(detailTrigger));
   });
 });

@@ -61,7 +61,7 @@ export function HostRegistration({
 }: {
   host: MonitoringHostSummary;
   selected?: boolean;
-  onOpenDetails?: () => void;
+  onOpenDetails?: (trigger: HTMLButtonElement) => void;
   onDeleted?: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -119,7 +119,7 @@ export function HostRegistration({
               className="card-action-button"
               type="button"
               disabled={controlsBusy}
-              onClick={onOpenDetails}
+              onClick={(event) => onOpenDetails(event.currentTarget)}
             >
               <Info size={12} /><span>{selected ? "收起详情" : "详情"}</span>
             </button>
