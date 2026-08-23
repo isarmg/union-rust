@@ -37,6 +37,9 @@ use crate::{
 const MAX_JSON_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 /// 封面图片上限。
 const MAX_COVER_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+/// Upstream diagnostics are copied into logs, health snapshots and API errors;
+/// keep that long-lived representation small even when the response body is not.
+const MAX_UPSTREAM_ERROR_DETAIL_CHARS: usize = 200;
 
 /// 流式读取响应体，累计超过 `limit` 立即中断。
 async fn read_limited(response: reqwest::Response, limit: usize, what: &str) -> AppResult<Vec<u8>> {
@@ -125,16 +128,32 @@ fn parse_json_success(content_type: &str, text: &str) -> AppResult<Value> {
 }
 
 fn sunshine_status_error(status: reqwest::StatusCode, text: &str) -> AppError {
-    let detail = serde_json::from_str::<Value>(text)
-        .ok()
+    let parsed = serde_json::from_str::<Value>(text).ok();
+    let source = parsed
+        .as_ref()
         .and_then(|value| {
             value
                 .get("status")
-                .or_else(|| value.get("error"))
                 .and_then(Value::as_str)
-                .map(str::to_string)
+                .or_else(|| value.get("error").and_then(Value::as_str))
         })
-        .unwrap_or_else(|| text.chars().take(200).collect());
+        .unwrap_or(text);
+    let mut characters = source.chars();
+    let mut detail = characters
+        .by_ref()
+        .take(MAX_UPSTREAM_ERROR_DETAIL_CHARS)
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    if characters.next().is_some() {
+        detail.pop();
+        detail.push('…');
+    }
     if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
         AppError::Forbidden(format!(
             "Sunshine 认证失败，请检查主机用户名和密码（HTTP {status}: {detail}）"
@@ -462,7 +481,9 @@ pub async fn cover_upload(host: &SunshineHostConfig, key: &str, url: &str) -> Ap
 mod tests {
     use super::{
         logs_payload, normalize_apps_response, normalize_clients_response, parse_json_success,
+        sunshine_status_error,
     };
+    use crate::error::AppError;
 
     #[test]
     fn common_api_success_requires_current_json_contract() {
@@ -504,5 +525,22 @@ mod tests {
         );
         assert!(logs_payload("application/json", r#""line""#.to_string()).is_err());
         assert!(logs_payload("", "line".to_string()).is_err());
+    }
+
+    #[test]
+    fn upstream_json_error_fields_are_always_bounded_and_single_line() {
+        let oversized = format!("first line\n{}", "界".repeat(1_000));
+        let body = serde_json::json!({ "status": true, "error": oversized }).to_string();
+        let error = sunshine_status_error(reqwest::StatusCode::BAD_GATEWAY, &body);
+        let AppError::Upstream(message) = error else {
+            panic!("non-authentication upstream status must remain an upstream error");
+        };
+        let detail = message
+            .strip_prefix("Sunshine API 返回 HTTP 502 Bad Gateway: ")
+            .expect("stable error prefix");
+        assert_eq!(detail.chars().count(), 200);
+        assert!(detail.ends_with('…'));
+        assert!(!detail.chars().any(char::is_control));
+        assert!(detail.starts_with("first line "));
     }
 }
