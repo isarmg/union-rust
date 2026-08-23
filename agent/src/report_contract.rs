@@ -2,8 +2,8 @@
 //!
 //! The Server must reject untrusted input, but a report produced by the official Agent should
 //! never discover those limits by receiving a permanent HTTP 400/413 after it has entered the
-//! durable spool. This module bounds both freshly collected reports and reports written by older
-//! Agent builds, then serializes the exact bytes used by the HTTP request.
+//! durable spool. This module bounds freshly collected reports, then serializes the exact bytes
+//! used by both the durable spool and the HTTP request.
 
 use anyhow::{Context, ensure};
 use chrono::{Duration, Utc};

@@ -20,7 +20,13 @@ export {
 
 const HOST_PAGE_SIZE = 20;
 
-export function MonitoringView({ addTrigger = 0 }: { addTrigger?: number }) {
+export function MonitoringView({
+  addTrigger = 0,
+  onAddTriggerHandled,
+}: {
+  addTrigger?: number;
+  onAddTriggerHandled?: (trigger: number) => void;
+}) {
   const [offset, setOffset] = useState(0);
   const [preferredHostId, setPreferredHostId] = useState<string | null>(null);
   const hostsQuery = useQuery({
@@ -66,18 +72,17 @@ export function MonitoringView({ addTrigger = 0 }: { addTrigger?: number }) {
       .sort((left, right) => left.collected_at.localeCompare(right.collected_at)),
     [historyQuery.data],
   );
-  const onlineCount = hosts.filter((host) => host.status === "online").length;
-
   return (
     <section className="view-stack monitoring-view">
-      <AgentInstances activeHostIds={activeHostIds} addTrigger={addTrigger} />
+      <AgentInstances
+        activeHostIds={activeHostIds}
+        addTrigger={addTrigger}
+        onAddTriggerHandled={onAddTriggerHandled}
+      />
       <section className="section-band">
-        <SectionHeader icon={MonitorDot} title="主机监控" description={`只读采集 · ${onlineCount}/${hosts.length} 台在线`} />
+        <SectionHeader icon={MonitorDot} title="主机监控" />
         {hostsQuery.isLoading ? <LoadingBlock label="正在读取主机状态" /> : null}
         {hostsQuery.error ? <InlineNotice tone="danger" text={hostsQuery.error.message} /> : null}
-        {!hostsQuery.isLoading && !hostsQuery.error && !hosts.length
-          ? <div className="empty-state">暂无 Agent 上报数据</div>
-          : null}
         {total > HOST_PAGE_SIZE ? (
           <div className="button-row" aria-label="监控主机分页">
             <button

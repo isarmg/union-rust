@@ -267,7 +267,7 @@ pub(crate) fn persist_private_value(path: &Path, token: &str, kind: &str) -> any
 /// | `Transient`  | 只需等待 | 退避重试 |
 #[derive(Debug, thiserror::Error)]
 pub enum SendError {
-    /// 服务端拒绝了报文内容本身（400/409/413/422）。重试必然再次失败，
+    /// 服务端拒绝了报文内容本身（400/409/413）。重试必然再次失败，
     /// 继续入队只会让 spool 被必失败的数据占满并挤掉后续有效报文。
     #[error("{0}")]
     Permanent(String),
@@ -355,10 +355,9 @@ fn ensure_success(status: StatusCode, body: &[u8], target: &str) -> Result<(), S
     // 404/408/421/429 与 5xx 留作可重试：服务端重启、反代修复、限流退避之后，
     // 同一份报文仍可能被接受。
     match status {
-        StatusCode::BAD_REQUEST
-        | StatusCode::CONFLICT
-        | StatusCode::PAYLOAD_TOO_LARGE
-        | StatusCode::UNPROCESSABLE_ENTITY => Err(SendError::Permanent(message)),
+        StatusCode::BAD_REQUEST | StatusCode::CONFLICT | StatusCode::PAYLOAD_TOO_LARGE => {
+            Err(SendError::Permanent(message))
+        }
         // 421 = 请求没走对链路（反向代理未透传 X-Forwarded-*），**不是**凭据问题。
         // 必须早于下面这一支匹配，否则会误判为需要浏览器重新授权。
         StatusCode::MISDIRECTED_REQUEST => Err(SendError::Transient(format!(
@@ -381,8 +380,8 @@ fn ensure_success(status: StatusCode, body: &[u8], target: &str) -> Result<(), S
             // report valid. This is the expected fate of old queued reports after pairing to a
             // different server/instance, so discard only that report and continue the FIFO.
             Some("agent_host_mismatch") => Err(SendError::Permanent(message)),
-            // A proxy, WAF, or incompatible server may generate an unrelated 403. Retrying is
-            // safer than permanently deauthorizing a valid credential or deleting telemetry.
+            // A proxy or WAF may generate an unrelated 403. Retrying is safer than permanently
+            // deauthorizing a valid credential or deleting telemetry.
             _ => Err(SendError::Transient(message)),
         },
         _ => Err(SendError::Transient(message)),
@@ -510,6 +509,17 @@ mod tests {
         )
         .expect_err("409 cannot become successful by retrying the same report");
         assert!(error.is_permanent());
+    }
+
+    #[test]
+    fn non_contract_422_is_not_treated_as_a_current_permanent_rejection() {
+        let error = ensure_success(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            b"unexpected response",
+            "UnionC",
+        )
+        .expect_err("422 is not part of the current Server report contract");
+        assert!(matches!(error, SendError::Transient(_)));
     }
 
     #[test]

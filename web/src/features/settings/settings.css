@@ -1,45 +1,33 @@
 /* ── 账号管理 ── */
-.account-form {
-  display: grid;
-  gap: 10px;
-  max-width: 480px;
-  margin-top: 16px;
+.account-card-input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  outline: none;
+  font: inherit;
 }
 
-.account-form .inline-field input.input-error {
-  border-color: var(--danger);
+.account-card-input:focus {
+  border-bottom-color: var(--primary);
 }
 
-.account-success {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--success, #2a9d5c);
-  font-weight: 700;
+.account-card-input.input-error {
+  border-bottom-color: var(--danger);
 }
 
-/* 修改密码侧面板（行内弹出，紧接在账号行下方） */
-.settings-side-panel {
-  margin-top: 16px;
-  padding: 20px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  max-width: 480px;
+.account-card-feedback {
+  width: 100%;
 }
 
-.settings-panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16px;
+.account-card-feedback.warn {
+  color: var(--warn);
 }
 
-.settings-panel-header strong {
-  font-size: 14px;
-}
-
-.settings-side-panel .account-form {
-  margin-top: 0;
+.account-card-feedback.danger {
+  color: var(--danger);
 }

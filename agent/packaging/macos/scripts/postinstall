@@ -9,7 +9,6 @@ group="_unioncagent"
 state="/Library/Application Support/UnionC Agent"
 state_parent="${state%/*}"
 config="$state/config.json"
-legacy_package_config="$state/config.example.json"
 log="/var/log/unionc-agent.log"
 log_dir="${log%/*}"
 agent_binary="/usr/local/libexec/unionc-agent"
@@ -1209,26 +1208,6 @@ read_path_metadata "$state"
 }
 require_no_extended_acl "$state" "locked state directory" || exit 1
 state_locked=1
-
-# Older packages placed their template inside mutable state. It has no runtime
-# role in the new layout; remove only the exact safe legacy leaf while locked.
-if [ -e "$legacy_package_config" ] || [ -L "$legacy_package_config" ]; then
-  [ -f "$legacy_package_config" ] && [ ! -L "$legacy_package_config" ] || {
-    echo "Unsafe legacy UnionC Agent package config" >&2
-    exit 1
-  }
-  read_path_metadata "$legacy_package_config"
-  case "$path_uid:$path_gid:$path_mode" in
-    0:0:600|"$uid:$gid:600") ;;
-    *) echo "Legacy UnionC Agent package config has foreign ownership or permissions" >&2; exit 1 ;;
-  esac
-  require_no_extended_acl "$legacy_package_config" "legacy package config" || exit 1
-  rm -f "$legacy_package_config"
-  if [ -e "$legacy_package_config" ] || [ -L "$legacy_package_config" ]; then
-    echo "Could not remove the legacy UnionC Agent package config" >&2
-    exit 1
-  fi
-fi
 
 # Revalidate retained configuration only inside the root-owned directory. A
 # service-owned state tree that has lost config is treated as tampered; only a

@@ -24,7 +24,7 @@ fn hex_hash(seed: &str) -> String {
         .collect()
 }
 
-fn identity(host_id: Uuid, _fixture_label: &str) -> HostIdentity {
+fn identity(host_id: Uuid) -> HostIdentity {
     HostIdentity {
         id: host_id.to_string(),
         os: "linux".into(),
@@ -38,7 +38,6 @@ fn identity(host_id: Uuid, _fixture_label: &str) -> HostIdentity {
 /// `capability` 用于区分"新报文"与"旧报文"写入的元数据。
 fn report(
     host_id: Uuid,
-    _state_label: &str,
     collected_at: chrono::DateTime<Utc>,
     capability: &str,
 ) -> serde_json::Value {
@@ -84,7 +83,7 @@ async fn a_late_arriving_old_report_is_stored_without_rewriting_host_state() {
     let marker = Uuid::new_v4();
     common::insert_active_monitoring_host(
         &pool,
-        &identity(host_id, "ordering-host"),
+        &identity(host_id),
         &hex_hash(&format!("{marker}-token")),
     )
     .await
@@ -94,8 +93,7 @@ async fn a_late_arriving_old_report_is_stored_without_rewriting_host_state() {
 
     // ── 1. 当前报文：确立主机的当前状态 ────────────────────────────────────
     let current: unionc::monitoring::AgentReport =
-        serde_json::from_value(report(host_id, "current-name", now, "capability.current"))
-            .expect("valid report");
+        serde_json::from_value(report(host_id, now, "capability.current")).expect("valid report");
     unionc::monitoring::store::store_monitoring_report(&pool, &current)
         .await
         .expect("store current");
@@ -111,7 +109,6 @@ async fn a_late_arriving_old_report_is_stored_without_rewriting_host_state() {
     // ── 2. 补传一份一小时前的旧报文 ────────────────────────────────────────
     let stale: unionc::monitoring::AgentReport = serde_json::from_value(report(
         host_id,
-        "stale-name",
         now - Duration::hours(1),
         "capability.stale",
     ))
@@ -159,7 +156,6 @@ async fn a_late_arriving_old_report_is_stored_without_rewriting_host_state() {
     // ── 5. 更新的报文仍然可以正常推进状态 ──────────────────────────────────
     let newer: unionc::monitoring::AgentReport = serde_json::from_value(report(
         host_id,
-        "newer-name",
         now + Duration::seconds(10),
         "capability.newer",
     ))
@@ -200,7 +196,7 @@ async fn latest_report_never_moves_last_seen_backwards() {
     let host_id = Uuid::new_v4();
     common::insert_active_monitoring_host(
         &pool,
-        &identity(host_id, "monotonic-last-seen"),
+        &identity(host_id),
         &hex_hash("monotonic-last-seen-token"),
     )
     .await
@@ -217,13 +213,9 @@ async fn latest_report_never_moves_last_seen_backwards() {
         .await
         .expect("move liveness marker forward");
 
-    let current: unionc::monitoring::AgentReport = serde_json::from_value(report(
-        host_id,
-        "monotonic-last-seen",
-        Utc::now(),
-        "capability.monotonic",
-    ))
-    .expect("valid report");
+    let current: unionc::monitoring::AgentReport =
+        serde_json::from_value(report(host_id, Utc::now(), "capability.monotonic"))
+            .expect("valid report");
     let report_id = current.report_id.clone();
     let (accepted, received_at) =
         unionc::monitoring::store::store_monitoring_report(&pool, &current)
@@ -270,16 +262,14 @@ async fn equal_timestamps_choose_the_same_latest_report_in_both_arrival_orders()
 
     let collected_at = Utc::now();
 
-    for (high_arrives_first, case_label, lower_id, higher_id) in [
+    for (high_arrives_first, lower_id, higher_id) in [
         (
             false,
-            "equal-time-low-first",
             "00000000-0000-4000-8000-000000000001",
             "ffffffff-ffff-4fff-bfff-fffffffffff1",
         ),
         (
             true,
-            "equal-time-high-first",
             "00000000-0000-4000-8000-000000000002",
             "ffffffff-ffff-4fff-bfff-fffffffffff2",
         ),
@@ -288,27 +278,19 @@ async fn equal_timestamps_choose_the_same_latest_report_in_both_arrival_orders()
         let marker = Uuid::new_v4();
         common::insert_active_monitoring_host(
             &pool,
-            &identity(host_id, case_label),
+            &identity(host_id),
             &hex_hash(&format!("{marker}-token")),
         )
         .await
         .expect("register");
 
-        let mut lower: unionc::monitoring::AgentReport = serde_json::from_value(report(
-            host_id,
-            "lower-id-state",
-            collected_at,
-            "capability.lower",
-        ))
-        .expect("valid lower report");
+        let mut lower: unionc::monitoring::AgentReport =
+            serde_json::from_value(report(host_id, collected_at, "capability.lower"))
+                .expect("valid lower report");
         lower.report_id = lower_id.to_string();
-        let mut higher: unionc::monitoring::AgentReport = serde_json::from_value(report(
-            host_id,
-            "higher-id-state",
-            collected_at,
-            "capability.higher",
-        ))
-        .expect("valid higher report");
+        let mut higher: unionc::monitoring::AgentReport =
+            serde_json::from_value(report(host_id, collected_at, "capability.higher"))
+                .expect("valid higher report");
         higher.report_id = higher_id.to_string();
 
         let reports = if high_arrives_first {
@@ -375,7 +357,7 @@ async fn only_the_latest_report_keeps_its_payload() {
     let marker = Uuid::new_v4();
     common::insert_active_monitoring_host(
         &pool,
-        &identity(host_id, "payload-host"),
+        &identity(host_id),
         &hex_hash(&format!("{marker}-token")),
     )
     .await
@@ -400,7 +382,6 @@ async fn only_the_latest_report_keeps_its_payload() {
     for step in 0..5 {
         let report: unionc::monitoring::AgentReport = serde_json::from_value(report(
             host_id,
-            "payload-host",
             base + Duration::seconds(step * 10),
             "capability.only",
         ))
@@ -448,7 +429,6 @@ async fn only_the_latest_report_keeps_its_payload() {
     // ── 补传的历史报文自始至终不占报文体 ──────────────────────────────────
     let stale: unionc::monitoring::AgentReport = serde_json::from_value(report(
         host_id,
-        "payload-host",
         base - Duration::hours(1),
         "capability.stale",
     ))
@@ -493,13 +473,13 @@ async fn replaying_the_same_report_is_idempotent() {
     let marker = Uuid::new_v4();
     common::insert_active_monitoring_host(
         &pool,
-        &identity(host_id, "replay-host"),
+        &identity(host_id),
         &hex_hash(&format!("{marker}-token")),
     )
     .await
     .expect("register");
 
-    let value = report(host_id, "replay-host", Utc::now(), "capability.only");
+    let value = report(host_id, Utc::now(), "capability.only");
     let parsed: unionc::monitoring::AgentReport =
         serde_json::from_value(value.clone()).expect("valid report");
 
@@ -590,23 +570,19 @@ async fn concurrent_duplicate_reports_are_serialized_without_hiding_cross_host_c
     let first_host = Uuid::new_v4();
     let second_host = Uuid::new_v4();
     let marker = Uuid::new_v4();
-    for (host_id, name) in [(first_host, "concurrent-a"), (second_host, "concurrent-b")] {
+    for host_id in [first_host, second_host] {
         common::insert_active_monitoring_host(
             &pool,
-            &identity(host_id, name),
+            &identity(host_id),
             &hex_hash(&format!("{marker}-{host_id}-token")),
         )
         .await
         .expect("register");
     }
 
-    let first: unionc::monitoring::AgentReport = serde_json::from_value(report(
-        first_host,
-        "concurrent-a",
-        Utc::now(),
-        "capability.concurrent",
-    ))
-    .expect("valid report");
+    let first: unionc::monitoring::AgentReport =
+        serde_json::from_value(report(first_host, Utc::now(), "capability.concurrent"))
+            .expect("valid report");
     let report_id = first.report_id.clone();
     let (left, right) = tokio::join!(
         unionc::monitoring::store::store_monitoring_report(&pool, &first),
@@ -617,13 +593,9 @@ async fn concurrent_duplicate_reports_are_serialized_without_hiding_cross_host_c
     assert_eq!(usize::from(left.0) + usize::from(right.0), 1);
     assert_eq!(left.1, right.1, "duplicate ACK must reuse received_at");
 
-    let mut collision: unionc::monitoring::AgentReport = serde_json::from_value(report(
-        second_host,
-        "concurrent-b",
-        Utc::now(),
-        "capability.concurrent",
-    ))
-    .expect("valid collision report");
+    let mut collision: unionc::monitoring::AgentReport =
+        serde_json::from_value(report(second_host, Utc::now(), "capability.concurrent"))
+            .expect("valid collision report");
     collision.report_id = report_id;
     let error = unionc::monitoring::store::store_monitoring_report(&pool, &collision)
         .await

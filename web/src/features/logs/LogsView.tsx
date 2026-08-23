@@ -51,7 +51,7 @@ export function LogsView() {
   return (
     <section className="view-stack logs-view-stack">
       <section className="section-band">
-        <SectionHeader icon={Terminal} title="日志" description="按需读取单台 Sunshine 主机，页面最多保留最新 2,000 行。" />
+        <SectionHeader icon={Terminal} title="日志" />
         {hostsQuery.isLoading ? <LoadingBlock label="读取主机列表" /> : null}
         {hostsQuery.error ? <InlineNotice tone="danger" text={`主机列表读取失败：${hostsQuery.error.message}`} /> : null}
         {!hostsQuery.isLoading && !hostsQuery.error && !hosts.length

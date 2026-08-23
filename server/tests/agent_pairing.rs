@@ -66,7 +66,7 @@ async fn report_write_rechecks_the_exact_credential_after_authentication() {
     let host_id = Uuid::new_v4();
     let host_id_text = host_id.to_string();
     let host: unionc::monitoring::HostIdentity =
-        serde_json::from_value(report_body(&host_id_text, "credential-race-host")["host"].clone())
+        serde_json::from_value(report_body(&host_id_text)["host"].clone())
             .expect("valid host fixture");
     let old_token = secret();
     let old_hash = hash(&old_token);
@@ -106,8 +106,7 @@ async fn report_write_rechecks_the_exact_credential_after_authentication() {
     transaction.commit().await.expect("commit rotation");
 
     let stale_in_flight: unionc::monitoring::AgentReport =
-        serde_json::from_value(report_body(&host_id_text, "credential-race-host"))
-            .expect("valid report");
+        serde_json::from_value(report_body(&host_id_text)).expect("valid report");
     let error = unionc::monitoring::store::store_authenticated_monitoring_report(
         &pool,
         &stale_in_flight,
@@ -191,12 +190,9 @@ async fn anonymous_pairing_storage_is_bounded_and_reclaims_expired_rows() {
 
     let candidate_token = secret();
     let candidate_poll = secret();
-    let candidate: unionc::monitoring::AgentPairingRequest = serde_json::from_value(pairing_body(
-        &candidate_token,
-        &candidate_poll,
-        "over-capacity",
-    ))
-    .expect("valid pairing request");
+    let candidate: unionc::monitoring::AgentPairingRequest =
+        serde_json::from_value(pairing_body(&candidate_token, &candidate_poll))
+            .expect("valid pairing request");
     let first_result = unionc::monitoring::store::create_agent_pairing_request(
         &pool,
         &Uuid::new_v4().to_string(),
@@ -303,12 +299,9 @@ async fn pairing_cleanup_reclaims_only_stale_denied_rows() {
 
     let candidate_token = secret();
     let candidate_poll = secret();
-    let candidate: unionc::monitoring::AgentPairingRequest = serde_json::from_value(pairing_body(
-        &candidate_token,
-        &candidate_poll,
-        "cleanup-trigger",
-    ))
-    .expect("valid pairing request");
+    let candidate: unionc::monitoring::AgentPairingRequest =
+        serde_json::from_value(pairing_body(&candidate_token, &candidate_poll))
+            .expect("valid pairing request");
     let result = unionc::monitoring::store::create_agent_pairing_request(
         &pool,
         &Uuid::new_v4().to_string(),
@@ -411,7 +404,7 @@ fn hash(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
 }
 
-fn pairing_body(token: &str, polling_secret: &str, _fixture_label: &str) -> serde_json::Value {
+fn pairing_body(token: &str, polling_secret: &str) -> serde_json::Value {
     serde_json::json!({
         "host": {
             "id": Uuid::new_v4(),
@@ -426,7 +419,7 @@ fn pairing_body(token: &str, polling_secret: &str, _fixture_label: &str) -> serd
     })
 }
 
-fn report_body(instance_id: &str, _fixture_label: &str) -> serde_json::Value {
+fn report_body(instance_id: &str) -> serde_json::Value {
     serde_json::json!({
         "schema_version": 1,
         "report_id": Uuid::new_v4(),
@@ -528,7 +521,7 @@ async fn report(
     call_json(
         app,
         Request::post("/api/agent/v1/report").header("authorization", format!("Bearer {token}")),
-        report_body(instance_id, "paired-host"),
+        report_body(instance_id),
     )
     .await
 }
@@ -563,7 +556,7 @@ async fn current_pairing_contract_rejects_removed_fields_and_noncanonical_uuids(
     let (status, body) = call_body(
         &app,
         Request::post("/api/agent/v2/pairing-requests"),
-        pairing_body(&secret(), &secret(), "parameterized-json"),
+        pairing_body(&secret(), &secret()),
         Some("Application/JSON; Charset=\"UTF-8\""),
     )
     .await;
@@ -573,7 +566,7 @@ async fn current_pairing_contract_rejects_removed_fields_and_noncanonical_uuids(
         let (status, body) = call_body(
             &app,
             Request::post("/api/agent/v2/pairing-requests"),
-            pairing_body(&token, &polling, "strict-host"),
+            pairing_body(&token, &polling),
             content_type,
         )
         .await;
@@ -594,7 +587,7 @@ async fn current_pairing_contract_rejects_removed_fields_and_noncanonical_uuids(
         assert_eq!(body["code"], "unsupported_media_type");
     }
 
-    let mut pairing = pairing_body(&token, &polling, "strict-host");
+    let mut pairing = pairing_body(&token, &polling);
     pairing["credential_kind"] = serde_json::json!("removed");
     assert_eq!(
         create_pairing(&app, pairing).await.0,
@@ -625,7 +618,7 @@ async fn current_pairing_contract_rejects_removed_fields_and_noncanonical_uuids(
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
 
-        let mut pairing = pairing_body(&token, &polling, "strict-host");
+        let mut pairing = pairing_body(&token, &polling);
         pairing["host"]["id"] = serde_json::json!(noncanonical);
         assert_eq!(
             create_pairing(&app, pairing).await.0,
@@ -657,7 +650,7 @@ async fn pairing_is_atomic_replay_safe_and_creation_is_idempotent() {
     let activation_code = invite["activation_code"].as_str().unwrap();
     let token = secret();
     let polling_secret = secret();
-    let pairing = pairing_body(&token, &polling_secret, "paired-host");
+    let pairing = pairing_body(&token, &polling_secret);
 
     let (first_status, first) = create_pairing(&app, pairing.clone()).await;
     assert_eq!(first_status, StatusCode::CREATED, "{first}");
@@ -677,11 +670,7 @@ async fn pairing_is_atomic_replay_safe_and_creation_is_idempotent() {
     // must converge on one request rather than exposing an intermittent 409.
     let concurrent_token = secret();
     let concurrent_polling = secret();
-    let concurrent_pairing = pairing_body(
-        &concurrent_token,
-        &concurrent_polling,
-        "concurrent-paired-host",
-    );
+    let concurrent_pairing = pairing_body(&concurrent_token, &concurrent_polling);
     let (left, right) = tokio::join!(
         create_pairing(&app, concurrent_pairing.clone()),
         create_pairing(&app, concurrent_pairing),
@@ -763,7 +752,7 @@ async fn pairing_is_atomic_replay_safe_and_creation_is_idempotent() {
         &app,
         Request::post("/api/agent/v1/report")
             .header("authorization", format!("Bearer {}", secret())),
-        report_body(instance_id, "paired-host"),
+        report_body(instance_id),
         Some("text/plain"),
     )
     .await;
@@ -777,7 +766,7 @@ async fn pairing_is_atomic_replay_safe_and_creation_is_idempotent() {
             &app,
             Request::post("/api/agent/v1/report")
                 .header("authorization", format!("Bearer {token}")),
-            report_body(instance_id, "paired-host"),
+            report_body(instance_id),
             content_type,
         )
         .await;
@@ -788,11 +777,7 @@ async fn pairing_is_atomic_replay_safe_and_creation_is_idempotent() {
     // A consumed code cannot bind a different request.
     let second_token = secret();
     let second_poll = secret();
-    let (_, second) = create_pairing(
-        &app,
-        pairing_body(&second_token, &second_poll, "other-host"),
-    )
-    .await;
+    let (_, second) = create_pairing(&app, pairing_body(&second_token, &second_poll)).await;
     let second_request_id = second["request_id"].as_str().unwrap();
     let (replay_status, _) = activate(&app, second_request_id, activation_code).await;
     assert_eq!(replay_status, StatusCode::CONFLICT);
@@ -835,8 +820,7 @@ async fn expired_pairing_and_invite_are_never_activated() {
     let invite = create_invite(&app, "expiring instance", None).await;
     let token = secret();
     let polling_secret = secret();
-    let (_, pairing) =
-        create_pairing(&app, pairing_body(&token, &polling_secret, "expiring-host")).await;
+    let (_, pairing) = create_pairing(&app, pairing_body(&token, &polling_secret)).await;
     let request_id = pairing["request_id"].as_str().unwrap();
     let invite_id = invite["request_id"].as_str().unwrap();
 
@@ -914,8 +898,7 @@ async fn administrators_can_update_remark_then_permanently_delete_an_instance() 
     let instance_id = invite["instance_id"].as_str().unwrap();
     let token = secret();
     let polling_secret = secret();
-    let (_, pairing) =
-        create_pairing(&app, pairing_body(&token, &polling_secret, "reported-name")).await;
+    let (_, pairing) = create_pairing(&app, pairing_body(&token, &polling_secret)).await;
     let request_id = pairing["request_id"].as_str().unwrap();
     assert_eq!(
         activate(
@@ -967,7 +950,7 @@ async fn administrators_can_update_remark_then_permanently_delete_an_instance() 
     .await;
     assert_eq!(renamed, StatusCode::NO_CONTENT);
 
-    let mut later_report = report_body(instance_id, "agent-reported-name-changed");
+    let mut later_report = report_body(instance_id);
     later_report["collected_at"] = serde_json::to_value(Utc::now() + Duration::seconds(1)).unwrap();
     assert_eq!(
         call_json(
@@ -991,7 +974,7 @@ async fn administrators_can_update_remark_then_permanently_delete_an_instance() 
     let pending_invite = create_invite(&app, "pending replacement", Some(instance_id)).await;
     let pending_token = secret();
     let pending_poll = secret();
-    let mut pending_body = pairing_body(&pending_token, &pending_poll, "pending replacement");
+    let mut pending_body = pairing_body(&pending_token, &pending_poll);
     pending_body["host"]["id"] = serde_json::Value::String(instance_id.to_string());
     assert_eq!(
         create_pairing(&app, pending_body).await.0,
@@ -1085,8 +1068,7 @@ async fn revoke_is_terminal_until_an_admin_re_pairs_the_same_instance() {
     let instance_id = first_invite["instance_id"].as_str().unwrap();
     let first_token = secret();
     let first_poll = secret();
-    let (_, first_pairing) =
-        create_pairing(&app, pairing_body(&first_token, &first_poll, "paired-host")).await;
+    let (_, first_pairing) = create_pairing(&app, pairing_body(&first_token, &first_poll)).await;
     let first_request_id = first_pairing["request_id"].as_str().unwrap();
     assert_eq!(
         activate(
@@ -1100,7 +1082,7 @@ async fn revoke_is_terminal_until_an_admin_re_pairs_the_same_instance() {
     );
     assert_eq!(
         {
-            let mut old_report = report_body(instance_id, "old-generation-host");
+            let mut old_report = report_body(instance_id);
             old_report["report_id"] = serde_json::Value::String(Uuid::new_v4().to_string());
             old_report["collected_at"] =
                 serde_json::to_value(Utc::now() + Duration::minutes(4)).unwrap();
@@ -1131,7 +1113,7 @@ async fn revoke_is_terminal_until_an_admin_re_pairs_the_same_instance() {
     let stale_invite = create_invite(&app, "stale re-pair", Some(instance_id)).await;
     let stale_token = secret();
     let stale_poll = secret();
-    let mut stale_pairing_body = pairing_body(&stale_token, &stale_poll, "stale-host");
+    let mut stale_pairing_body = pairing_body(&stale_token, &stale_poll);
     stale_pairing_body["host"]["id"] = serde_json::Value::String(instance_id.to_string());
     let (stale_status, stale_pairing) = create_pairing(&app, stale_pairing_body).await;
     assert_eq!(stale_status, StatusCode::CREATED, "{stale_pairing}");
@@ -1190,11 +1172,7 @@ async fn revoke_is_terminal_until_an_admin_re_pairs_the_same_instance() {
     assert_eq!(second_invite["instance_id"], instance_id);
     let second_token = secret();
     let second_poll = secret();
-    let (_, second_pairing) = create_pairing(
-        &app,
-        pairing_body(&second_token, &second_poll, "paired-host"),
-    )
-    .await;
+    let (_, second_pairing) = create_pairing(&app, pairing_body(&second_token, &second_poll)).await;
     let second_request_id = second_pairing["request_id"].as_str().unwrap();
     let (second_activation, body) = activate(
         &app,
@@ -1227,7 +1205,7 @@ async fn revoke_is_terminal_until_an_admin_re_pairs_the_same_instance() {
     );
 
     let new_report_id = Uuid::new_v4().to_string();
-    let mut new_report = report_body(instance_id, "new-generation-host");
+    let mut new_report = report_body(instance_id);
     new_report["report_id"] = serde_json::Value::String(new_report_id.clone());
     new_report["collected_at"] = serde_json::to_value(Utc::now()).unwrap();
     new_report["capabilities"] = serde_json::json!([{

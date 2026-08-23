@@ -10,11 +10,11 @@ pub(crate) async fn logout(
     let out = response.headers_mut();
     out.append(
         header::SET_COOKIE,
-        cookie_header(&session_cookie_value("", state.settings.production, 0))?,
+        cookie_header(&session_cookie_value("", state.settings.production, Some(0)))?,
     );
     out.append(
         header::SET_COOKIE,
-        cookie_header(&csrf_cookie_value("", state.settings.production, 0))?,
+        cookie_header(&csrf_cookie_value("", state.settings.production, Some(0)))?,
     );
     Ok(response)
 }
@@ -90,7 +90,7 @@ pub(crate) async fn sse_session_cancellation(
     ))
 }
 
-const SESSION_MAX_AGE: u64 = 604_800; // 7 天，与 LocalSession.expires_at 保持一致
+const SESSION_LIFETIME_DAYS: i64 = 7;
 
 /// 会话 cookie 名。生产环境用 `__Host-` 前缀（要求 Secure + Path=/ + 无 Domain）。
 pub(crate) const SESSION_COOKIE: &str = "session";
@@ -101,9 +101,12 @@ pub(crate) const SECURE_CSRF_COOKIE: &str = "__Host-csrf";
 /// 前端回填 CSRF 令牌所用的请求头。
 pub(crate) const CSRF_HEADER: &str = "x-csrf-token";
 
-fn session_cookie_value(token: &str, secure: bool, max_age: u64) -> String {
+fn session_cookie_value(token: &str, secure: bool, max_age: Option<u64>) -> String {
+    let max_age = max_age
+        .map(|seconds| format!("; Max-Age={seconds}"))
+        .unwrap_or_default();
     format!(
-        "{}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}{}",
+        "{}={token}; Path=/; HttpOnly; SameSite=Strict{max_age}{}",
         if secure {
             SECURE_SESSION_COOKIE
         } else {
@@ -113,9 +116,12 @@ fn session_cookie_value(token: &str, secure: bool, max_age: u64) -> String {
     )
 }
 
-fn csrf_cookie_value(token: &str, secure: bool, max_age: u64) -> String {
+fn csrf_cookie_value(token: &str, secure: bool, max_age: Option<u64>) -> String {
+    let max_age = max_age
+        .map(|seconds| format!("; Max-Age={seconds}"))
+        .unwrap_or_default();
     format!(
-        "{}={token}; Path=/; SameSite=Strict; Max-Age={max_age}{}",
+        "{}={token}; Path=/; SameSite=Strict{max_age}{}",
         if secure {
             SECURE_CSRF_COOKIE
         } else {

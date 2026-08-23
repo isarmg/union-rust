@@ -9,6 +9,8 @@ import { authQueryKeys } from "../features/auth/queryKeys";
 import { overviewApi } from "../features/overview/api";
 import { overviewQueryKeys } from "../features/overview/queryKeys";
 import type { ServiceStatus } from "../features/overview/types";
+import { monitoringApi } from "../features/monitoring/api";
+import type { CreatedAgentInstance } from "../features/monitoring/types";
 import { ApiError, request } from "../shared/api/client";
 import { realtimeApi } from "./realtimeApi";
 
@@ -50,9 +52,8 @@ function seedPrivateCache(queryClient: QueryClient) {
 
 async function submitPasswordChange() {
   fireEvent.click(await screen.findByRole("button", { name: "设置" }));
-  fireEvent.click(await screen.findByRole("button", { name: "修改密码" }));
   const form = await screen.findByRole("form", { name: "修改管理员密码" });
-  fireEvent.change(screen.getByLabelText("当前密码"), { target: { value: "current-password" } });
+  fireEvent.change(screen.getByLabelText("原密码"), { target: { value: "current-password" } });
   fireEvent.change(screen.getByLabelText("新密码"), { target: { value: "replacement-password" } });
   fireEvent.change(screen.getByLabelText("确认新密码"), { target: { value: "replacement-password" } });
   fireEvent.submit(form);
@@ -201,6 +202,47 @@ describe("session verification", () => {
     expect(await screen.findByRole("form", { name: "登录 UnionC 管理中心" })).toBeTruthy();
     expect(changePassword).toHaveBeenCalledWith("current-password", "replacement-password");
     expect(logout).not.toHaveBeenCalled();
+  });
+
+  it("does not replay a consumed Agent creation request after returning to the host page", async () => {
+    mockAuthenticatedApp();
+    vi.spyOn(monitoringApi, "monitoringHosts").mockResolvedValue({
+      hosts: [],
+      total: 0,
+      limit: 20,
+      offset: 0,
+    });
+    vi.spyOn(monitoringApi, "monitoringAgentInstances").mockResolvedValue([]);
+    const invitation: CreatedAgentInstance = {
+      request_id: "request-1",
+      instance_id: "host-1",
+      display_name: "新监控主机",
+      status: "pending",
+      activation_code: "one-time-secret",
+      expires_at: "2026-08-23T12:15:00Z",
+      created_at: "2026-08-23T12:00:00Z",
+    };
+    const create = vi.spyOn(monitoringApi, "monitoringCreateAgentInstance")
+      .mockResolvedValue(invitation);
+    const cancel = vi.spyOn(monitoringApi, "monitoringCancelAgentInstance").mockResolvedValue();
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "主机" }));
+    await screen.findByRole("heading", { name: "主机监控" }, { timeout: 5_000 });
+    fireEvent.click(screen.getByRole("button", { name: "创建 Agent" }));
+    expect(await screen.findByText(invitation.activation_code, {}, { timeout: 5_000 })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "取消邀请并清除授权密钥" }));
+    await waitFor(() => expect(cancel).toHaveBeenCalledWith(invitation.request_id));
+    await waitFor(() => expect(screen.queryByText(invitation.activation_code)).toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "总览" }));
+    fireEvent.click(screen.getByRole("button", { name: "主机" }));
+    await screen.findByRole("heading", { name: "主机监控" });
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(invitation.activation_code)).toBeNull();
+    expect(screen.queryByText(/只读采集/)).toBeNull();
+    expect(screen.queryByText("暂无 Agent 上报数据")).toBeNull();
   });
 
   it("ignores a password-change callback from a replaced browser session", async () => {

@@ -252,9 +252,11 @@ export function HostRegistration({
 export function AgentInstances({
   activeHostIds,
   addTrigger = 0,
+  onAddTriggerHandled,
 }: {
   activeHostIds: ReadonlySet<string>;
   addTrigger?: number;
+  onAddTriggerHandled?: (trigger: number) => void;
 }) {
   const queryClient = useQueryClient();
   const handledAddTriggerRef = useRef(0);
@@ -289,6 +291,9 @@ export function AgentInstances({
   }, [queryClient]);
   const cancelMutation = useMutation({
     mutationFn: (requestId: string) => api.monitoringCancelAgentInstance(requestId),
+    onSuccess: () => queryClient.invalidateQueries({
+      queryKey: queryKeys.monitoring.agentInstances,
+    }),
   });
   const createAgent = createMutation.mutate;
   const creationPending = createMutation.isPending;
@@ -296,9 +301,10 @@ export function AgentInstances({
   useEffect(() => {
     if (addTrigger <= handledAddTriggerRef.current) return;
     handledAddTriggerRef.current = addTrigger;
+    onAddTriggerHandled?.(addTrigger);
     if (created || creationPending) return;
     createAgent();
-  }, [addTrigger, createAgent, created, creationPending]);
+  }, [addTrigger, createAgent, created, creationPending, onAddTriggerHandled]);
 
   const refreshedCreated = created
     ? instancesQuery.data?.find((instance) => instance.request_id === created.request_id)

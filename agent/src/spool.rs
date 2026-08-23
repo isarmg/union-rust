@@ -106,32 +106,28 @@ impl Spool {
         let bytes = fs::read(&path)?;
         match serde_json::from_slice(&bytes) {
             Ok(report) => match report_contract::encode_report_body(&report) {
-                Ok((report, bounded_bytes)) => {
-                    if bounded_bytes != bytes {
-                        // Persist the one-time normalization under the spool mutation lock. Besides
-                        // avoiding repeated CPU work, this is required for wire idempotency: a
-                        // future collected_at value is bounded using Utc::now(), so recomputing it
-                        // after an ACK loss would otherwise change the JSON for the same report_id.
-                        private_fs::write_atomic(
-                            &path,
-                            &bounded_bytes,
-                            OwnerPolicy::Parent(&self.directory),
+                Ok((bounded, _)) if bounded == report => Ok(Some(PendingReport { path, report })),
+                Ok(_) => {
+                    let error = anyhow::anyhow!(
+                        "spool report requires changes to satisfy the exact current Agent wire \
+                         contract"
+                    );
+                    let quarantine = path.with_extension(format!("{}.invalid", Uuid::new_v4()));
+                    fs::rename(&path, &quarantine).with_context(|| {
+                        format!(
+                            "failed to quarantine noncanonical spool report {} as {} after \
+                             contract error: {error}",
+                            path.display(),
+                            quarantine.display()
                         )
-                        .with_context(|| {
-                            format!(
-                                "failed to persist the bounded spool report {}",
-                                path.display()
-                            )
-                        })?;
-                        self.enforce_limit()?;
-                    }
-                    Ok(Some(PendingReport { path, report }))
+                    })?;
+                    Err(error)
                 }
                 Err(error) => {
                     let quarantine = path.with_extension(format!("{}.invalid", Uuid::new_v4()));
                     fs::rename(&path, &quarantine).with_context(|| {
                         format!(
-                            "failed to quarantine incompatible spool report {} as {} after contract error: {error}",
+                            "failed to quarantine invalid spool report {} as {} after contract error: {error}",
                             path.display(),
                             quarantine.display()
                         )
@@ -304,7 +300,7 @@ fn file_size(path: &Path) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{Duration, Utc};
+    use chrono::Utc;
 
     use super::*;
     use crate::model::*;
@@ -484,16 +480,13 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
-    /// Reports persisted by an older build did not pass through the current body-size contract.
-    /// They must be bounded when read; otherwise the first oversized JSON file is sent as-is,
-    /// receives HTTP 413, and is permanently discarded after deploying the corrected build.
     #[test]
-    fn an_oversized_report_from_an_older_build_is_bounded_when_read() {
+    fn a_report_requiring_current_contract_changes_is_quarantined_instead_of_rewritten() {
         let directory = temp_dir();
         let spool = Spool::open(&directory, 16 * 1024 * 1024).unwrap();
-        let mut old = report();
+        let mut noncanonical = report();
         let long_mount = format!("/{}", "界".repeat(1300));
-        old.system.disks = (0..AGENT_REPORT_MAX_DISKS)
+        noncanonical.system.disks = (0..AGENT_REPORT_MAX_DISKS)
             .map(|index| DiskSnapshot {
                 name: format!("disk-{index:04}"),
                 mount_point: format!("{long_mount}-{index}"),
@@ -507,74 +500,25 @@ mod tests {
                 is_read_only: false,
             })
             .collect();
-        let old_body = serde_json::to_vec(&old).unwrap();
-        assert!(old_body.len() > AGENT_REPORT_MAX_BODY_BYTES);
-        let old_path =
-            directory
-                .join("spool")
-                .join(format!("{zero:020}-{}.json", old.report_id, zero = 0));
-        fs::write(&old_path, old_body).unwrap();
+        let bytes = serde_json::to_vec(&noncanonical).unwrap();
+        assert!(bytes.len() > AGENT_REPORT_MAX_BODY_BYTES);
+        let path = directory.join("spool").join(format!(
+            "{zero:020}-{}.json",
+            noncanonical.report_id,
+            zero = 0
+        ));
+        fs::write(&path, bytes).unwrap();
 
-        let pending = spool
+        let error = spool
             .oldest()
-            .unwrap()
-            .expect("old report remains readable");
-        let (_, send_body) = crate::report_contract::encode_report_body(&pending.report).unwrap();
-        assert!(send_body.len() <= AGENT_REPORT_MAX_BODY_BYTES);
-        assert_eq!(pending.report.report_id, old.report_id);
-        assert!(old_path.exists(), "reading must not acknowledge the report");
+            .expect_err("reports requiring normalization must fail closed");
         assert!(
-            fs::metadata(&old_path).unwrap().len() <= AGENT_REPORT_MAX_BODY_BYTES as u64,
-            "the bounded form must replace the old oversized body"
+            error
+                .to_string()
+                .contains("requires changes to satisfy the exact current Agent wire contract")
         );
-
-        drop(spool);
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn bounded_old_spool_bytes_are_persisted_and_stable_across_retries() {
-        let directory = temp_dir();
-        let spool = Spool::open(&directory, 1024 * 1024).unwrap();
-        let mut old = report();
-        old.collected_at = Utc::now() + Duration::days(1);
-        old.capabilities.push(Capability {
-            name: "old-empty-message".into(),
-            available: false,
-            source: "test".into(),
-            error_kind: Some(CapabilityErrorKind::InvalidData),
-            message: Some(String::new()),
-        });
-        let old_path =
-            directory
-                .join("spool")
-                .join(format!("{zero:020}-{}.json", old.report_id, zero = 0));
-        fs::write(&old_path, serde_json::to_vec(&old).unwrap()).unwrap();
-
-        let first = spool
-            .oldest()
-            .unwrap()
-            .expect("old report remains readable");
-        let (_, first_body) = crate::report_contract::encode_report_body(&first.report).unwrap();
-        let persisted = fs::read(&old_path).unwrap();
-        assert_eq!(persisted, first_body);
-        assert_eq!(
-            first
-                .report
-                .capabilities
-                .iter()
-                .find(|capability| capability.name == "old-empty-message")
-                .and_then(|capability| capability.message.as_deref()),
-            None
-        );
-
-        let second = spool
-            .oldest()
-            .unwrap()
-            .expect("retry reads the same report");
-        let (_, second_body) = crate::report_contract::encode_report_body(&second.report).unwrap();
-        assert_eq!(second_body, first_body);
-        assert_eq!(fs::read(&old_path).unwrap(), persisted);
+        assert!(!path.exists());
+        assert_eq!(spool.paths(INVALID).unwrap().len(), 1);
 
         drop(spool);
         fs::remove_dir_all(directory).unwrap();
@@ -600,36 +544,6 @@ mod tests {
         );
         assert!(!path.exists());
         assert_eq!(spool.paths(INVALID).unwrap().len(), 1);
-
-        drop(spool);
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn growing_a_bounded_old_report_cannot_exceed_the_spool_budget() {
-        let directory = temp_dir();
-        let mut old = report();
-        old.host.os.clear();
-        let old_body = serde_json::to_vec(&old).unwrap();
-        let budget = old_body.len() as u64;
-        let spool = Spool::open(&directory, budget).unwrap();
-        let path =
-            directory
-                .join("spool")
-                .join(format!("{zero:020}-{}.json", old.report_id, zero = 0));
-        fs::write(&path, old_body).unwrap();
-
-        let pending = spool
-            .oldest()
-            .unwrap()
-            .expect("the in-memory bounded report remains available for this send attempt");
-        assert_eq!(pending.report.host.os, "unknown");
-        let total: u64 = [spool.paths(INVALID).unwrap(), spool.paths(JSON).unwrap()]
-            .concat()
-            .iter()
-            .map(|path| file_size(path))
-            .sum();
-        assert!(total <= budget, "bounded rewrite exceeded the spool budget");
 
         drop(spool);
         fs::remove_dir_all(directory).unwrap();

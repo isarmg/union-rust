@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { Check, Edit2, KeyRound, Loader2, Save, X } from "lucide-react";
+import { KeyRound, Loader2, Save } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { authApi as api } from "../auth/api";
 import { authQueryKeys as queryKeys } from "../auth/queryKeys";
-import { CardActions, CardInner, CardRow, InlineNotice, MutationError, SectionHeader, TruncatedText } from "../../shared/components/ui";
+import { CardActions, CardInner, CardRow, InlineNotice, SectionHeader, TruncatedText } from "../../shared/components/ui";
 import { removeMutationFromCache } from "../../shared/lib/mutations";
 
 const changePasswordMutationKey = ["settings-change-password"] as const;
@@ -13,16 +13,11 @@ interface ChangePasswordVariables {
   newPassword: string;
 }
 
-// ─── 修改密码侧面板 ───────────────────────────────────────────────────────────
+// ─── 账号管理区域 ─────────────────────────────────────────────────────────────
 
-function ChangePasswordPanel({
-  onClose,
-  onPasswordChanged,
-}: {
-  onClose: () => void;
-  onPasswordChanged: () => void;
-}) {
+function AccountSection({ onPasswordChanged }: { onPasswordChanged: () => void }) {
   const queryClient = useQueryClient();
+  const meQuery = useQuery({ queryKey: queryKeys.me, queryFn: api.authenticate });
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw] = useState("");
   const [confirmPw, setConfirmPw] = useState("");
@@ -49,88 +44,91 @@ function ChangePasswordPanel({
   const passwordMismatch = confirmPw.length > 0 && newPw !== confirmPw;
   const canSubmit =
     currentPw.length > 0 && newPw.length >= 12 && newPw === confirmPw && !changeMutation.isPending;
-
-  return (
-    <div className="settings-side-panel">
-      <div className="settings-panel-header">
-        <strong>修改密码</strong>
-        <button className="icon-button" type="button" aria-label="关闭修改密码面板" title="关闭" onClick={onClose}><X size={16} aria-hidden="true" /></button>
-      </div>
-      <form
-        className="account-form"
-        aria-label="修改管理员密码"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (newPw !== confirmPw) return;
-          changeMutation.mutate({ currentPassword: currentPw, newPassword: newPw });
-        }}
-      >
-        <label className="inline-field">
-          <span>当前密码</span>
-          <input type="password" value={currentPw} onChange={(e) => setCurrentPw(e.target.value)}
-            autoComplete="current-password" placeholder="输入当前密码" autoFocus />
-        </label>
-        <label className="inline-field">
-          <span>新密码</span>
-          <input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)}
-            autoComplete="new-password" placeholder="至少 12 个字符" />
-        </label>
-        <label className="inline-field">
-          <span>确认新密码</span>
-          <input type="password" value={confirmPw} onChange={(e) => setConfirmPw(e.target.value)}
-            autoComplete="new-password" placeholder="再次输入新密码"
-            className={passwordMismatch ? "input-error" : ""} />
-        </label>
-        {passwordMismatch && <InlineNotice tone="warn" text="两次输入的新密码不一致" />}
-        <MutationError mutation={changeMutation} />
-        {changeMutation.isSuccess && (
-          <p className="account-success"><Check size={15} /> 密码已修改成功</p>
-        )}
-        <div className="settings-panel-actions">
-          <button type="submit" className="action-button primary" disabled={!canSubmit}>
-            {changeMutation.isPending ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
-            <span>修改密码</span>
-          </button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
-// ─── 账号管理区域 ─────────────────────────────────────────────────────────────
-
-function AccountSection({ onPasswordChanged }: { onPasswordChanged: () => void }) {
-  const meQuery = useQuery({ queryKey: queryKeys.me, queryFn: api.authenticate });
-  const [panelOpen, setPanelOpen] = useState(false);
+  const feedback = changeMutation.isError
+    ? { tone: "danger", text: changeMutation.error.message }
+    : passwordMismatch
+      ? { tone: "warn", text: "两次输入的新密码不一致" }
+      : changeMutation.isPending
+        ? { tone: "muted", text: "正在修改密码…" }
+        : { tone: "muted", text: "新密码至少 12 个字符" };
 
   return (
     <section className="section-band">
       <SectionHeader icon={KeyRound} title="账号管理" />
       {meQuery.error ? <InlineNotice tone="danger" text={`账号信息读取失败：${meQuery.error.message}`} /> : null}
       <div className="content-grid settings-grid">
-        <div className="content-card setting-item">
+        <form
+          className="content-card setting-item account-card-form"
+          aria-label="修改管理员密码"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!canSubmit) return;
+            changeMutation.mutate({ currentPassword: currentPw, newPassword: newPw });
+          }}
+        >
           <CardInner>
             <CardRow label="用户">
               <TruncatedText>{meQuery.data?.username ?? "—"}</TruncatedText>
             </CardRow>
+            <CardRow label="原密码">
+              <input
+                className="account-card-input"
+                type="password"
+                value={currentPw}
+                onChange={(event) => setCurrentPw(event.target.value)}
+                aria-label="原密码"
+                autoComplete="current-password"
+                placeholder="输入原密码"
+              />
+            </CardRow>
+            <CardRow label="新密码">
+              <input
+                className="account-card-input"
+                type="password"
+                value={newPw}
+                onChange={(event) => setNewPw(event.target.value)}
+                aria-label="新密码"
+                autoComplete="new-password"
+                placeholder="至少 12 个字符"
+              />
+            </CardRow>
+            <CardRow label="确认新密码">
+              <input
+                className={`account-card-input${passwordMismatch ? " input-error" : ""}`}
+                type="password"
+                value={confirmPw}
+                onChange={(event) => setConfirmPw(event.target.value)}
+                aria-label="确认新密码"
+                aria-invalid={passwordMismatch}
+                autoComplete="new-password"
+                placeholder="再次输入新密码"
+              />
+            </CardRow>
+            <CardRow label="提示">
+              <TruncatedText
+                className={`account-card-feedback ${feedback.tone}`}
+                role={feedback.tone === "danger" ? "alert" : "status"}
+                aria-live={feedback.tone === "danger" ? "assertive" : "polite"}
+                title={feedback.text}
+              >
+                {feedback.text}
+              </TruncatedText>
+            </CardRow>
             <CardActions>
               <button
-                type="button"
+                type="submit"
                 className="card-action-button primary"
-                onClick={() => setPanelOpen(v => !v)}
+                disabled={!canSubmit}
               >
-                <Edit2 size={12} /><span>修改密码</span>
+                {changeMutation.isPending
+                  ? <Loader2 size={12} className="spin" aria-hidden="true" />
+                  : <Save size={12} aria-hidden="true" />}
+                <span>{changeMutation.isPending ? "正在修改…" : "修改密码"}</span>
               </button>
             </CardActions>
           </CardInner>
-        </div>
+        </form>
       </div>
-      {panelOpen && (
-        <ChangePasswordPanel
-          onClose={() => setPanelOpen(false)}
-          onPasswordChanged={onPasswordChanged}
-        />
-      )}
     </section>
   );
 }

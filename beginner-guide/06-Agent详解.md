@@ -193,7 +193,7 @@ spool 使用短时本地 mutex 加目录内文件锁序列化 enqueue/淘汰/ack
 
 | 类别 | 典型状态 | 需要改变 | 行为 |
 |---|---|---|---|
-| Permanent | 400/409/413/422，或 403 + `agent_host_mismatch` | 报告内容，或报告 `host_id` 与有效 credential 不匹配 | 记录并丢弃这一个队首，继续 FIFO |
+| Permanent | 400/409/413，或 403 + `agent_host_mismatch` | 报告内容，或报告 `host_id` 与有效 credential 不匹配 | 记录并丢弃这一个队首，继续 FIFO |
 | Unauthorized | 401 + `unauthorized` 机器码 | credential 未知/失效，或主机仍 active 但该 credential 已被重配替换/撤销 | 当前常驻 `run` 持久写 `reauth_required`、停止投递并继续采样到有界 spool；未知或非 JSON 的 401 视为可重试代理故障 |
 | Revoked | 403 + `agent_revoked` 机器码 | 主机生命周期已撤销 | 当前常驻 `run` 持久写 `reauth_required`、停止投递并继续采样到有界 spool |
 | Transient | 网络、未知 401/403、421、429、5xx 及未归为永久的其他响应 | 时间或部署状态 | 保留并退避重试 |

@@ -129,6 +129,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::de::DeserializeOwned;
 
     fn host() -> HostIdentity {
         HostIdentity {
@@ -181,6 +182,43 @@ mod tests {
             "legacy_status": "ok"
         });
         assert!(serde_json::from_value::<AgentReportAck>(value).is_err());
+    }
+
+    fn assert_rejects_server_control_fields<T: DeserializeOwned>(value: serde_json::Value) {
+        for field in ["command", "configuration", "script"] {
+            let mut candidate = value.clone();
+            candidate
+                .as_object_mut()
+                .expect("response fixture must be an object")
+                .insert(field.into(), serde_json::json!("forbidden"));
+            assert!(
+                serde_json::from_value::<T>(candidate).is_err(),
+                "server-to-Agent response unexpectedly accepted {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn server_to_agent_contract_has_no_control_payload() {
+        assert_rejects_server_control_fields::<AgentPairingResponse>(serde_json::json!({
+            "request_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "activation_url": "/agent/activate/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "expires_in": 900,
+            "poll_interval": 2
+        }));
+        assert_rejects_server_control_fields::<AgentPairingStatusResponse>(serde_json::json!({
+            "status": "waiting"
+        }));
+        assert_rejects_server_control_fields::<ActivateAgentResponse>(serde_json::json!({
+            "instance_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "status": "active"
+        }));
+        assert_rejects_server_control_fields::<AgentReportAck>(serde_json::json!({
+            "host_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "report_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "accepted": true,
+            "received_at": "2026-01-01T00:00:00Z"
+        }));
     }
 
     #[test]

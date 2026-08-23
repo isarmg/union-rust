@@ -24,7 +24,6 @@ const MARKER_FILE_MODE: Mode = Mode::RUSR.union(Mode::WUSR);
 const DATA_DIRECTORY_MARKER: &str = ".unionc-data-directory";
 const DATA_DIRECTORY_MARKER_CONTENT: &[u8] = b"unionc-data-directory-v1\n";
 const MAX_MARKER_BYTES: u64 = 128;
-const LEGACY_ARTIFACTS: &[&str] = &["unionc-config.json", "unionc.db", "unionc.secret"];
 
 /// 缺失数据目录的处理意图。枚举值保留调用来源，避免以后把 restore 的例外
 /// 无意扩散到普通维护命令。
@@ -97,16 +96,9 @@ fn ensure_layout_at_with_hook(
                 normalized.display()
             );
         }
-        false if validate_legacy_artifacts(&opened.fd, &initial)? => {
-            // Releases before the ownership marker already enforced 0700 on
-            // this directory and 0600 on the core files. Accept that exact
-            // legacy shape once, without changing any existing permission,
-            // and record the version-independent layout marker.
-            create_marker(&opened.fd, &initial)?;
-        }
         false => {
             bail!(
-                "refusing to claim non-empty directory {} without a valid UnionC data marker or private legacy artifact",
+                "refusing to claim non-empty directory {} without a valid UnionC data marker",
                 normalized.display()
             );
         }
@@ -281,20 +273,6 @@ fn directory_is_empty(directory: &OwnedFd) -> anyhow::Result<bool> {
         }
     }
     Ok(true)
-}
-
-fn validate_legacy_artifacts(directory: &OwnedFd, directory_stat: &Stat) -> anyhow::Result<bool> {
-    let mut found = false;
-    for name in LEGACY_ARTIFACTS {
-        let stat = match rustix::fs::statat(directory, *name, AtFlags::SYMLINK_NOFOLLOW) {
-            Ok(stat) => stat,
-            Err(rustix::io::Errno::NOENT) => continue,
-            Err(error) => return Err(error.into()),
-        };
-        found = true;
-        validate_private_regular_file(name, &stat, directory_stat, MARKER_FILE_MODE)?;
-    }
-    Ok(found)
 }
 
 fn validate_marker(directory: &OwnedFd, directory_stat: &Stat) -> anyhow::Result<bool> {
@@ -494,20 +472,25 @@ mod tests {
     }
 
     #[test]
-    fn private_legacy_directory_is_adopted_without_chmodding_contents() {
+    fn unmarked_nonempty_directory_is_rejected_even_if_contents_look_private() {
         let parent = tempfile::tempdir().unwrap();
-        let path = parent.path().join("legacy");
+        let path = parent.path().join("unmarked");
         std::fs::create_dir(&path).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         let database = path.join("unionc.db");
-        std::fs::write(&database, b"legacy-placeholder").unwrap();
+        std::fs::write(&database, b"unmarked-placeholder").unwrap();
         std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o600)).unwrap();
 
-        ensure_layout_at(&path, LayoutIntent::ExistingOnly).unwrap();
+        let error = ensure_layout_at(&path, LayoutIntent::ExistingOnly).unwrap_err();
 
-        assert_eq!(std::fs::read(&database).unwrap(), b"legacy-placeholder");
+        assert!(
+            error
+                .to_string()
+                .contains("without a valid UnionC data marker")
+        );
+        assert_eq!(std::fs::read(&database).unwrap(), b"unmarked-placeholder");
         assert_eq!(mode(&database), 0o600);
-        assert!(marker_path(&path).is_file());
+        assert!(!marker_path(&path).exists());
     }
 
     #[test]

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { Boxes } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Boxes, X } from "lucide-react";
 import { useMutation, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ContentTitle, InlineNotice, LoadingBlock, MutationError } from "../../shared/components/ui";
 import { sunshineApi as api } from "./api";
@@ -23,7 +23,43 @@ import { HostPanel } from "./components/HostPanel";
 export { InlineHostField } from "./components/HostCard";
 export { appDraft } from "./components/AppsSection";
 
-export function SunshineView({ addTrigger = 0 }: { addTrigger?: number }) {
+export function managementPanelLayout({
+  cardWidth,
+  cardHeight,
+  columnGap,
+  rowGap,
+  column,
+  columnCount,
+  top,
+}: {
+  cardWidth: number;
+  cardHeight: number;
+  columnGap: number;
+  rowGap: number;
+  column: number;
+  columnCount: number;
+  top: number;
+}) {
+  const panelColumns = Math.min(3, columnCount);
+  const opensRight = column < Math.ceil(columnCount / 2);
+  const requestedStart = opensRight ? column + 1 : column - panelColumns;
+  const startColumn = Math.max(0, Math.min(requestedStart, columnCount - panelColumns));
+  return {
+    left: startColumn * (cardWidth + columnGap),
+    top,
+    width: panelColumns * cardWidth + (panelColumns - 1) * columnGap,
+    height: 3 * cardHeight + 2 * rowGap,
+    placement: opensRight ? "right" : "left",
+  } as const;
+}
+
+export function SunshineView({
+  addTrigger = 0,
+  onAddTriggerHandled,
+}: {
+  addTrigger?: number;
+  onAddTriggerHandled?: (trigger: number) => void;
+}) {
   const queryClient = useQueryClient();
   const createInFlightRef = useRef(false);
   const deletingHostIdsRef = useRef(new Set<string>());
@@ -38,7 +74,8 @@ export function SunshineView({ addTrigger = 0 }: { addTrigger?: number }) {
   const hosts = hostsQuery.data ?? [];
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const handledAddTriggerRef = useRef(0);
-  const panelOpen = selectedId !== null;
+  const hostGridRef = useRef<HTMLDivElement>(null);
+  const managementPanelRef = useRef<HTMLElement>(null);
 
   const createMutation = useMutation({
     mutationKey: sunshineHostMutationKeys.create,
@@ -141,6 +178,59 @@ export function SunshineView({ addTrigger = 0 }: { addTrigger?: number }) {
 
   const selectedHost = hosts.find((host) => host.id === selectedId) ?? null;
 
+  useEffect(() => {
+    if (!selectedHost) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSelectedId(null);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [selectedHost]);
+
+  useLayoutEffect(() => {
+    if (!selectedHost) return;
+    const grid = hostGridRef.current;
+    const panel = managementPanelRef.current;
+    const selectedCard = grid?.querySelector<HTMLElement>(".sunshine-host-card.active");
+    if (!grid || !panel || !selectedCard) return;
+
+    const updatePosition = () => {
+      const cards = Array.from(grid.querySelectorAll<HTMLElement>(".sunshine-host-card"));
+      const selectedIndex = cards.indexOf(selectedCard);
+      if (selectedIndex < 0) return;
+      const gridStyle = window.getComputedStyle(grid);
+      const columnCount = Math.max(1, gridStyle.gridTemplateColumns.split(/\s+/).filter(Boolean).length);
+      const cardRect = selectedCard.getBoundingClientRect();
+      const gridRect = grid.getBoundingClientRect();
+      const layout = managementPanelLayout({
+        cardWidth: cardRect.width,
+        cardHeight: cardRect.height,
+        columnGap: Number.parseFloat(gridStyle.columnGap) || 0,
+        rowGap: Number.parseFloat(gridStyle.rowGap) || 0,
+        column: selectedIndex % columnCount,
+        columnCount,
+        top: cardRect.top - gridRect.top,
+      });
+      panel.style.left = `${layout.left}px`;
+      panel.style.top = `${layout.top}px`;
+      panel.style.width = `${layout.width}px`;
+      panel.style.height = `${layout.height}px`;
+      panel.style.borderRadius = `${cardRect.width / 18}px / ${cardRect.height / 12}px`;
+      panel.dataset.placement = layout.placement;
+      panel.style.visibility = "visible";
+    };
+
+    updatePosition();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updatePosition);
+      return () => window.removeEventListener("resize", updatePosition);
+    }
+    const resizeObserver = new ResizeObserver(updatePosition);
+    resizeObserver.observe(grid);
+    resizeObserver.observe(selectedCard);
+    return () => resizeObserver.disconnect();
+  }, [selectedHost]);
+
   function createDefaultHost() {
     if (createInFlightRef.current) return;
     const usedNames = new Set(hosts.map((host) => host.name));
@@ -161,9 +251,10 @@ export function SunshineView({ addTrigger = 0 }: { addTrigger?: number }) {
   useEffect(() => {
     if (addTrigger <= handledAddTriggerRef.current) return;
     handledAddTriggerRef.current = addTrigger;
+    onAddTriggerHandled?.(addTrigger);
     createDefaultHost();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addTrigger]);
+  }, [addTrigger, onAddTriggerHandled]);
 
   function deleteHost(id: string) {
     if (deletingHostIdsRef.current.has(id)) return;
@@ -180,8 +271,8 @@ export function SunshineView({ addTrigger = 0 }: { addTrigger?: number }) {
         {hostsQuery.error ? <InlineNotice tone="danger" text={hostsQuery.error.message} /> : null}
         {hostsQuery.isLoading ? <LoadingBlock label="读取主机" /> : null}
         <div className="instance-list-title"><ContentTitle icon={Boxes} title="实例" /></div>
-        <div className={`sunshine-master-detail${panelOpen ? " has-panel" : ""}`}>
-          <div className="content-grid sunshine-host-grid">
+        <div className="sunshine-master-detail">
+          <div className="content-grid sunshine-host-grid" ref={hostGridRef}>
             {hosts.map((host) => (
               <HostCard
                 key={host.id}
@@ -201,7 +292,25 @@ export function SunshineView({ addTrigger = 0 }: { addTrigger?: number }) {
             ))}
           </div>
           {selectedHost ? (
-            <aside className="sunshine-adj-panel" aria-label={`${selectedHost.name} 管理面板`}>
+            <aside
+              ref={managementPanelRef}
+              className="sunshine-adj-panel"
+              role="dialog"
+              aria-label={`${selectedHost.name} 管理面板`}
+            >
+              <header className="sunshine-manage-header">
+                <strong title={selectedHost.name}>{selectedHost.name} 管理</strong>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="关闭管理面板"
+                  title="关闭"
+                  autoFocus
+                  onClick={() => setSelectedId(null)}
+                >
+                  <X size={18} aria-hidden="true" />
+                </button>
+              </header>
               <HostPanel key={selectedHost.id} host={selectedHost} />
             </aside>
           ) : null}

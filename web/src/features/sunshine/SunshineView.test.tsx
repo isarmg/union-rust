@@ -8,7 +8,7 @@ import { sunshineApi as api } from "./api";
 import { sunshineQueryKeys as queryKeys } from "./queryKeys";
 import { querySunshineHosts } from "./queries";
 import type { SunshineHostInfo } from "./types";
-import { appDraft, InlineHostField, SunshineView } from "./SunshineView";
+import { appDraft, InlineHostField, managementPanelLayout, SunshineView } from "./SunshineView";
 
 afterEach(() => {
   cleanup();
@@ -214,6 +214,59 @@ describe("Sunshine application editing", () => {
 });
 
 describe("Sunshine host panel state", () => {
+  it("uses three-card geometry on either side of the selected card", () => {
+    const common = {
+      cardWidth: 200,
+      cardHeight: 120,
+      columnGap: 16,
+      rowGap: 16,
+      columnCount: 6,
+      top: 272,
+    };
+
+    for (const [column, left, placement] of [
+      [0, 216, "right"],
+      [1, 432, "right"],
+      [2, 648, "right"],
+      [3, 0, "left"],
+      [4, 216, "left"],
+      [5, 432, "left"],
+    ] as const) {
+      expect(managementPanelLayout({ ...common, column })).toEqual({
+        left,
+        top: 272,
+        width: 632,
+        height: 392,
+        placement,
+      });
+    }
+  });
+
+  it("opens management beside the host grid and closes it with Escape", async () => {
+    const hosts = [host("one", "Host one")];
+    vi.spyOn(api, "sunshineHosts").mockResolvedValue(hosts);
+    vi.spyOn(api, "sunshineApps").mockResolvedValue({ apps: [] });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    });
+    queryClient.setQueryData(queryKeys.sunshine.hosts, hosts);
+    const user = userEvent.setup();
+    const { container } = render(
+      <QueryClientProvider client={queryClient}>
+        <SunshineView />
+      </QueryClientProvider>,
+    );
+
+    await user.click(within(screen.getByRole("article", { name: /Host one/ })).getByRole("button", { name: "管理" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Host one 管理面板" });
+    expect(dialog.closest(".sunshine-master-detail")).toBeTruthy();
+    expect(container.querySelector(".sunshine-master-detail.has-panel")).toBeNull();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Host one 管理面板" })).toBeNull();
+  });
+
   it("removes a submitted Moonlight PIN from the mutation cache", async () => {
     const hosts = [host("one", "Host one")];
     vi.spyOn(api, "sunshineHosts").mockResolvedValue(hosts);

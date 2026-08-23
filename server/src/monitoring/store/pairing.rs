@@ -188,9 +188,9 @@ pub async fn create_agent_pairing_request(
     expires_at: DateTime<Utc>,
 ) -> anyhow::Result<CreatePairingResult> {
     // Bound each cleanup transaction as well as the retained live set. This is
-    // important when upgrading a database that already contains a large
-    // legacy backlog: the first new pairing request must not monopolize
-    // SQLite's single writer while deleting every expired row at once.
+    // important if an unexpected oversized backlog exists: one new pairing
+    // request must not monopolize SQLite's single writer while deleting every
+    // expired row at once.
     const CLEANUP_BATCH_SIZE: i64 = 512;
     const EXISTING_BY_POLLING_SECRET: &str = r#"
         SELECT request_id,requested_host_id,

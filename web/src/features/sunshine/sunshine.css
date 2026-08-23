@@ -1,6 +1,6 @@
 /* ─── Sunshine 多主机管理视图 ────────────────────────────────────────────── */
 
-/* ─── Sunshine 多主机布局：左列（竖排主机卡）+ 右列（管理面板）────────────── */
+/* ─── Sunshine 多主机布局与管理弹窗 ─────────────────────────────────────── */
 
 /* ─── Sunshine 新布局 ────────────────────────────────────────────────────── */
 
@@ -43,30 +43,43 @@
 }
 
 .sunshine-master-detail {
+  position: relative;
   display: grid;
   gap: var(--content-block-gap);
   align-items: start;
 }
 
-.sunshine-master-detail.has-panel {
-  grid-template-columns: minmax(0, 1fr) minmax(360px, 1fr);
-}
-
-.sunshine-master-detail.has-panel .sunshine-host-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
 .sunshine-adj-panel {
-  position: sticky;
-  top: 76px;
+  position: absolute;
+  z-index: 5;
   display: flex;
-  max-height: calc(100dvh - 92px);
+  flex-direction: column;
+  visibility: hidden;
   overflow: hidden;
   color: var(--text);
-  background: var(--surface);
+  background: var(--surface-strong);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  box-shadow: var(--shadow);
+}
+
+.sunshine-manage-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sunshine-manage-header strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ─── Sunshine 主机卡片 ────────────────────────────────────────────────────── */
@@ -78,7 +91,6 @@
 
 .sunshine-host-card.active {
   background: var(--surface);
-  box-shadow: inset 0 0 0 2px var(--primary);
 }
 
 /* 跑马灯文字（TickerText 组件）：文字超出容器宽度时自动横向滚动展示完整内容。
@@ -397,37 +409,6 @@
   border-radius: 8px;
   overflow: hidden;
   margin-top: 12px;
-}
-
-@media (max-width: 1080px) {
-  .sunshine-master-detail.has-panel {
-    grid-template-columns: minmax(0, 1fr) minmax(340px, 1fr);
-  }
-
-  .sunshine-master-detail.has-panel .sunshine-host-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 760px) {
-  .sunshine-master-detail.has-panel {
-    grid-template-columns: 1fr;
-  }
-
-  .sunshine-adj-panel {
-    position: static;
-    max-height: none;
-  }
-
-  .sunshine-master-detail.has-panel .sunshine-host-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 480px) {
-  .sunshine-master-detail.has-panel .sunshine-host-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

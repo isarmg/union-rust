@@ -233,7 +233,7 @@ async fn finalize_login(
 async fn create_login_response(state: &AppState, username: String) -> AppResult<Response> {
     let token = uuid::Uuid::new_v4().to_string();
     let csrf_token = uuid::Uuid::new_v4().simple().to_string();
-    let expires_at = chrono::Utc::now() + chrono::Duration::days(7);
+    let expires_at = chrono::Utc::now() + chrono::Duration::days(SESSION_LIFETIME_DAYS);
     let expired = {
         let mut sessions = state.auth.sessions.write().await;
         let now = chrono::Utc::now();
@@ -267,7 +267,7 @@ async fn create_login_response(state: &AppState, username: String) -> AppResult<
         cookie_header(&session_cookie_value(
             &token,
             state.settings.production,
-            SESSION_MAX_AGE,
+            None,
         ))?,
     );
     // CSRF 令牌必须**能被前端读取**并回填到请求头，因此不设 HttpOnly。
@@ -277,7 +277,7 @@ async fn create_login_response(state: &AppState, username: String) -> AppResult<
         cookie_header(&csrf_cookie_value(
             &csrf_token,
             state.settings.production,
-            SESSION_MAX_AGE,
+            None,
         ))?,
     );
     Ok(response)

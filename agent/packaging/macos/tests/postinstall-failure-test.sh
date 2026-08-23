@@ -230,9 +230,6 @@ case "$path" in
       metadata="0:0:600"
     fi
     ;;
-  "$CASE_ROOT/Library/Application Support/UnionC Agent/config.example.json")
-    metadata="${STAT_LEGACY_PACKAGE_CONFIG:-450:450:600}"
-    ;;
   "$CASE_ROOT/Library/Application Support/UnionC Agent"/.config.json.*)
     if [ -n "${STAT_CONFIG_TEMP:-}" ]; then
       metadata="$STAT_CONFIG_TEMP"
@@ -340,9 +337,6 @@ case "$path" in
     ;;
   "$CASE_ROOT/Library/Application Support/UnionC Agent/config.json")
     acl_key=retained-config
-    ;;
-  "$CASE_ROOT/Library/Application Support/UnionC Agent/config.example.json")
-    acl_key=legacy-package-config
     ;;
   "$CASE_ROOT/Library/Application Support/UnionC Agent"/.config.json.*)
     acl_key=config-temp
@@ -1157,20 +1151,6 @@ grep -Fx 'disable system/com.unionc.agent' "$case_dir/launch/calls" >/dev/null |
   fail 'successful install did not disable Agent autoload during mutable-state validation'
 grep -Fx 'enable system/com.unionc.agent' "$case_dir/launch/calls" >/dev/null ||
   fail 'successful install did not re-enable Agent after mutable-state validation'
-
-case_dir="$test_root/legacy-state-template-upgrade"
-make_case "$case_dir"
-run_postinstall "$case_dir" >"$case_dir/initial.log" 2>&1 ||
-  fail 'could not establish state for the legacy-template upgrade case'
-cp "$case_dir/usr/local/share/unionc-agent/config.example.json" \
-  "$case_dir/Library/Application Support/UnionC Agent/config.example.json"
-reset_fault_counters "$case_dir"
-run_postinstall "$case_dir" >"$case_dir/reinstall.log" 2>&1 ||
-  fail 'same-version reinstall could not remove the legacy state template safely'
-[ ! -e "$case_dir/Library/Application Support/UnionC Agent/config.example.json" ] ||
-  fail 'same-version reinstall left the obsolete template in mutable state'
-[ -f "$case_dir/usr/local/share/unionc-agent/config.example.json" ] ||
-  fail 'legacy-template cleanup removed the immutable package template'
 
 assert_recoverable() {
   recovery_case="$1"

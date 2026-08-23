@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { authApi as api } from "../auth/api";
@@ -15,6 +15,26 @@ afterEach(() => {
 });
 
 describe("administrator password mutation lifetime", () => {
+  it("embeds password inputs in rows two through four of the account card", async () => {
+    vi.spyOn(api, "authenticate").mockResolvedValue({ username: "admin" });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    clients.push(queryClient);
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SettingsView onPasswordChanged={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    const form = await screen.findByRole("form", { name: "修改管理员密码" });
+    const rows = form.querySelectorAll(".card-row");
+    expect(rows).toHaveLength(6);
+    expect(rows[0].textContent).toContain("用户");
+    expect(within(rows[1] as HTMLElement).getByLabelText("原密码")).toBeTruthy();
+    expect(within(rows[2] as HTMLElement).getByLabelText("新密码")).toBeTruthy();
+    expect(within(rows[3] as HTMLElement).getByLabelText("确认新密码")).toBeTruthy();
+    expect(within(rows[5] as HTMLElement).getByRole("button", { name: "修改密码" })).toBeTruthy();
+  });
+
   it("does not retain rejected passwords in the mutation cache", async () => {
     vi.spyOn(api, "authenticate").mockResolvedValue({ username: "admin" });
     vi.spyOn(api, "changePassword").mockRejectedValue(new Error("当前密码错误"));
@@ -27,8 +47,7 @@ describe("administrator password mutation lifetime", () => {
       </QueryClientProvider>,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "修改密码" }));
-    const currentPassword = screen.getByLabelText("当前密码") as HTMLInputElement;
+    const currentPassword = await screen.findByLabelText("原密码") as HTMLInputElement;
     const newPassword = screen.getByLabelText("新密码") as HTMLInputElement;
     fireEvent.change(currentPassword, { target: { value: "current-secret" } });
     fireEvent.change(newPassword, { target: { value: "replacement-secret" } });

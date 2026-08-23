@@ -193,6 +193,12 @@ async fn login_issues_a_readable_csrf_cookie_and_an_http_only_session_cookie() {
         csrf.contains("SameSite=Strict"),
         "CSRF cookie 应保留 SameSite=Strict：{csrf}"
     );
+    for cookie in [session, csrf] {
+        assert!(
+            !cookie.contains("Max-Age=") && !cookie.contains("Expires="),
+            "登录 cookie 必须随浏览器会话结束，不能持久保存：{cookie}"
+        );
+    }
 
     // 令牌必须是随机值，不能是常量。
     let token = csrf.trim_start_matches("csrf=").split(';').next().unwrap();
