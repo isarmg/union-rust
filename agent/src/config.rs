@@ -1,6 +1,5 @@
 use std::{
     env, fs,
-    net::IpAddr,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -705,7 +704,9 @@ fn validate_endpoint(endpoint: &str, allow_insecure_http: bool) -> anyhow::Resul
     }
     match url.scheme() {
         "https" => Ok(()),
-        "http" if allow_insecure_http || is_loopback_host(url.host_str()) => Ok(()),
+        "http" if allow_insecure_http || crate::tray_support::is_loopback_host(url.host_str()) => {
+            Ok(())
+        }
         "http" => bail!(
             "plain HTTP telemetry is allowed only for loopback; use HTTPS or explicitly set \
              allow_insecure_http for an isolated trusted network"
@@ -726,15 +727,6 @@ pub(crate) fn validate_pairing_endpoint(endpoint: &str) -> anyhow::Result<()> {
         );
     }
     Ok(())
-}
-
-fn is_loopback_host(host: Option<&str>) -> bool {
-    host.is_some_and(|host| {
-        host.eq_ignore_ascii_case("localhost")
-            || host
-                .parse::<IpAddr>()
-                .is_ok_and(|address| address.is_loopback())
-    })
 }
 
 fn default_state_dir() -> PathBuf {
@@ -890,6 +882,7 @@ mod tests {
     fn rejects_remote_plaintext_by_default() {
         assert!(validate_endpoint("http://192.0.2.10/report", false).is_err());
         assert!(validate_endpoint("http://127.0.0.1/report", false).is_ok());
+        assert!(validate_endpoint("http://[::1]/report", false).is_ok());
         assert!(validate_endpoint("https://telemetry.example/report", false).is_ok());
     }
 

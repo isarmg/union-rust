@@ -531,6 +531,13 @@ mod tests {
             )
             .is_ok()
         );
+        assert!(
+            resolve_activation_url(
+                "http://[::1]:8081/api/agent/v2/pairing-requests",
+                "/agent/activate/00000000-0000-4000-8000-000000000001",
+            )
+            .is_ok()
+        );
     }
 
     #[test]

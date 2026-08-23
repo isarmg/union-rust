@@ -1,5 +1,3 @@
-use std::net::IpAddr;
-
 use anyhow::{Context, bail};
 use uuid::Uuid;
 
@@ -61,18 +59,9 @@ pub(super) fn resolve_activation_url(
     }
     match url.scheme() {
         "https" => {}
-        "http" if is_loopback_host(url.host_str()) => {}
+        "http" if crate::tray_support::is_loopback_host(url.host_str()) => {}
         "http" => bail!("UnionC returned an insecure non-loopback activation URL"),
         scheme => bail!("UnionC returned an unsupported activation URL scheme: {scheme}"),
     }
     Ok(url.to_string())
-}
-
-fn is_loopback_host(host: Option<&str>) -> bool {
-    host.is_some_and(|host| {
-        host.eq_ignore_ascii_case("localhost")
-            || host
-                .parse::<IpAddr>()
-                .is_ok_and(|address| address.is_loopback())
-    })
 }

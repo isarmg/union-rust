@@ -202,7 +202,7 @@ pub fn validate_activation_code(value: &str) -> anyhow::Result<&str> {
     Ok(value)
 }
 
-fn is_loopback_host(host: Option<&str>) -> bool {
+pub(crate) fn is_loopback_host(host: Option<&str>) -> bool {
     host.is_some_and(|host| {
         let host = host
             .strip_prefix('[')
