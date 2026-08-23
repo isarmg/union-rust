@@ -94,7 +94,19 @@ cat >"$test_root/bin/systemctl" <<'EOF'
 printf '%s\n' "$*" >>"$TEST_LOG"
 case "$1" in
   show)
-    echo loaded
+    case "$*" in
+      *--property=LoadState*)
+        [ "${FAIL_SYSTEMCTL_LOAD_QUERY:-0}" -ne 1 ] || exit 70
+        [ "${EMPTY_SYSTEMCTL_LOAD_QUERY:-0}" -ne 1 ] || exit 0
+        printf '%s\n' "${SYSTEMCTL_LOAD_STATE:-loaded}"
+        ;;
+      *--property=ActiveState*)
+        [ "${FAIL_SYSTEMCTL_ACTIVE_QUERY:-0}" -ne 1 ] || exit 71
+        [ "${EMPTY_SYSTEMCTL_ACTIVE_QUERY:-0}" -ne 1 ] || exit 0
+        printf '%s\n' "${SYSTEMCTL_ACTIVE_STATE:-inactive}"
+        ;;
+      *) exit 72 ;;
+    esac
     ;;
   restart)
     [ "${FAIL_RESTART:-0}" -ne 1 ]
@@ -824,6 +836,61 @@ assert_exists "$test_root/group.deleted"
 assert_log_contains 'userdel unionc-agent'
 assert_log_contains 'groupdel unionc-agent'
 assert_log_contains 'daemon-reload'
+
+# The explicit purge helper must prove both that the unit lookup succeeded and
+# that disable --now actually left the service non-running before deleting any
+# credential, config, drop-in, or account authorization marker.
+prepare_guarded_purge_state() {
+  reset_safe_reinstall_state
+  rm -rf -- "$test_root/etc/systemd/system/unionc-agent.service.d"
+  mkdir -p "$test_root/etc/systemd/system/unionc-agent.service.d"
+  : >"$test_root/var/lib/unionc-agent/agent-token"
+  : >"$test_root/etc/systemd/system/unionc-agent.service.d/gpu.conf"
+}
+
+assert_guarded_purge_state_preserved() {
+  assert_exists "$test_root/var/lib/unionc-agent/agent-token"
+  assert_exists "$test_root/etc/unionc-agent/config.json"
+  assert_exists "$test_root/etc/systemd/system/unionc-agent.service.d/gpu.conf"
+  assert_exists "$test_root/var/lib/unionc-agent-package/managed-user"
+  assert_exists "$test_root/var/lib/unionc-agent-package/managed-group"
+  assert_absent "$test_root/user.deleted"
+  assert_absent "$test_root/group.deleted"
+}
+
+prepare_guarded_purge_state
+: >"$TEST_LOG"
+if FAIL_SYSTEMCTL_LOAD_QUERY=1 "$test_root/purge-local-state.sh" --yes \
+  >"$test_root/purge-load-query-failed.log" 2>&1; then
+  fail 'purge helper treated a failed LoadState query as an absent unit'
+fi
+assert_guarded_purge_state_preserved
+assert_log_contains 'show unionc-agent.service --property=LoadState --value'
+if grep -F 'disable --now' "$TEST_LOG" >/dev/null; then
+  fail 'purge helper disabled a unit after its LoadState query failed'
+fi
+
+prepare_guarded_purge_state
+: >"$TEST_LOG"
+if EMPTY_SYSTEMCTL_LOAD_QUERY=1 "$test_root/purge-local-state.sh" --yes \
+  >"$test_root/purge-load-query-empty.log" 2>&1; then
+  fail 'purge helper treated an empty LoadState as an absent unit'
+fi
+assert_guarded_purge_state_preserved
+assert_log_contains 'show unionc-agent.service --property=LoadState --value'
+if grep -F 'disable --now' "$TEST_LOG" >/dev/null; then
+  fail 'purge helper disabled a unit after receiving an empty LoadState'
+fi
+
+prepare_guarded_purge_state
+: >"$TEST_LOG"
+if SYSTEMCTL_ACTIVE_STATE=active "$test_root/purge-local-state.sh" --yes \
+  >"$test_root/purge-service-still-active.log" 2>&1; then
+  fail 'purge helper deleted local state while the service remained active'
+fi
+assert_guarded_purge_state_preserved
+assert_log_contains 'disable --now unionc-agent.service'
+assert_log_contains 'show unionc-agent.service --property=ActiveState --value'
 
 # The explicit helper refuses accidental invocation without confirmation.
 rm -f "$test_root/user.deleted" "$test_root/group.deleted"

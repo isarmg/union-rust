@@ -62,10 +62,42 @@ if [ -d /run/systemd/system ]; then
     echo "systemd is running but systemctl is unavailable" >&2
     exit 1
   }
-  load_state=$(systemctl show "$service_name" --property=LoadState --value 2>/dev/null || true)
-  if [ -n "$load_state" ] && [ "$load_state" != not-found ]; then
-    systemctl disable --now "$service_name"
-  fi
+  load_state=$(systemctl show "$service_name" --property=LoadState --value 2>/dev/null) || {
+    echo "cannot determine whether $service_name is loaded; preserving local state" >&2
+    exit 1
+  }
+  case "$load_state" in
+    not-found) ;;
+    loaded|masked|error|bad-setting|stub|merged)
+      systemctl disable --now "$service_name" || {
+        echo "cannot stop and disable $service_name; preserving local state" >&2
+        exit 1
+      }
+      active_state=$(systemctl show "$service_name" --property=ActiveState --value 2>/dev/null) || {
+        echo "cannot verify that $service_name stopped; preserving local state" >&2
+        exit 1
+      }
+      case "$active_state" in
+        inactive) ;;
+        '')
+          echo "systemctl returned an empty ActiveState for $service_name; preserving local state" >&2
+          exit 1
+          ;;
+        *)
+          echo "$service_name remains $active_state after disable --now; preserving local state" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+    '')
+      echo "systemctl returned an empty LoadState for $service_name; preserving local state" >&2
+      exit 1
+      ;;
+    *)
+      echo "systemctl returned unexpected LoadState $load_state for $service_name; preserving local state" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 load_user_marker() {
