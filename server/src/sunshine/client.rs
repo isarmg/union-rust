@@ -12,7 +12,7 @@
 //! 2. 认证凭据（用户名/密码）保存在服务器端，不暴露给前端
 //! 3. 可以统一做错误处理、日志记录等
 
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use serde_json::Value;
 
@@ -40,6 +40,12 @@ const MAX_COVER_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 /// Upstream diagnostics are copied into logs, health snapshots and API errors;
 /// keep that long-lived representation small even when the response body is not.
 const MAX_UPSTREAM_ERROR_DETAIL_CHARS: usize = 200;
+// These shallow shape limits protect the browser from huge render-time collections. The
+// streaming byte limit above remains the bound for nested vendor-extension data.
+const MAX_SUNSHINE_COLLECTION_ITEMS: usize = 512;
+const MAX_SUNSHINE_OBJECT_KEYS: usize = 256;
+const MAX_SUNSHINE_DISPLAY_TEXT_CHARS: usize = 1_024;
+const MAX_SUNSHINE_CLIENT_ID_CHARS: usize = 128;
 
 /// 流式读取响应体，累计超过 `limit` 立即中断。
 async fn read_limited(response: reqwest::Response, limit: usize, what: &str) -> AppResult<Vec<u8>> {
@@ -269,11 +275,45 @@ pub async fn apps_list(host: &SunshineHostConfig) -> AppResult<Value> {
 }
 
 fn normalize_apps_response(response: Value) -> AppResult<Value> {
-    let Some(apps) = response.get("apps").filter(|value| value.is_array()) else {
+    let Value::Object(mut envelope) = response else {
         return Err(AppError::Upstream(
             "Sunshine /api/apps response must contain an apps array".to_string(),
         ));
     };
+    let Some(Value::Array(apps)) = envelope.remove("apps") else {
+        return Err(AppError::Upstream(
+            "Sunshine /api/apps response must contain an apps array".to_string(),
+        ));
+    };
+    if apps.len() > MAX_SUNSHINE_COLLECTION_ITEMS {
+        return Err(AppError::Upstream(format!(
+            "Sunshine /api/apps returned more than {MAX_SUNSHINE_COLLECTION_ITEMS} applications"
+        )));
+    }
+    for (index, app) in apps.iter().enumerate() {
+        let Some(app) = app.as_object() else {
+            return Err(AppError::Upstream(format!(
+                "Sunshine /api/apps item {index} must be an object"
+            )));
+        };
+        validate_upstream_object_shape(app, "application", index)?;
+        validate_upstream_string_field(
+            app,
+            "name",
+            "application",
+            index,
+            MAX_SUNSHINE_DISPLAY_TEXT_CHARS,
+            true,
+        )?;
+        if !app
+            .get("cmd")
+            .is_none_or(|value| value.is_null() || value.is_string())
+        {
+            return Err(AppError::Upstream(format!(
+                "Sunshine application item {index} contains non-string cmd"
+            )));
+        }
+    }
     Ok(serde_json::json!({ "apps": apps }))
 }
 
@@ -301,22 +341,120 @@ pub async fn clients_list(host: &SunshineHostConfig) -> AppResult<Value> {
 }
 
 fn normalize_clients_response(response: Value) -> AppResult<Value> {
-    let Some(status) = response.get("status").filter(|value| value.is_boolean()) else {
+    let Value::Object(mut envelope) = response else {
         return Err(AppError::Upstream(
             "Sunshine /api/clients/list response must contain boolean status and named_certs array"
                 .to_string(),
         ));
     };
-    let Some(named_certs) = response.get("named_certs").filter(|value| value.is_array()) else {
+    let Some(status @ Value::Bool(_)) = envelope.remove("status") else {
         return Err(AppError::Upstream(
             "Sunshine /api/clients/list response must contain boolean status and named_certs array"
                 .to_string(),
         ));
     };
+    let Some(Value::Array(named_certs)) = envelope.remove("named_certs") else {
+        return Err(AppError::Upstream(
+            "Sunshine /api/clients/list response must contain boolean status and named_certs array"
+                .to_string(),
+        ));
+    };
+    if named_certs.len() > MAX_SUNSHINE_COLLECTION_ITEMS {
+        return Err(AppError::Upstream(format!(
+            "Sunshine /api/clients/list returned more than {MAX_SUNSHINE_COLLECTION_ITEMS} clients"
+        )));
+    }
+    let mut uuids = HashSet::with_capacity(named_certs.len());
+    for (index, client) in named_certs.iter().enumerate() {
+        let Some(client) = client.as_object() else {
+            return Err(AppError::Upstream(format!(
+                "Sunshine /api/clients/list item {index} must be an object"
+            )));
+        };
+        validate_upstream_object_shape(client, "client", index)?;
+        let Some(uuid) = validate_upstream_string_field(
+            client,
+            "uuid",
+            "client",
+            index,
+            MAX_SUNSHINE_CLIENT_ID_CHARS,
+            true,
+        )?
+        else {
+            return Err(AppError::Upstream(format!(
+                "Sunshine client item {index} must contain string uuid"
+            )));
+        };
+        if uuid.trim().is_empty() || uuid.trim() != uuid {
+            return Err(AppError::Upstream(format!(
+                "Sunshine client item {index} contains an invalid uuid"
+            )));
+        }
+        validate_upstream_string_field(
+            client,
+            "name",
+            "client",
+            index,
+            MAX_SUNSHINE_DISPLAY_TEXT_CHARS,
+            false,
+        )?;
+        if !client.get("enabled").is_some_and(Value::is_boolean) {
+            return Err(AppError::Upstream(format!(
+                "Sunshine client item {index} must contain boolean enabled"
+            )));
+        }
+        if !uuids.insert(uuid) {
+            return Err(AppError::Upstream(format!(
+                "Sunshine /api/clients/list returned duplicate client uuid at item {index}"
+            )));
+        }
+    }
     Ok(serde_json::json!({
         "status": status,
         "named_certs": named_certs
     }))
+}
+
+fn validate_upstream_object_shape(
+    object: &serde_json::Map<String, Value>,
+    kind: &str,
+    index: usize,
+) -> AppResult<()> {
+    if object.len() > MAX_SUNSHINE_OBJECT_KEYS
+        || object
+            .keys()
+            .any(|key| key.chars().count() > 128 || key.chars().any(char::is_control))
+    {
+        return Err(AppError::Upstream(format!(
+            "Sunshine {kind} item {index} has too many or invalid object keys"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_upstream_string_field<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    field: &str,
+    kind: &str,
+    index: usize,
+    max_chars: usize,
+    required: bool,
+) -> AppResult<Option<&'a str>> {
+    let value = object.get(field);
+    if !required && value.is_none_or(Value::is_null) {
+        return Ok(None);
+    }
+    let Some(text) = value.and_then(Value::as_str) else {
+        return Err(AppError::Upstream(format!(
+            "Sunshine {kind} item {index} must contain string {field}"
+        )));
+    };
+    if text.chars().count() > max_chars || text.chars().any(char::is_control) {
+        return Err(AppError::Upstream(format!(
+            "Sunshine {kind} item {index} contains oversized or invalid {field}"
+        )));
+    }
+    Ok(Some(text))
 }
 
 /// 取消与指定 UUID 客户端的配对。
@@ -483,6 +621,7 @@ pub async fn cover_upload(host: &SunshineHostConfig, key: &str, url: &str) -> Ap
 #[cfg(test)]
 mod tests {
     use super::{
+        MAX_SUNSHINE_CLIENT_ID_CHARS, MAX_SUNSHINE_COLLECTION_ITEMS, MAX_SUNSHINE_OBJECT_KEYS,
         ensure_cover_status, logs_payload, normalize_apps_response, normalize_clients_response,
         parse_json_success, sunshine_status_error,
     };
@@ -502,21 +641,122 @@ mod tests {
     #[test]
     fn collection_responses_use_only_the_current_envelopes() {
         assert_eq!(
-            normalize_apps_response(serde_json::json!({"apps": [], "removed": true})).unwrap(),
-            serde_json::json!({"apps": []})
+            normalize_apps_response(serde_json::json!({
+                "apps": [{"name": "Desktop", "vendor_extension": true}],
+                "removed": true
+            }))
+            .unwrap(),
+            serde_json::json!({
+                "apps": [{"name": "Desktop", "vendor_extension": true}]
+            })
         );
         assert!(normalize_apps_response(serde_json::json!([])).is_err());
         assert_eq!(
             normalize_clients_response(serde_json::json!({
-                "status": true,
+                "status": false,
                 "named_certs": [],
                 "removed": true
             }))
             .unwrap(),
-            serde_json::json!({"status": true, "named_certs": []})
+            serde_json::json!({"status": false, "named_certs": []})
         );
         assert!(
             normalize_clients_response(serde_json::json!({"status": true, "clients": []})).is_err()
+        );
+    }
+
+    #[test]
+    fn collection_responses_reject_items_the_browser_cannot_safely_consume() {
+        for apps in [
+            serde_json::json!([null]),
+            serde_json::json!([{"cmd": "missing name"}]),
+            serde_json::json!([{"name": 7}]),
+            serde_json::json!([{"name": "Desktop", "cmd": {}}]),
+            serde_json::json!([{"name": "bad\nname"}]),
+        ] {
+            assert!(normalize_apps_response(serde_json::json!({"apps": apps})).is_err());
+        }
+
+        for named_certs in [
+            serde_json::json!([null]),
+            serde_json::json!([{"enabled": true}]),
+            serde_json::json!([{"uuid": "", "enabled": true}]),
+            serde_json::json!([{"uuid": " padded ", "enabled": true}]),
+            serde_json::json!([{"uuid": "bad\nuuid", "enabled": true}]),
+            serde_json::json!([{"uuid": "client", "enabled": "yes"}]),
+            serde_json::json!([{"uuid": "client", "enabled": true, "name": {}}]),
+            serde_json::json!([
+                {"uuid": "duplicate", "enabled": true},
+                {"uuid": "duplicate", "enabled": false}
+            ]),
+        ] {
+            assert!(
+                normalize_clients_response(
+                    serde_json::json!({"status": true, "named_certs": named_certs})
+                )
+                .is_err()
+            );
+        }
+
+        let oversized_uuid = "x".repeat(MAX_SUNSHINE_CLIENT_ID_CHARS + 1);
+        assert!(
+            normalize_clients_response(serde_json::json!({
+                "status": true,
+                "named_certs": [{"uuid": oversized_uuid, "enabled": true}]
+            }))
+            .is_err()
+        );
+
+        let mut boundary_app = serde_json::Map::new();
+        boundary_app.insert("name".to_string(), serde_json::json!("Desktop"));
+        for index in 0..MAX_SUNSHINE_OBJECT_KEYS - 1 {
+            boundary_app.insert(format!("extension-{index}"), serde_json::Value::Null);
+        }
+        assert!(
+            normalize_apps_response(serde_json::json!({"apps": [boundary_app.clone()]})).is_ok()
+        );
+        boundary_app.insert("one-key-too-many".to_string(), serde_json::Value::Null);
+        assert!(normalize_apps_response(serde_json::json!({"apps": [boundary_app]})).is_err());
+
+        let long_command = "x".repeat(1_025);
+        assert!(
+            normalize_apps_response(
+                serde_json::json!({"apps": [{"name": "Desktop", "cmd": long_command}]})
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn collection_response_item_caps_accept_the_boundary_and_reject_one_more() {
+        let apps = vec![serde_json::json!({"name": "Desktop"}); MAX_SUNSHINE_COLLECTION_ITEMS];
+        assert_eq!(
+            normalize_apps_response(serde_json::json!({"apps": apps})).unwrap()["apps"]
+                .as_array()
+                .unwrap()
+                .len(),
+            MAX_SUNSHINE_COLLECTION_ITEMS
+        );
+        let apps = vec![serde_json::json!({"name": "Desktop"}); MAX_SUNSHINE_COLLECTION_ITEMS + 1];
+        assert!(normalize_apps_response(serde_json::json!({"apps": apps})).is_err());
+
+        let clients = (0..MAX_SUNSHINE_COLLECTION_ITEMS)
+            .map(|index| serde_json::json!({"uuid": format!("client-{index}"), "enabled": true}))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            normalize_clients_response(serde_json::json!({"status": true, "named_certs": clients}))
+                .unwrap()["named_certs"]
+                .as_array()
+                .unwrap()
+                .len(),
+            MAX_SUNSHINE_COLLECTION_ITEMS
+        );
+        let clients = (0..=MAX_SUNSHINE_COLLECTION_ITEMS)
+            .map(|index| serde_json::json!({"uuid": format!("client-{index}"), "enabled": true}))
+            .collect::<Vec<_>>();
+        assert!(
+            normalize_clients_response(serde_json::json!({"status": true, "named_certs": clients}))
+                .is_err()
         );
     }
 
