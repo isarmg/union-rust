@@ -35,6 +35,49 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_ready_delivery_is_not_raced_against_its_expired_retry_timer() {
+        let now = Instant::now();
+        let (ready, next_retry) = delivery_timing(false, Some(now), now);
+        assert!(ready);
+        assert_eq!(next_retry, None);
+
+        let deadline = next_retry.unwrap_or(now + Duration::from_secs(60));
+        let delivered = tokio::select! {
+            biased;
+            completed = async {
+                // A real HTTP request returns Pending while DNS/TCP/TLS makes progress.
+                tokio::task::yield_now().await;
+                true
+            }, if ready => completed,
+            _ = tokio::time::sleep_until(deadline.into()) => false,
+        };
+
+        assert!(
+            delivered,
+            "an expired retry timer cancelled a pending delivery future"
+        );
+    }
+
+    #[test]
+    fn a_future_delivery_retry_remains_a_timer_until_it_is_ready() {
+        let now = Instant::now();
+        let retry_at = now + Duration::from_secs(5);
+        let (ready, next_retry) = delivery_timing(false, Some(retry_at), now);
+
+        assert!(!ready);
+        assert_eq!(next_retry, Some(retry_at));
+    }
+
+    #[test]
+    fn authorization_blocks_both_delivery_and_its_retry_timer() {
+        let now = Instant::now();
+        let (ready, next_retry) = delivery_timing(true, Some(now), now);
+
+        assert!(!ready);
+        assert_eq!(next_retry, None);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn delivery_worker_shutdown_has_a_hard_upper_bound() {
         let worker = tokio::spawn(async {
             std::future::pending::<()>().await;

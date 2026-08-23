@@ -153,6 +153,21 @@ struct DeliveryWorker {
     host_updates: watch::Sender<unionc_agent::HostIdentity>,
 }
 
+fn delivery_timing(
+    authorization_blocked: bool,
+    retry_at: Option<Instant>,
+    now: Instant,
+) -> (bool, Option<Instant>) {
+    if authorization_blocked {
+        return (false, None);
+    }
+    match retry_at {
+        Some(at) if now >= at => (true, None),
+        Some(at) => (false, Some(at)),
+        None => (false, None),
+    }
+}
+
 impl DeliveryWorker {
     async fn run(self) -> anyhow::Result<()> {
         let Self {
@@ -190,8 +205,11 @@ impl DeliveryWorker {
             }
 
             let now = Instant::now();
-            let delivery_ready = !authorization_blocked && retry_at.is_some_and(|at| now >= at);
-            let next_retry = (!authorization_blocked).then_some(retry_at).flatten();
+            // Once a retry becomes ready it must stop participating as a timer in this
+            // `select!`. Keeping an expired deadline enabled would let `sleep_until` complete
+            // immediately and cancel a still-pending HTTP delivery future on every loop.
+            let (delivery_ready, next_retry) =
+                delivery_timing(authorization_blocked, retry_at, now);
             let next_pairing = pairing_probe.is_none().then_some(pairing_retry_at);
             let deadline = match (next_retry, next_pairing) {
                 (Some(left), Some(right)) => left.min(right),
