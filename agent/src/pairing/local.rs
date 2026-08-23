@@ -32,7 +32,7 @@ pub fn has_current_authorized_identity(config: &AgentConfig) -> anyhow::Result<b
 }
 
 /// Return a consistent snapshot of the previously active reporter while a
-/// re-pair is incomplete. Reading the durable endpoint (already in `config`)
+/// new pairing attempt is incomplete. Reading the durable endpoint (already in `config`)
 /// and token under the same cross-process lock prevents observing the new
 /// token before its matching endpoint/configuration commit.
 pub fn existing_reporter_for_run(config: &AgentConfig) -> anyhow::Result<Option<Reporter>> {

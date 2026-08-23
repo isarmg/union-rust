@@ -263,7 +263,7 @@ pub(crate) fn persist_private_value(path: &Path, token: &str, kind: &str) -> any
 /// | 变体 | 需要改变的东西 | 处置 |
 /// |---|---|---|
 /// | `Permanent`  | 报文内容本身（改不了） | 丢弃 |
-/// | `Unauthorized` | 服务端稳定 `unauthorized` 机器码确认凭据失效 | 需要浏览器重新授权 |
+/// | `Unauthorized` | 服务端稳定 `unauthorized` 机器码确认凭据失效 | 需要创建新实例并再次配对 |
 /// | `Transient`  | 只需等待 | 退避重试 |
 #[derive(Debug, thiserror::Error)]
 pub enum SendError {
@@ -272,15 +272,10 @@ pub enum SendError {
     #[error("{0}")]
     Permanent(String),
     /// UnionC 以 401 和稳定 `unauthorized` 机器码确认凭据不被接受。主机进入
-    /// `reauth_required`，只能通过当前 v2 浏览器配对流程恢复；Agent 不会自动生成
+    /// `reauth_required`，只能通过创建新实例并执行当前 v2 配对流程恢复；Agent 不会自动生成
     /// 或替换凭据。代理/WAF 生成的未知 401 不得使用此变体。
     #[error("{0}")]
     Unauthorized(String),
-    /// The server returned its stable `agent_revoked` error code. Replacing the
-    /// credential automatically would defeat host decommissioning, so browser
-    /// authorization is required.
-    #[error("{0}")]
-    Revoked(String),
     /// 网络故障或服务端暂时不可用。重试有意义。
     #[error("{0}")]
     Transient(String),
@@ -291,13 +286,9 @@ impl SendError {
         matches!(self, Self::Permanent(_))
     }
 
-    /// 凭据已失效，需要浏览器重新授权后才可能成功。
+    /// 凭据已失效，需要创建新实例并再次配对后才可能成功。
     pub fn is_unauthorized(&self) -> bool {
         matches!(self, Self::Unauthorized(_))
-    }
-
-    pub fn is_revoked(&self) -> bool {
-        matches!(self, Self::Revoked(_))
     }
 }
 
@@ -359,7 +350,7 @@ fn ensure_success(status: StatusCode, body: &[u8], target: &str) -> Result<(), S
             Err(SendError::Permanent(message))
         }
         // 421 = 请求没走对链路（反向代理未透传 X-Forwarded-*），**不是**凭据问题。
-        // 必须早于下面这一支匹配，否则会误判为需要浏览器重新授权。
+        // 必须早于下面这一支匹配，否则会误判为需要创建新实例并再次配对。
         StatusCode::MISDIRECTED_REQUEST => Err(SendError::Transient(format!(
             "{message}（这是部署配置问题，不是凭据失效：请检查反向代理是否透传 \
              X-Forwarded-Proto 与 X-Forwarded-For）"
@@ -372,10 +363,6 @@ fn ensure_success(status: StatusCode, body: &[u8], target: &str) -> Result<(), S
             _ => Err(SendError::Transient(message)),
         },
         StatusCode::FORBIDDEN => match error_code.as_deref() {
-            Some("agent_revoked") => Err(SendError::Revoked(format!(
-                "{message}; this credential will not be replaced automatically—run \
-                 `unionc-agent pair --server <url>` to authorize the host again"
-            ))),
             // A valid credential accompanied by another host identity can never make this exact
             // report valid. This is the expected fate of old queued reports after pairing to a
             // different server/instance, so discard only that report and continue the FIFO.
@@ -631,25 +618,13 @@ mod tests {
     }
 
     #[test]
-    fn explicit_revocation_requires_browser_reauthorization() {
-        let error = ensure_success(
-            StatusCode::FORBIDDEN,
-            br#"{"code":"agent_revoked","message":"revoked"}"#,
-            "UnionC",
-        )
-        .expect_err("the stable revocation code must require browser reauthorization");
-        assert!(error.is_revoked());
-        assert!(!error.is_unauthorized());
-    }
-
-    #[test]
-    fn stable_unauthorized_code_requires_browser_reauthorization() {
+    fn stable_unauthorized_code_requires_new_pairing() {
         let error = ensure_success(
             StatusCode::UNAUTHORIZED,
             br#"{"code":"unauthorized","message":"unauthorized"}"#,
             "UnionC",
         )
-        .expect_err("UnionC's stable unauthorized code must require browser reauthorization");
+        .expect_err("UnionC's stable unauthorized code must require a newly authorized pairing");
         assert!(error.is_unauthorized());
     }
 
@@ -679,11 +654,10 @@ mod tests {
         )
         .expect_err("a queued report for another host can never match the current credential");
         assert!(error.is_permanent());
-        assert!(!error.is_revoked());
     }
 
     #[test]
-    fn unrecognized_forbidden_response_does_not_revoke_the_credential() {
+    fn unrecognized_forbidden_response_keeps_the_credential_retryable() {
         for body in [
             b"temporary policy rejection".as_slice(),
             br#"{"code":"forbidden","message":"unrelated access policy"}"#,
@@ -691,7 +665,6 @@ mod tests {
             let error = ensure_success(StatusCode::FORBIDDEN, body, "UnionC")
                 .expect_err("an unknown 403 must not be accepted");
             assert!(matches!(error, SendError::Transient(_)));
-            assert!(!error.is_revoked());
             assert!(!error.is_permanent());
         }
     }

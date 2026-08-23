@@ -1,14 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
-import { Activity, Gauge, MonitorDot } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { MonitorDot } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { InlineNotice, LoadingBlock, SectionHeader } from "../../shared/components/ui";
-import { formatDateTime } from "../../shared/lib/format";
+import { adjacentPanelLayout } from "../../shared/lib/adjacentPanel";
 import { monitoringApi as api } from "./api";
 import { AgentInstances, HostRegistration } from "./components/AgentInstances";
-import { CapabilityDetails, HardwareDetails } from "./components/HardwareDetails";
-import { HistoryMetrics } from "./components/HistoryMetrics";
-import { LiveMetrics } from "./components/HostSummary";
-import { NA, statusMeta } from "./model";
+import { MonitoringHostPanel } from "./components/HardwareDetails";
 import { monitoringQueryKeys as queryKeys } from "./queryKeys";
 
 export {
@@ -28,7 +25,9 @@ export function MonitoringView({
   onAddTriggerHandled?: (trigger: number) => void;
 }) {
   const [offset, setOffset] = useState(0);
-  const [preferredHostId, setPreferredHostId] = useState<string | null>(null);
+  const [openHostId, setOpenHostId] = useState<string | null>(null);
+  const hostGridRef = useRef<HTMLDivElement>(null);
+  const detailPanelRef = useRef<HTMLElement>(null);
   const hostsQuery = useQuery({
     queryKey: queryKeys.monitoring.hostPage(HOST_PAGE_SIZE, offset),
     queryFn: () => api.monitoringHosts(HOST_PAGE_SIZE, offset),
@@ -36,7 +35,7 @@ export function MonitoringView({
   });
   const hosts = useMemo(() => hostsQuery.data?.hosts ?? [], [hostsQuery.data?.hosts]);
   const activeHostIds = useMemo(
-    () => new Set(hosts.filter((host) => host.lifecycle_status === "active").map((host) => host.id)),
+    () => new Set(hosts.map((host) => host.id)),
     [hosts],
   );
   const total = hostsQuery.data?.total ?? 0;
@@ -46,12 +45,12 @@ export function MonitoringView({
   useEffect(() => {
     if (total > 0 && offset >= total) {
       setOffset(Math.floor((total - 1) / HOST_PAGE_SIZE) * HOST_PAGE_SIZE);
+      setOpenHostId(null);
     }
   }, [offset, total]);
 
-  const selectedHostId = preferredHostId && hosts.some((host) => host.id === preferredHostId)
-    ? preferredHostId
-    : (hosts[0]?.id ?? null);
+  const selectedSummary = hosts.find((host) => host.id === openHostId) ?? null;
+  const selectedHostId = selectedSummary?.id ?? null;
   const detailQuery = useQuery({
     queryKey: queryKeys.monitoring.host(selectedHostId ?? ""),
     queryFn: () => api.monitoringHost(selectedHostId!),
@@ -64,7 +63,6 @@ export function MonitoringView({
     enabled: Boolean(selectedHostId),
     refetchInterval: 30_000,
   });
-  const selectedSummary = hosts.find((host) => host.id === selectedHostId);
   const selectedHost = detailQuery.data?.host ?? selectedSummary;
   const latest = detailQuery.data?.latest;
   const historyPoints = useMemo(
@@ -72,6 +70,68 @@ export function MonitoringView({
       .sort((left, right) => left.collected_at.localeCompare(right.collected_at)),
     [historyQuery.data],
   );
+
+  useEffect(() => {
+    if (!selectedHost) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpenHostId(null);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [selectedHost]);
+
+  useLayoutEffect(() => {
+    if (!selectedHost) return;
+    const grid = hostGridRef.current;
+    const panel = detailPanelRef.current;
+    const selectedCard = grid?.querySelector<HTMLElement>('[data-detail-open="true"]');
+    if (!grid || !panel || !selectedCard) return;
+
+    const updatePosition = () => {
+      const cards = Array.from(grid.querySelectorAll<HTMLElement>(".monitoring-host-card"));
+      const selectedIndex = cards.indexOf(selectedCard);
+      if (selectedIndex < 0) return;
+      const gridStyle = window.getComputedStyle(grid);
+      const columnCount = Math.max(
+        1,
+        gridStyle.gridTemplateColumns.split(/\s+/).filter(Boolean).length,
+      );
+      const cardRect = selectedCard.getBoundingClientRect();
+      const gridRect = grid.getBoundingClientRect();
+      const layout = adjacentPanelLayout({
+        cardWidth: cardRect.width,
+        cardHeight: cardRect.height,
+        columnGap: Number.parseFloat(gridStyle.columnGap) || 0,
+        rowGap: Number.parseFloat(gridStyle.rowGap) || 0,
+        column: selectedIndex % columnCount,
+        columnCount,
+        top: cardRect.top - gridRect.top,
+      });
+      panel.style.left = `${layout.left}px`;
+      panel.style.top = `${layout.top}px`;
+      panel.style.width = `${layout.width}px`;
+      panel.style.height = `${layout.height}px`;
+      panel.style.borderRadius = `${cardRect.width / 18}px / ${cardRect.height / 12}px`;
+      panel.dataset.placement = layout.placement;
+      panel.style.visibility = "visible";
+    };
+
+    updatePosition();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updatePosition);
+      return () => window.removeEventListener("resize", updatePosition);
+    }
+    const resizeObserver = new ResizeObserver(updatePosition);
+    resizeObserver.observe(grid);
+    resizeObserver.observe(selectedCard);
+    return () => resizeObserver.disconnect();
+  }, [selectedHost]);
+
+  const changePage = (nextOffset: number) => {
+    setOpenHostId(null);
+    setOffset(nextOffset);
+  };
+
   return (
     <section className="view-stack monitoring-view">
       <AgentInstances
@@ -89,7 +149,7 @@ export function MonitoringView({
               className="card-action-button"
               type="button"
               disabled={!hasPreviousPage}
-              onClick={() => setOffset((current) => Math.max(0, current - HOST_PAGE_SIZE))}
+              onClick={() => changePage(Math.max(0, offset - HOST_PAGE_SIZE))}
             >上一页</button>
             <span className="muted-inline">
               {offset + 1}–{Math.min(offset + hosts.length, total)} / {total}
@@ -98,47 +158,48 @@ export function MonitoringView({
               className="card-action-button"
               type="button"
               disabled={!hasNextPage}
-              onClick={() => setOffset((current) => current + HOST_PAGE_SIZE)}
+              onClick={() => changePage(offset + HOST_PAGE_SIZE)}
             >下一页</button>
           </div>
         ) : null}
-        <div className="content-grid monitoring-host-grid">
-          {hosts.map((host) => (
-            <HostRegistration
-              key={host.id}
-              host={host}
-              selected={host.id === selectedHostId}
-              onSelect={() => setPreferredHostId(host.id)}
-              onDeleted={() => {
-                if (preferredHostId === host.id) setPreferredHostId(null);
-              }}
-            />
-          ))}
+        <div className="monitoring-master-detail">
+          <div className="content-grid monitoring-host-grid" ref={hostGridRef}>
+            {hosts.map((host) => (
+              <HostRegistration
+                key={host.id}
+                host={host}
+                selected={host.id === selectedHostId}
+                onOpenDetails={() => {
+                  setOpenHostId((current) => current === host.id ? null : host.id);
+                }}
+                onDeleted={() => {
+                  if (openHostId === host.id) setOpenHostId(null);
+                }}
+              />
+            ))}
+          </div>
+          {selectedHost ? (
+            <aside
+              ref={detailPanelRef}
+              className="sunshine-adj-panel monitoring-adj-panel"
+              role="dialog"
+              aria-label={`${selectedHost.name} 详情面板`}
+            >
+              <MonitoringHostPanel
+                key={selectedHost.id}
+                host={selectedHost}
+                report={latest}
+                historyPoints={historyPoints}
+                detailLoading={detailQuery.isLoading}
+                detailError={detailQuery.error}
+                historyLoading={historyQuery.isLoading}
+                historyError={historyQuery.error}
+                onClose={() => setOpenHostId(null)}
+              />
+            </aside>
+          ) : null}
         </div>
       </section>
-
-      {selectedHost ? (
-        <>
-          <section className="section-band">
-            <SectionHeader
-              icon={Activity}
-              title={selectedHost.name || "主机详情"}
-              description={`${statusMeta(selectedHost.status).label} · ${selectedHost.os || NA} ${selectedHost.os_version ?? ""} · Agent ${selectedHost.agent_version || NA} · 最后上报 ${formatDateTime(selectedHost.last_seen_at)}`}
-            />
-            {detailQuery.error ? <InlineNotice tone="danger" text={detailQuery.error.message} /> : null}
-            {detailQuery.isLoading ? <LoadingBlock label="正在读取实时指标" /> : null}
-            <LiveMetrics host={selectedHost} report={latest} />
-          </section>
-          <HardwareDetails report={latest} />
-          <CapabilityDetails capabilities={selectedHost.capabilities} />
-          <section className="section-band">
-            <SectionHeader icon={Gauge} title="历史趋势" description="最近采样点；页面只读取状态，不会向主机发送控制命令。" />
-            {historyQuery.isLoading ? <LoadingBlock label="正在读取历史指标" /> : null}
-            {historyQuery.error ? <InlineNotice tone="danger" text={historyQuery.error.message} /> : null}
-            <HistoryMetrics points={historyPoints} />
-          </section>
-        </>
-      ) : null}
     </section>
   );
 }

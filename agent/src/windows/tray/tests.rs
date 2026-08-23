@@ -47,7 +47,7 @@ mod tests {
         );
         assert!(
             serde_json::from_str::<TrayPreferences>(
-                r#"{"application_version":"0.3.3","server":"","legacy":true}"#
+                r#"{"application_version":"0.3.4","server":"","legacy":true}"#
             )
             .is_err()
         );
@@ -86,19 +86,19 @@ mod tests {
 
         assert!(
             serde_json::from_str::<PairEvent>(
-                r#"{"event":"pairing_waiting","version":"0.3.3","request_id":"request","generation":"generation","activation_url":"https://server.example/agent/activate/request","pairing_endpoint":"https://server.example/api/agent/v2/pairing-requests","expires_at":"2026-08-20T00:00:00Z","poll_interval":2}"#
+                r#"{"event":"pairing_waiting","version":"0.3.4","request_id":"request","generation":"generation","activation_url":"https://server.example/agent/activate/request","pairing_endpoint":"https://server.example/api/agent/v2/pairing-requests","expires_at":"2026-08-20T00:00:00Z","poll_interval":2}"#
             )
             .is_ok()
         );
         assert!(
             serde_json::from_str::<PairEvent>(
-                r#"{"event":"pairing_waiting","version":"0.3.3","request_id":"request","generation":"generation","activation_url":"https://server.example/agent/activate/request","pairing_endpoint":"https://server.example/api/agent/v2/pairing-requests","poll_interval":2}"#
+                r#"{"event":"pairing_waiting","version":"0.3.4","request_id":"request","generation":"generation","activation_url":"https://server.example/agent/activate/request","pairing_endpoint":"https://server.example/api/agent/v2/pairing-requests","poll_interval":2}"#
             )
             .is_err()
         );
         assert!(
             serde_json::from_str::<PairEvent>(
-                r#"{"event":"paired","version":"0.3.3","request_id":"request","instance_id":"instance","endpoint":"https://server.example/api/agent/v1/report","legacy":true}"#
+                r#"{"event":"paired","version":"0.3.4","request_id":"request","instance_id":"instance","endpoint":"https://server.example/api/agent/v1/report","legacy":true}"#
             )
             .is_err()
         );
@@ -113,7 +113,7 @@ mod tests {
 
         assert!(
             serde_json::from_str::<ServerHealthResponse>(
-                r#"{"status":"ok","version":"0.3.3","uptime_seconds":1}"#
+                r#"{"status":"ok","version":"0.3.4","uptime_seconds":1}"#
             )
             .is_ok()
         );
@@ -123,7 +123,7 @@ mod tests {
         );
         assert!(
             serde_json::from_str::<ServerHealthResponse>(
-                r#"{"status":"ok","version":"0.3.3","uptime_seconds":1,"legacy":true}"#
+                r#"{"status":"ok","version":"0.3.4","uptime_seconds":1,"legacy":true}"#
             )
             .is_err()
         );

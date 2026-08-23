@@ -2,34 +2,14 @@ pub async fn monitoring_host_for_token(
     pool: &DbPool,
     token_hash: &str,
 ) -> anyhow::Result<MonitoringTokenAuthentication> {
-    let row = query(
-        r#"
-        SELECT h.host_id,c.revoked_at IS NOT NULL AS credential_revoked,h.lifecycle_status
-        FROM agent_credentials c
-        JOIN monitored_hosts h ON h.host_id=c.host_id
-        WHERE c.token_hash=?1
-        "#,
-    )
-    .bind(token_hash)
-    .fetch_optional(pool)
-    .await?;
-    let Some(row) = row else {
-        return Ok(MonitoringTokenAuthentication::Unknown);
-    };
-    let credential_revoked: bool = row.try_get("credential_revoked")?;
-    let lifecycle_status: String = row.try_get("lifecycle_status")?;
-    // 403 is reserved for persistent host decommissioning. A credential
-    // superseded by a current re-pair is no longer valid and behaves like an
-    // unknown token (401), while a revoked host remains a terminal 403.
-    if lifecycle_status != "active" {
-        return Ok(MonitoringTokenAuthentication::Revoked);
-    }
-    if credential_revoked {
-        return Ok(MonitoringTokenAuthentication::Unknown);
-    }
-    Ok(MonitoringTokenAuthentication::Active(
-        row.try_get("host_id")?,
-    ))
+    let row = query("SELECT host_id FROM agent_credentials WHERE token_hash=?1")
+        .bind(token_hash)
+        .fetch_optional(pool)
+        .await?;
+    Ok(match row {
+        Some(row) => MonitoringTokenAuthentication::Active(row.try_get("host_id")?),
+        None => MonitoringTokenAuthentication::Unknown,
+    })
 }
 
 /// 写入一份报告。
@@ -60,10 +40,8 @@ pub async fn store_monitoring_report(
     store_monitoring_report_inner(pool, report, None).await
 }
 
-/// Store an HTTP-authenticated report only if the exact credential remains
-/// active at the write transaction's serialization point. The preliminary
-/// lookup in the handler deliberately happens before JSON parsing, but a
-/// concurrent re-pair may revoke that credential before this write begins.
+/// Store an HTTP-authenticated report only if the host and exact credential still exist at the
+/// write transaction's serialization point. Deletion may happen after preliminary authentication.
 pub async fn store_authenticated_monitoring_report(
     pool: &DbPool,
     report: &AgentReport,
@@ -110,10 +88,9 @@ async fn store_monitoring_report_inner(
                    FROM agent_credentials c
                    WHERE c.host_id=monitored_hosts.host_id
                      AND c.token_hash=?8
-                     AND c.revoked_at IS NULL
                ) AS credential_active
         FROM monitored_hosts
-        WHERE host_id=?1 AND lifecycle_status='active'
+        WHERE host_id=?1
         "#,
     )
     .bind(&host_id)
@@ -126,13 +103,13 @@ async fn store_monitoring_report_inner(
     .bind(authenticated_token_hash)
     .fetch_optional(tx.connection())
     .await?
-    .ok_or_else(|| anyhow::Error::new(StoreReportError::HostNotActive))?;
+    .ok_or_else(|| anyhow::Error::new(StoreReportError::HostNotFound))?;
     let previous_latest: Option<String> = current.try_get("latest_report_id")?;
     let previous_collected: Option<i64> = current.try_get("latest_collected_at")?;
     let identity_changed: bool = current.try_get("identity_changed")?;
     let credential_active: bool = current.try_get("credential_active")?;
     if authenticated_token_hash.is_some() && !credential_active {
-        return Err(anyhow::Error::new(StoreReportError::CredentialNotActive));
+        return Err(anyhow::Error::new(StoreReportError::CredentialNotFound));
     }
 
     // 这份报文是否代表主机的"当前状态"。

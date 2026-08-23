@@ -1,17 +1,9 @@
-async fn replace_agent_credential(
+async fn insert_agent_credential(
     connection: &mut SqliteConnection,
     host_id: &str,
     token_hash: &str,
 ) -> anyhow::Result<()> {
     let now_micros = database::to_epoch_micros(Utc::now());
-    query(
-        "UPDATE agent_credentials SET revoked_at=COALESCE(revoked_at,?2) \
-         WHERE host_id=?1 AND revoked_at IS NULL",
-    )
-    .bind(host_id)
-    .bind(now_micros)
-    .execute(&mut *connection)
-    .await?;
     query(
         r#"
         INSERT INTO agent_credentials(credential_id,host_id,token_hash,issued_at)
@@ -34,38 +26,12 @@ pub async fn create_agent_instance_invite(
     activation_code_hash: &str,
     display_name: &str,
     expires_at: DateTime<Utc>,
-    existing_instance: bool,
 ) -> anyhow::Result<CreateInviteResult> {
     let invite_id = canonical_uuid(invite_id)?;
     let instance_id = canonical_uuid(instance_id)?;
     let now_micros = database::to_epoch_micros(Utc::now());
     let mut tx = database::begin_write(pool).await?;
 
-    if existing_instance {
-        let found = query("SELECT 1 FROM monitored_hosts WHERE host_id=?1")
-            .bind(&instance_id)
-            .fetch_optional(tx.connection())
-            .await?
-            .is_some();
-        if !found {
-            tx.rollback().await?;
-            return Ok(CreateInviteResult::InstanceNotFound);
-        }
-        // Reissuing an invite intentionally cancels the previous unconsumed
-        // code for this instance. The write transaction serializes concurrent
-        // reissue requests before this read/retire/insert sequence begins.
-        query(
-            r#"
-            UPDATE agent_instance_invites
-            SET status='revoked',revoked_at=?2
-            WHERE instance_id=?1 AND status='pending'
-            "#,
-        )
-        .bind(&instance_id)
-        .bind(now_micros)
-        .execute(tx.connection())
-        .await?;
-    }
 
     let row = query(
         r#"
@@ -110,19 +76,11 @@ pub async fn list_agent_instance_invites(
         SELECT i.invite_id AS request_id,i.instance_id,
                i.display_name,i.expires_at,i.created_at,
                CASE
-                 WHEN i.status='revoked' THEN 'cancelled'
+                 WHEN i.status='cancelled' THEN 'cancelled'
                  WHEN i.status='pending' AND i.expires_at <= ?1 THEN 'expired'
-                 WHEN i.status='active' AND (
-                      p.request_id IS NULL OR p.status <> 'active'
-                      OR h.lifecycle_status <> 'active'
-                      OR c.credential_id IS NULL OR c.revoked_at IS NOT NULL
-                 ) THEN 'revoked'
                  ELSE i.status
                END AS status
         FROM agent_instance_invites i
-        LEFT JOIN agent_pairing_requests p ON p.invite_id=i.invite_id
-        LEFT JOIN monitored_hosts h ON h.host_id=i.instance_id
-        LEFT JOIN agent_credentials c ON c.token_hash=p.token_hash
         ORDER BY i.created_at DESC
         LIMIT 200
         "#,
@@ -135,10 +93,10 @@ pub async fn list_agent_instance_invites(
     .collect()
 }
 
-pub async fn revoke_agent_instance_invite(
+pub async fn cancel_agent_instance_invite(
     pool: &DbPool,
     invite_id: &str,
-) -> anyhow::Result<RevokeInviteResult> {
+) -> anyhow::Result<CancelInviteResult> {
     let invite_id = canonical_uuid(invite_id)?;
     let now_micros = database::to_epoch_micros(Utc::now());
     let mut tx = database::begin_write(pool).await?;
@@ -154,16 +112,16 @@ pub async fn revoke_agent_instance_invite(
     .await?;
     let Some(row) = row else {
         tx.rollback().await?;
-        return Ok(RevokeInviteResult::NotFound);
+        return Ok(CancelInviteResult::NotFound);
     };
     let status: String = row.try_get("status")?;
     if status != "pending" {
         tx.rollback().await?;
-        return Ok(RevokeInviteResult::NotPending);
+        return Ok(CancelInviteResult::NotPending);
     }
     let instance_id: String = row.try_get("instance_id")?;
     query(
-        "UPDATE agent_instance_invites SET status='revoked',revoked_at=?2 \
+        "UPDATE agent_instance_invites SET status='cancelled',cancelled_at=?2 \
          WHERE invite_id=?1",
     )
     .bind(&invite_id)
@@ -178,7 +136,7 @@ pub async fn revoke_agent_instance_invite(
     )
     .await?;
     tx.commit().await?;
-    Ok(RevokeInviteResult::Revoked)
+    Ok(CancelInviteResult::Cancelled)
 }
 
 pub async fn create_agent_pairing_request(
@@ -363,15 +321,9 @@ pub async fn agent_pairing_status(
                CASE
                  WHEN p.status='pending' AND p.expires_at <= ?3 THEN 'expired'
                  WHEN p.status='pending' THEN 'waiting'
-                 WHEN p.status='active' AND (
-                      h.lifecycle_status <> 'active'
-                      OR c.credential_id IS NULL OR c.revoked_at IS NOT NULL
-                 ) THEN 'denied'
                  ELSE p.status
                END AS status
         FROM agent_pairing_requests p
-        LEFT JOIN monitored_hosts h ON h.host_id=p.instance_id
-        LEFT JOIN agent_credentials c ON c.token_hash=p.token_hash
         WHERE p.request_id=?1 AND p.polling_secret_hash=?2
         "#,
     )
@@ -410,15 +362,9 @@ pub async fn public_agent_pairing_request(
                CASE
                  WHEN p.status='pending' AND p.expires_at <= ?2 THEN 'expired'
                  WHEN p.status='pending' THEN 'waiting'
-                 WHEN p.status='active' AND (
-                      h.lifecycle_status <> 'active'
-                      OR c.credential_id IS NULL OR c.revoked_at IS NOT NULL
-                 ) THEN 'denied'
                  ELSE p.status
                END AS status
         FROM agent_pairing_requests p
-        LEFT JOIN monitored_hosts h ON h.host_id=p.instance_id
-        LEFT JOIN agent_credentials c ON c.token_hash=p.token_hash
         WHERE p.request_id=?1
         "#,
     )
@@ -512,10 +458,8 @@ where
             r#"
             SELECT EXISTS(
                 SELECT 1
-                FROM monitored_hosts h
-                JOIN agent_credentials c ON c.host_id=h.host_id
-                WHERE h.host_id=?1 AND h.lifecycle_status='active'
-                  AND c.token_hash=?2 AND c.revoked_at IS NULL
+                FROM agent_credentials c
+                WHERE c.host_id=?1 AND c.token_hash=?2
             ) AS active
             "#,
         )
@@ -548,45 +492,10 @@ where
     }
 
     let token_hash: String = pairing.try_get("token_hash")?;
-    // Re-pairing starts a new credential generation for the same durable
-    // instance. Historical summaries remain useful, but the previous
-    // generation's current-state pointer and full payload must not be exposed
-    // as if they belonged to the newly approved identity. Clear the payload
-    // before dropping the pointer so the "only current keeps JSON" invariant
-    // remains true while preserving every history row.
     query(
         r#"
-        UPDATE agent_metric_reports
-        SET payload=NULL
-        WHERE report_id=(
-            SELECT latest_report_id
-            FROM monitored_hosts
-            WHERE host_id=?1
-        )
-        "#,
-    )
-    .bind(&instance_id)
-    .execute(tx.connection())
-    .await?;
-    query(
-        r#"
-        INSERT INTO monitored_hosts(
-            host_id,name,os,os_version,kernel_version,arch,agent_version,
-            lifecycle_status,revoked_at,registered_at,last_seen_at
-        ) VALUES(?1,?2,?3,?4,?5,?6,?7,'active',NULL,?8,?8)
-        ON CONFLICT(host_id) DO UPDATE SET
-            os=EXCLUDED.os,
-            os_version=EXCLUDED.os_version,
-            kernel_version=EXCLUDED.kernel_version,
-            arch=EXCLUDED.arch,
-            agent_version=EXCLUDED.agent_version,
-            capabilities='[]',
-            lifecycle_status='active',
-            revoked_at=NULL,
-            last_seen_at=?8,
-            latest_report_id=NULL,
-            latest_collected_at=NULL,
-            latest_interval_seconds=NULL
+        INSERT INTO monitored_hosts(host_id,name,os,os_version,kernel_version,arch,agent_version,registered_at,last_seen_at)
+        VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8)
         "#,
     )
     .bind(&instance_id)
@@ -599,21 +508,8 @@ where
     .bind(now_micros)
     .execute(tx.connection())
     .await?;
-    replace_agent_credential(tx.connection(), &instance_id, &token_hash).await?;
+    insert_agent_credential(tx.connection(), &instance_id, &token_hash).await?;
 
-    // A new administrator-approved pairing supersedes every previous active
-    // request for the same instance, without deleting host report history.
-    query(
-        r#"
-        UPDATE agent_pairing_requests
-        SET status='denied'
-        WHERE instance_id=?1 AND status='active' AND request_id<>?2
-        "#,
-    )
-    .bind(&instance_id)
-    .bind(&request_id)
-    .execute(tx.connection())
-    .await?;
     query(
         r#"
         UPDATE agent_pairing_requests

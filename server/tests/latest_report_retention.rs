@@ -33,7 +33,7 @@ fn report(host_id: Uuid, collected_at: chrono::DateTime<Utc>) -> serde_json::Val
         "host": {
             "id": host_id, "os": "linux",
             "os_version": null, "kernel_version": null,
-            "arch": "x86_64", "agent_version": "0.3.3"
+            "arch": "x86_64", "agent_version": "0.3.4"
         },
         "interval_seconds": 10.0,
         "system": {
@@ -69,7 +69,7 @@ async fn retention_keeps_the_latest_report_of_a_long_offline_host() {
             os_version: None,
             kernel_version: None,
             arch: "x86_64".into(),
-            agent_version: "0.3.3".into(),
+            agent_version: "0.3.4".into(),
         },
         &hex_hash(&format!("{host_id}-token")),
     )
@@ -164,7 +164,7 @@ async fn latest_report_reference_can_never_dangle() {
             os_version: None,
             kernel_version: None,
             arch: "x86_64".into(),
-            agent_version: "0.3.3".into(),
+            agent_version: "0.3.4".into(),
         },
         &hex_hash(&format!("{host_id}-token")),
     )
@@ -239,7 +239,7 @@ async fn batched_pruning_removes_everything_across_multiple_batches() {
             os_version: None,
             kernel_version: None,
             arch: "x86_64".into(),
-            agent_version: "0.3.3".into(),
+            agent_version: "0.3.4".into(),
         },
         &hex_hash(&format!("{marker}-token")),
     )

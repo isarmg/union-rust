@@ -2,7 +2,7 @@
 
 本文说明 UnionC Agent 在 Linux、Windows 和 macOS 上的完整本地生命周期。Agent 软件
 仍由包仓库、组织软件中心、MDM 或其他可信渠道分发；UnionC Web 只创建实例、授权配对、
-撤销和重新配对，不托管安装包，也不向主机下发安装或更新命令。
+编辑名称和永久删除实例，不托管安装包，也不向主机下发安装或更新命令。
 
 ## 1. 两种删除语义
 
@@ -13,21 +13,21 @@
 | 普通卸载 | 是 | 是 | 否 |
 | 当前版本重装 | 替换 | 是 | 否 |
 | 本地永久清理 | 因平台而异：可能与卸载合并，也可能必须先执行 | 否 | 否 |
-| Web 撤销 | 否 | 是 | 将实例标为 revoked 并吊销全部 credential |
-| 完整退役 | 是 | 否 | 必须先执行 Web 撤销 |
+| Web 永久删除 | 否 | 是 | 原子删除实例、历史、credential、配对请求和邀请 |
+| 完整退役 | 是 | 否 | 必须先执行 Web 永久删除 |
 
-普通卸载默认保留身份，避免误卸载后重装产生第二个主机实例。`purge` 是显式、不可恢复的
-本地操作，但它没有管理台管理员权限，因此不会假装完成 Server 撤销。
+普通卸载默认保留身份，避免误卸载后丢失原本地状态。`purge` 是显式、不可恢复的本地操作，
+但它没有管理台管理员权限，因此不会自行删除 Server 实例。
 
 永久退役的跨平台固定部分是：
 
-1. 在 UnionC Web 的监控主机页面撤销实例；
+1. 在 UnionC Web 的监控主机页面永久删除实例；
 2. 按本页对应平台的顺序执行卸载与 purge（DEB 合并执行；RPM 必须先 purge 再 remove；
    Windows 在同一次 MSI `/x` 中传 `PURGE=1`；macOS 用 `uninstall.sh --purge`）；
 3. 验证命令成功，且服务、程序和状态目录均已消失；Windows 还必须确认该版本的固定
    quarantine 已消失。
 
-如果主机已经丢失，至少应完成第 1 步；Server 的 revoked tombstone 会持续拒绝旧凭据。
+如果主机已经丢失，至少应完成第 1 步；旧 credential 会随实例删除而失效。
 
 ## 2. 所有平台共同流程
 
@@ -49,8 +49,8 @@
 ### 2.2 版本边界与重装
 
 安装器只保证当前版本的全新安装、同版本重装、普通卸载和 purge。跨版本升级、旧状态转换、
-旧服务/ACL/marker 接管不在支持范围内。部署新版本时先在 Web 撤销旧实例，按平台规定顺序
-永久清理旧 Agent，再安装当前制品并重新配对。Windows MSI 检测到同一产品的其他版本会 fail closed，
+旧服务/ACL/marker 接管不在支持范围内。部署新版本时先在 Web 永久删除旧实例，按平台规定
+清理旧 Agent，再安装当前制品、创建新实例并配对。Windows MSI 检测到同一产品的其他版本会 fail closed，
 不会运行 MajorUpgrade。
 
 同一当前版本的重装可以保留状态目录。不要把已配对的状态目录放进系统镜像或克隆到其他主机。
@@ -116,14 +116,14 @@ sudo apt remove unionc-agent
 DEB 永久本地清理：
 
 ```bash
-# 先在 Web 撤销实例
+# 先在 Web 永久删除实例
 sudo apt purge unionc-agent
 ```
 
 RPM 没有独立的 package-manager purge 事务，因此先调用包内工具：
 
 ```bash
-# 先在 Web 撤销实例
+# 先在 Web 永久删除实例
 sudo unionc-agent-purge --yes
 sudo dnf remove unionc-agent
 ```
@@ -154,7 +154,7 @@ PowerShell 计划任务安装。
 交互安装可双击 MSI。无人值守安装在管理员命令提示符中执行：
 
 ```cmd
-msiexec.exe /i UnionC-Agent-0.3.3-x64.msi /qn /norestart /l*v "%TEMP%\unionc-agent-install.log"
+msiexec.exe /i UnionC-Agent-0.3.4-x64.msi /qn /norestart /l*v "%TEMP%\unionc-agent-install.log"
 ```
 
 主要路径：
@@ -176,7 +176,7 @@ LocalService SID。全新安装还会在该受保护目录生成不含凭据的�
 并回滚。
 
 托盘伴侣是独立的 Windows GUI 程序，不在 session 0 运行，也不承载遥测。它以普通用户权限
-提供本地状态、Server 连接检测、配对/重新配对和服务启停入口；它不提供直接打开
+提供本地状态、Server 连接检测、配对和服务启停入口；它不提供直接打开
 Web 管理台的入口。机器级变更才触发 UAC。其配置页只
 监听随机 `127.0.0.1` 端口并使用进程内随机 capability URL，不把主机凭据暴露给浏览器，
 也不允许远程访问。`%ProgramFiles%` 仅给 BUILTIN\Users 读取/执行权限，受保护的
@@ -184,8 +184,8 @@ Web 管理台的入口。机器级变更才触发 UAC。其配置页只
 
 交互式全新安装成功、且没有映像等待重启替换时，会以安装者的非提权会话启动托盘；`/qn`、
 GPO、Intune/MDM 等静默/SYSTEM 部署不会启动 session 0 托盘，下一次用户登录时由 HKLM Run
-启动。用户也可从开始菜单立即打开。右键托盘选择“配对/重新配对”，在本机配置页一次输入
-服务器 HTTPS 地址、管理台生成的一次性授权密钥和可选名称，接受 UAC 后由 Agent 完成配对，
+启动。用户也可从开始菜单立即打开。右键托盘选择“配对”，在本机配置页一次输入
+服务器 HTTPS 地址和管理台生成的一次性授权密钥，接受 UAC 后由 Agent 完成配对，
 无需再到远程页面输入密钥。配对失败会恢复服务原运行状态；成功后仅当
 服务原本运行时才重启。
 
@@ -228,20 +228,20 @@ ProgramData 状态树仍不授权 Users。任何旧 ACL 模板、旧任务或未
 状态：
 
 ```cmd
-msiexec.exe /x UnionC-Agent-0.3.3-x64.msi /qn /norestart /l*v "%TEMP%\unionc-agent-uninstall.log"
+msiexec.exe /x UnionC-Agent-0.3.4-x64.msi /qn /norestart /l*v "%TEMP%\unionc-agent-uninstall.log"
 ```
 
 永久本地清理必须显式传入唯一允许的属性 `PURGE=1`：
 
 ```cmd
-# 先在 Web 撤销实例
-msiexec.exe /x UnionC-Agent-0.3.3-x64.msi PURGE=1 /qn /norestart /l*v "%TEMP%\unionc-agent-purge.log"
+# 先在 Web 永久删除实例
+msiexec.exe /x UnionC-Agent-0.3.4-x64.msi PURGE=1 /qn /norestart /l*v "%TEMP%\unionc-agent-purge.log"
 ```
 
 普通卸载会移除 service SID ACE，只留下 SYSTEM、Administrators 和 OWNER RIGHTS 安全边界；
 同时移除托盘程序、开始菜单入口和 HKLM Run 登录自启动项。重新安装时由 managed marker
 与精确 ACL 联合验证后接管原身份。Purge 先在同一卷把状态根
-原子移动到 `%ProgramData%\UnionC Agent.purge-quarantine-0.3.3`：进入 commit 前的失败会回滚
+原子移动到 `%ProgramData%\UnionC Agent.purge-quarantine-0.3.4`：进入 commit 前的失败会回滚
 rename，commit 阶段的递归删除则不可逆。为避免把产品回滚到部分删除的树，commit 删除失败
 不会触发 MSI 产品回滚，受保护的 quarantine 可能保留；因此 `msiexec` 成功只表示产品卸载，
 不能单独作为凭据已删除的证明。自动化必须检查状态根和固定 quarantine 均不存在；若仍有
@@ -313,7 +313,7 @@ sudo /usr/local/share/unionc-agent/uninstall.sh
 永久本地清理：
 
 ```bash
-# 先在 Web 撤销实例
+# 先在 Web 永久删除实例
 sudo /usr/local/share/unionc-agent/uninstall.sh --purge
 
 # 无人值守环境
@@ -400,7 +400,7 @@ DEB、MSI 和 pkg smoke 会修改操作系统安装状态，只能在一次性�
 - 状态或诊断：`status` 和默认 `doctor` 都是只读操作；需要真正发送报文时必须显式使用
   `doctor --delivery`，该模式可能补传并确认删除已有 spool。
 - 配对未完成：重新运行 `pair` 会恢复已持久化的 pending request，过期后才创建新请求。
-- 凭据 revoked：管理员显式创建同一实例的重新配对邀请；不存在直接 token 恢复入口。
+- 凭据收到 `401 + unauthorized`：在 Web 创建新实例并配对；不存在直接 token 恢复入口。
 - purge 不完整：Linux/macOS 修复被改造的专用账户或占用关系后使用保留的清理工具重试；
   Windows 检查固定 quarantine，保留 MSI 日志并在释放占用后由管理员定点清理。
-- 主机已经不可访问：立即在 Web 撤销实例，本地清理只能等介质恢复或销毁时完成。
+- 主机已经不可访问：立即在 Web 永久删除实例，本地清理只能等介质恢复或销毁时完成。

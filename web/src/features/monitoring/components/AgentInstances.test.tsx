@@ -28,8 +28,7 @@ const host: MonitoringHostSummary = {
   os_version: "11",
   kernel_version: null,
   arch: "x86_64",
-  agent_version: "0.3.3",
-  lifecycle_status: "active",
+  agent_version: "0.3.4",
   registered_at: "2026-08-21T12:00:00Z",
   last_seen_at: "2026-08-21T12:00:00Z",
   latest_collected_at: "2026-08-21T12:00:00Z",
@@ -106,7 +105,7 @@ describe("Agent activation-code lifetime", () => {
     );
 
     await expectSecretVisible(queryClient);
-    expect(api.monitoringCreateAgentInstance).toHaveBeenCalledWith("新监控主机", 15);
+    expect(api.monitoringCreateAgentInstance).toHaveBeenCalledWith("概览", 15);
   });
 
   it("clears first-pairing mutation data when the operator closes the panel", async () => {
@@ -151,40 +150,6 @@ describe("Agent activation-code lifetime", () => {
     await waitFor(() => expect(activationCodes(queryClient)).not.toContain(created.activation_code));
   }, 15_000);
 
-  it("clears re-pairing mutation data when the operator closes the panel", async () => {
-    mockPairingApis();
-    const { queryClient } = renderWithClient(<HostRegistration host={host} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "重新配对" }));
-    await expectSecretVisible(queryClient);
-    fireEvent.click(screen.getByRole("button", { name: "取消邀请并清除授权密钥" }));
-
-    await expectSecretCleared(queryClient);
-  }, 15_000);
-
-  it("subscribes re-pairing to invitation status and clears terminal mutation data", async () => {
-    mockPairingApis();
-    const { queryClient } = renderWithClient(<HostRegistration host={host} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "重新配对" }));
-    await expectSecretVisible(queryClient);
-    act(() => {
-      queryClient.setQueryData(queryKeys.monitoring.agentInstances, [{ ...created, status: "expired" }]);
-    });
-
-    await expectSecretCleared(queryClient);
-  }, 15_000);
-
-  it("clears re-pairing mutation data when the component unmounts", async () => {
-    mockPairingApis();
-    const { queryClient, unmount } = renderWithClient(<HostRegistration host={host} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "重新配对" }));
-    await expectSecretVisible(queryClient);
-    unmount();
-
-    await waitFor(() => expect(activationCodes(queryClient)).not.toContain(created.activation_code));
-  }, 15_000);
 });
 
 describe("Agent invitation request lifetime", () => {
@@ -213,26 +178,29 @@ describe("Agent invitation request lifetime", () => {
 });
 
 describe("managed monitoring host card", () => {
-  it("keeps registration actions inside the card and omits CPU, GPU and network rows", () => {
-    vi.spyOn(api, "monitoringAgentInstances").mockResolvedValue([]);
+  it("keeps only detail and deletion actions and omits metric summary rows", () => {
     const { container } = renderWithClient(<HostRegistration host={host} />);
     const card = screen.getByRole("article", { name: /测试主机/ });
 
-    expect(within(card).getByRole("button", { name: "重新配对" })).toBeTruthy();
-    expect(within(card).getByRole("button", { name: "撤销" })).toBeTruthy();
+    expect(within(card).getByRole("button", { name: "详情" })).toBeTruthy();
     expect(within(card).getByRole("button", { name: "删除" })).toBeTruthy();
+    expect(within(card).queryByRole("button", { name: "重新配对" })).toBeNull();
+    expect(within(card).queryByRole("button", { name: "撤销" })).toBeNull();
     expect(container.textContent).not.toContain("CPU");
     expect(container.textContent).not.toContain("GPU");
     expect(container.textContent).not.toContain("网络");
   });
 
-  it("edits the Server remark with the same inline interaction as Sunshine cards", async () => {
+  it("edits the name with the same borderless inline interaction as Sunshine cards", async () => {
     vi.spyOn(api, "monitoringUpdateRemark").mockResolvedValue();
     const user = userEvent.setup();
     renderWithClient(<HostRegistration host={host} />);
 
-    await user.click(screen.getByRole("button", { name: /修改备注/ }));
-    const input = screen.getByLabelText("备注");
+    const edit = screen.getByRole("button", { name: /修改名称/ });
+    expect(edit.classList.contains("sunshine-inline-editable")).toBe(true);
+    await user.click(edit);
+    const input = screen.getByLabelText("名称");
+    expect(input.classList.contains("sunshine-inline-input")).toBe(true);
     await user.clear(input);
     await user.type(input, "客厅工作站");
     await user.keyboard("{Enter}");
@@ -240,30 +208,46 @@ describe("managed monitoring host card", () => {
     await waitFor(() => expect(api.monitoringUpdateRemark).toHaveBeenCalledWith(host.id, "客厅工作站"));
   });
 
-  it("permanently deletes the selected instance after confirmation", async () => {
+  it("opens details only from the card action", () => {
+    const onOpenDetails = vi.fn();
+    renderWithClient(
+      <HostRegistration host={host} onOpenDetails={onOpenDetails} />,
+    );
+    const card = screen.getByRole("article", { name: /测试主机/ });
+
+    fireEvent.click(card);
+    expect(onOpenDetails).not.toHaveBeenCalled();
+
+    fireEvent.click(within(card).getByRole("button", { name: "详情" }));
+    expect(onOpenDetails).toHaveBeenCalledOnce();
+  });
+
+  it("exposes the open state without adding a selected outline class", () => {
+    renderWithClient(<HostRegistration host={host} selected />);
+    const card = screen.getByRole("article", { name: /测试主机/ });
+
+    expect(card.dataset.detailOpen).toBe("true");
+    expect(card.classList.contains("selected")).toBe(false);
+    expect(within(card).getByRole("button", { name: "收起详情" })).toBeTruthy();
+  });
+
+  it("permanently deletes the instance without opening details", async () => {
     vi.spyOn(api, "monitoringDeleteHost").mockResolvedValue();
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const onDeleted = vi.fn();
-    renderWithClient(<HostRegistration host={host} onDeleted={onDeleted} />);
+    const onOpenDetails = vi.fn();
+    renderWithClient(
+      <HostRegistration
+        host={host}
+        onDeleted={onDeleted}
+        onOpenDetails={onOpenDetails}
+      />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "删除" }));
 
+    expect(onOpenDetails).not.toHaveBeenCalled();
     await waitFor(() => expect(api.monitoringDeleteHost).toHaveBeenCalledWith(host.id));
     await waitFor(() => expect(onDeleted).toHaveBeenCalledOnce());
-  });
-
-  it("keeps a refreshed re-pairing invitation manageable inside its host card", async () => {
-    vi.spyOn(api, "monitoringAgentInstances").mockResolvedValue([created]);
-    vi.spyOn(api, "monitoringCancelAgentInstance").mockResolvedValue();
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-    renderWithClient(<HostRegistration host={host} />);
-
-    expect(await screen.findByText(/一次性授权密钥不会再次显示/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "重新配对" }).hasAttribute("disabled")).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "取消待激活邀请" }));
-
-    await waitFor(() => {
-      expect(api.monitoringCancelAgentInstance).toHaveBeenCalledWith(created.request_id);
-    });
   });
 });

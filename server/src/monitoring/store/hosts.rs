@@ -17,7 +17,7 @@ pub async fn list_monitored_hosts(
     // 只有再补一个唯一列才能保证同一查询的分页顺序是确定的（相邻两页不重不漏）。
     let rows = query(&host_select(
         false,
-        "ORDER BY (h.lifecycle_status='active') DESC, h.last_seen_at DESC, h.name, h.host_id LIMIT ?1 OFFSET ?2",
+        "ORDER BY h.last_seen_at DESC, h.name, h.host_id LIMIT ?1 OFFSET ?2",
     ))
     .bind(limit)
     .bind(offset.max(0))
@@ -213,81 +213,4 @@ pub async fn monitoring_history(
         .collect::<anyhow::Result<Vec<_>>>()?;
     points.reverse();
     Ok(Some(points))
-}
-
-pub async fn revoke_monitored_host(pool: &DbPool, host_id: &str) -> anyhow::Result<bool> {
-    let host_id = canonical_uuid(host_id)?;
-    let now_micros = database::to_epoch_micros(Utc::now());
-    let mut tx = database::begin_write(pool).await?;
-    let host = query("SELECT lifecycle_status FROM monitored_hosts WHERE host_id=?1")
-        .bind(&host_id)
-        .fetch_optional(tx.connection())
-        .await?;
-    let Some(host) = host else {
-        tx.rollback().await?;
-        return Ok(false);
-    };
-    let status: String = host.try_get("lifecycle_status")?;
-    let host_was_active = status == "active";
-    if host_was_active {
-        query(
-            "UPDATE monitored_hosts SET lifecycle_status='revoked',revoked_at=?2 \
-             WHERE host_id=?1",
-        )
-        .bind(&host_id)
-        .bind(now_micros)
-        .execute(tx.connection())
-        .await?;
-    }
-
-    // Reassert the terminal state even when the host was already revoked. An
-    // administrator may have issued a replacement invite and then changed
-    // their mind; a second revoke must cancel that newer authorization rather
-    // than returning 204 while leaving a path that can reactivate the host.
-    let credentials = query(
-        "UPDATE agent_credentials SET revoked_at=?2 \
-         WHERE host_id=?1 AND revoked_at IS NULL",
-    )
-    .bind(&host_id)
-    .bind(now_micros)
-    .execute(tx.connection())
-    .await?
-    .rows_affected();
-    let pairing_requests = query(
-        r#"
-        UPDATE agent_pairing_requests
-        SET status='denied'
-        WHERE (instance_id=?1 AND status='active')
-           OR (requested_host_id=?1 AND status='pending')
-        "#,
-    )
-    .bind(&host_id)
-    .execute(tx.connection())
-    .await?
-    .rows_affected();
-    let invites = query(
-        r#"
-        UPDATE agent_instance_invites
-        SET status='revoked',revoked_at=?2
-        WHERE instance_id=?1 AND status='pending'
-        "#,
-    )
-    .bind(&host_id)
-    .bind(now_micros)
-    .execute(tx.connection())
-    .await?
-    .rows_affected();
-    if host_was_active || credentials > 0 || pairing_requests > 0 || invites > 0 {
-        crate::infra::database::insert_audit_in_transaction(
-            tx.connection(),
-            "monitoring.host.revoke",
-            &host_id,
-            Some(
-                "host, issued credentials, pending invites and pairing requests persistently revoked",
-            ),
-        )
-        .await?;
-    }
-    tx.commit().await?;
-    Ok(true)
 }

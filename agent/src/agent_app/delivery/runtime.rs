@@ -260,7 +260,7 @@ impl DeliveryWorker {
                                     info!(
                                         agent_state = "authorized",
                                         %request_id,
-                                        "browser reauthorization completed; queued reports will be retried"
+                                        "new instance pairing completed; queued reports will be retried"
                                     );
                                 }
                                 Err(error) => {
@@ -356,46 +356,6 @@ impl DeliveryWorker {
                                     agent_state = "reauth_required",
                                     "the paired credential is no longer accepted. Run `unionc-agent \
                                      pair --server <url>`: {rendered}"
-                                );
-                            } else {
-                                retry_at = Some(
-                                    Instant::now() + jitter(backoff, config.jitter_percent),
-                                );
-                            }
-                        }
-                        Ok(FlushOutcome::Failed(error)) if error.is_revoked() => {
-                            spool_flush_health.record_success();
-                            let rendered = anyhow::anyhow!(error);
-                            let reporter_is_current = match pairing::mark_reauth_required_if_current(
-                                &config,
-                                active_pairing,
-                                format!("the server revoked this host credential: {rendered}"),
-                            ) {
-                                Ok(true) => {
-                                    authorization_blocked = true;
-                                    retry_at = None;
-                                    pairing_retry_at = Instant::now();
-                                    true
-                                }
-                                Ok(false) => {
-                                    pairing_retry_at = Instant::now();
-                                    warn!("ignored a stale 403 from a reporter superseded by newer pairing state");
-                                    false
-                                }
-                                Err(state_error) => {
-                                    authorization_blocked = true;
-                                    retry_at = None;
-                                    pairing_retry_at = Instant::now();
-                                    warn!("failed to validate reauth_required state: {state_error}");
-                                    true
-                                }
-                            };
-                            if reporter_is_current {
-                                error!(
-                                    agent_state = "reauth_required",
-                                    "the server revoked this host credential. The Agent will keep a bounded local \
-                                     spool but will not recreate the host automatically; run `unionc-agent pair \
-                                     --server <url>`: {rendered}"
                                 );
                             } else {
                                 retry_at = Some(

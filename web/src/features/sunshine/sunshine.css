@@ -62,24 +62,8 @@
   box-shadow: var(--shadow);
 }
 
-.sunshine-manage-header {
-  display: flex;
+.sunshine-panel-close {
   flex: 0 0 auto;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-width: 0;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
-}
-
-.sunshine-manage-header strong {
-  min-width: 0;
-  overflow: hidden;
-  font-size: 14px;
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* ─── Sunshine 主机卡片 ────────────────────────────────────────────────────── */
@@ -310,10 +294,13 @@
   outline: none;
 }
 
-.sunshine-inline-input:focus-visible,
 .sunshine-inline-editable:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
+}
+
+.sunshine-inline-input:focus-visible {
+  outline: none;
 }
 
 .sunshine-inline-input.input-error {

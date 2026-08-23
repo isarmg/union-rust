@@ -43,7 +43,7 @@ Sunshine 可完全不配置；若对外承诺是当前仓库的完整产品“�
 | C5 | 温度与 GPU 能力探测 | C/O | 平台相关 | Agent |
 | C6 | Agent 主动 HTTPS 上报 | C | 启用 | Agent、Server |
 | C7 | 当前状态、详情与历史查询 | C | 启用 | Server、Web、SQLite |
-| C8 | 主机撤销、重新配对与生命周期管理 | C | 启用 | Server、Web、Agent |
+| C8 | 实例创建、名称编辑与永久删除 | C | 启用 | Server、Web、Agent |
 | G1 | 本地 spool、断线补传与退避 | G | 启用 | Agent |
 | G2 | 报文校验、ACK 校验、幂等与乱序保护 | G | 启用 | Agent、Server |
 | G3 | 管理员认证、会话、CSRF 与改密 | G | 启用 | Server、Web |
@@ -77,7 +77,7 @@ Sunshine 可完全不配置；若对外承诺是当前仓库的完整产品“�
 过期或取消后不会进入正常
 主机列表。
 
-已独立安装的 Agent 通过 `pair`（Windows 也可从托盘选择“配对/重新配对”）后：
+已独立安装的 Agent 通过 `pair`（Windows 也可从托盘选择“配对”）后：
 
 1. 在本机生成高熵通信 secret 和 polling secret；
 2. 只把二者的 SHA-256 哈希以及有限的设备展示信息提交给 Server；
@@ -98,7 +98,7 @@ Sunshine 可完全不配置；若对外承诺是当前仓库的完整产品“�
 | `activation_code`（授权密钥） | 是 | 短时、单次 | 把管理员创建的实例授权给一个配对请求 |
 | `pairing request_id` | 否 | 短时 | 浏览器页面与 Agent 配对请求的关联键 |
 | `polling_secret` | 是 | 配对完成或过期为止 | Agent 查询配对结果 |
-| `agent secret` | 是 | 撤销或重新配对为止 | 正常上报的 Bearer 凭据；明文只在 Agent 本机 |
+| `agent secret` | 是 | 对应实例被删除或本机开始新的配对为止 | 正常上报的 Bearer 凭据；明文只在 Agent 本机 |
 
 ### C4–C5：跨平台只读采集
 
@@ -131,7 +131,7 @@ Agent 只发起出站 HTTPS 请求。正常上报采用每实例凭据，Server 
 
 Server 保存两类数据：
 
-- `monitored_hosts`：Server 备注、Agent 平台身份、最近出现时间、能力与最新报告指针；
+- `monitored_hosts`：Server 名称、Agent 平台身份、最近出现时间、能力与最新报告指针；
 - `agent_metric_reports`：每次报告的指标摘要，完整 JSON 只保留每台主机最新一份。
 
 管理台提供：
@@ -141,7 +141,7 @@ Server 保存两类数据：
 - 当前 CPU、内存、网络、磁盘、温度和 GPU；
 - 完整硬件与 capability 详情；
 - 最多 1000 个历史采样点的趋势图；
-- 待激活、已激活、已撤销等生命周期状态。
+- 待激活、已激活、已取消等邀请状态。
 
 历史热路径只读取摘要数值列，不为画曲线重复读取和反序列化完整 JSON。
 
@@ -149,14 +149,13 @@ Server 保存两类数据：
 
 生命周期操作分开表达：
 
-- **取消待激活实例**：使尚未使用的激活码失效；
-- **撤销 Agent**：保留实例和历史，但拒绝全部有效凭据；
-- **重新配对**：为现有实例建立新凭据，不建立第二份历史身份；
-- **编辑备注**：保存 Server 独立持有的备注，Agent 不上报设备名称，后续报告和重新配对均不覆盖；
-- **永久删除**：经明确确认后原子删除实例、历史、凭据、请求和邀请；与可恢复的撤销分离。
+- **取消待激活邀请**：使尚未使用的一次性授权密钥失效；
+- **创建新实例并配对**：每次创建都预留新的 `instance_id`，不接管既有实例或历史；
+- **编辑名称**：保存 Server 独立持有的名称，Agent 不上报设备名称，后续报告不会覆盖；
+- **永久删除**：经明确确认后原子删除实例、历史、凭据、请求和邀请，并保留独立审计记录。
 
-被撤销的 Agent 没有自动复活或直接 token 轮换入口。Server 返回明确的撤销语义，Agent
-进入需要人工重新配对的状态。
+当前版本没有已激活主机的撤销状态，也没有对既有 `instance_id` 再签发 credential 的入口。
+Agent credential 失效后，需要由管理员创建新实例并在 Agent 本地再次执行配对。
 
 ## 4. 保障能力
 
@@ -335,7 +334,7 @@ Agent 的主上报和配对客户端可使用系统信任库，也可额外装�
 ### O6：Windows 通知区托盘
 
 Windows x64 MSI 默认安装一个与 `UnionCAgent` 服务分离的 GUI 托盘伴侣。它按登录会话以
-普通用户权限运行，提供本机状态、配对/重新配对、Server `/api/health` 可达性检测以及服务
+普通用户权限运行，提供本机状态、配对、Server `/api/health` 可达性检测以及服务
 启停；只有配对和服务
 控制等机器级操作才通过固定、非通用的子命令请求 UAC。用户菜单的“退出”也是机器级操作：
 确认停止 LocalService 身份下的采集服务后才关闭托盘；如果 UAC 被拒绝或停服务失败，
@@ -363,10 +362,10 @@ online/stale/offline 状态。
 - macOS 签名并公证的 pkg 或 MDM；
 - 无人值守部署可预装程序，但不能把已配对的状态目录克隆到多个主机。
 
-管理台只负责实例创建、激活状态、撤销和重新配对。软件签名、当前版本安装/重装和卸载属于 Agent
-发布工程，而不是 Server 在线功能。仓库内发布工程现在提供 DEB/RPM、Windows x64 WiX
-MSI 和 macOS pkg：普通卸载保留身份，按平台顺序成功完成并验证的显式 purge 才清理本地
-状态；完整退役仍要求先在 Web 撤销实例。Windows MSI 使用原生 SCM Service、独立托盘伴侣和 maintenance helper，不依赖
+管理台只负责实例创建、激活状态、名称编辑和永久删除。软件签名、当前版本安装/重装和
+卸载属于 Agent 发布工程，而不是 Server 在线功能。仓库内发布工程现在提供 DEB/RPM、
+Windows x64 WiX MSI 和 macOS pkg：普通卸载保留身份，按平台顺序成功完成并验证的显式
+purge 才清理本地状态；完整退役还需要在 Web 永久删除对应实例。Windows MSI 使用原生 SCM Service、独立托盘伴侣和 maintenance helper，不依赖
 PowerShell；HKLM Run 为每个登录会话启动普通用户托盘，开始菜单提供手工入口。用户菜单
 “退出”会先停止服务，而 MSI 在重装/卸载时发送的系统关闭消息只关闭托盘，
 服务仍由 Windows Installer 与 SCM 处理。旧 PowerShell 计划任务安装不会被识别或迁移。具体能力和命令见
@@ -430,7 +429,7 @@ Sunshine 管理是 Server 直接访问管理员显式配置的 Sunshine API，�
 
 1. 外部渠道安装 Agent；
 2. 管理员在 Web 创建待激活实例并把一次性授权密钥交给安装人员；
-3. Windows 安装人员从托盘选择“配对/重新配对”；其他平台或诊断场景运行 `pair`；
+3. Windows 安装人员从托盘选择“配对”；其他平台或诊断场景运行 `pair`；
 4. Windows 在目标设备的本机配置页输入 Server 地址和授权密钥后直接配对；CLI/其他平台
    则打开公开激活页、核对设备摘要并输入密钥；
 5. Agent 轮询到成功状态，以 `Activating` 日志幂等提交多个本地文件：各文件原子替换，
@@ -447,15 +446,15 @@ Sunshine 管理是 Server 直接访问管理员显式配置的 Sunshine API，�
 5. Agent 校验 ACK 后删除已确认的队首报文；
 6. 可选 OTLP 在 UnionC ACK 后通过常驻模式的独立队列异步导出。
 
-### 9.4 撤销与恢复
+### 9.4 失效与重新接入
 
 - 网络/5xx：Agent 退避并补传；
 - 报文永久错误：记录并丢弃该报文，避免污染 spool；
-- 当前常驻 `run` 收到 401（未知/失效/被替换 credential）或 403 + `agent_revoked`（主机
-  生命周期撤销）：写 `reauth_required` 并停止投递，但当前进程继续采样到有界 spool；
-  403 + `forbidden` 表示 credential/`host_id` 失配，只丢弃该份旧身份报文并继续 FIFO；
-  无法识别的 403 保留队首并退避；
-- 重新配对：管理员为同一实例生成新激活过程，历史不变；
+- 当前常驻 `run` 收到 UnionC 的稳定 401（credential 未知，包括实例已删除）时，写
+  `reauth_required` 并停止投递，但当前进程继续采样到有界 spool；未知 401 保持重试；
+- 403 + `agent_host_mismatch` 表示 credential/`host_id` 失配，只丢弃该份旧身份报文并继续
+  FIFO；无法识别的 403 保留队首并退避；
+- 重新接入：管理员创建新实例，在 Agent 本地再次执行配对；新实例有新的 ID，历史彼此独立；
 - 历史清理：按保留期后台执行；管理员也可在主机内容块中二次确认后永久删除指定实例，
   原子清除其历史、凭据、配对请求和邀请，同时保留独立审计记录。
 
@@ -471,7 +470,7 @@ Sunshine 管理是 Server 直接访问管理员显式配置的 Sunshine API，�
 | SSE 断线 | Web 回落轮询 | 否 |
 | 单项传感器不可用 | capability 标记 unavailable | 否 |
 | 激活码过期 | 待激活实例失败，可重新创建 | 尚未接入，不影响既有主机 |
-| Agent 身份收到 401 或 `agent_revoked` | 当前 `run` 停止投递并等待同实例重新配对；Web 撤销要到下次报告才被本机感知 | 只影响该实例 |
+| Agent 身份收到稳定 401 | 当前 `run` 停止投递并等待管理员创建新实例、在本机再次执行配对；Server 删除要到下次报告才被本机感知 | 只影响该实例 |
 | spool 持续不可写 | 当前采样无法落盘时丢弃并告警；常驻模式同类错误连续 100 次后退出交给服务管理器 | 有数据丢失风险 |
 | 报告 ACK 无法验证 | 报告保留并重试，不假定成功 | 暂时积压 |
 
@@ -492,7 +491,7 @@ Sunshine 管理是 Server 直接访问管理员显式配置的 Sunshine API，�
 |---|---|
 | Rust 单元测试 | 报文校验、采样转换、spool、配置、错误分类、密钥与 URL 处理 |
 | Server + SQLite 集成测试 | 临时数据库上的当前 schema、认证、CSRF、配对、限流、生命周期、乱序、保留、查询成本 |
-| Agent 合同测试 | 配对状态、ACK 验证、断线补传、撤销语义 |
+| Agent 合同测试 | 配对状态、ACK 验证、断线补传、失效凭据与删除竞态语义 |
 | Web 单元测试 | 会话错误页与跨会话缓存隔离、严格 UUID 激活路由、SSE、日志截断、监控转换、Sunshine 当前契约与 mutation 竞态 |
 | 三平台 CI | Agent 在 Linux、Windows、macOS 编译与测试 |
 | OTLP live 测试 | 验证 Agent → 真实 OpenTelemetry Collector 的接收合同；不覆盖 exporter/时序库查询 |
@@ -523,7 +522,7 @@ Sunshine 管理是 Server 直接访问管理员显式配置的 Sunshine API，�
 1. Agent 永远不接受 Server 命令；
 2. 正常运行不需要 Agent 入站端口；
 3. 浏览器永远不接触长期 Agent 通信 secret；
-4. 撤销是持久状态，不能被自动注册绕过；
+4. 已删除实例不能被旧 credential 或自动注册恢复；
 5. 一次性码只能绑定一个实例和一个配对请求；
 6. Agent 只有验证结构化 ACK 后才确认报告投递成功；
 7. 缺失指标用 capability/`null` 表达，不用 `0` 冒充；
@@ -555,7 +554,7 @@ Sunshine 管理是 Server 直接访问管理员显式配置的 Sunshine API，�
 |---|---|---|---|
 | 登录页 | 账号密码登录、会话错误重试 | 启动先验证现有会话；401 才进入登录页 | 当前只有单管理员账号 |
 | 总览 | Server 本机 CPU、内存、网络、磁盘吞吐；磁盘容量；Sunshine 服务健康 | 资源 20 秒轮询；浏览器内保留最多 180 个短期点；服务优先 SSE | 不是全部 Agent 的聚合总览，短期曲线不持久化 |
-| 主机 | 侧栏“+”创建邀请；一次性密钥；20 台分页；内联改名；当前值、硬件、capability、历史；重新配对、撤销和永久删除 | 列表/详情 10 秒，历史 30 秒，邀请状态 10 秒 | 当前页在线数不是全库在线数；管理操作不会向 Agent 下发命令 |
+| 主机 | 侧栏“+”创建邀请；一次性密钥；20 台分页；内联改名；卡片提供详情和永久删除；详情面板按分类用表格展示当前值、硬件和 capability，并保留原趋势卡片 | 列表/详情 10 秒，历史 30 秒，邀请状态 10 秒 | 只有点击“详情”才打开相邻面板；管理操作不会向 Agent 下发命令 |
 | 公开激活页 | 核对有限设备摘要并提交一次性授权密钥 | 只读取指定 pairing request | 不要求管理员会话，也不返回长期通信 secret |
 | Sunshine | 主机增删改查；应用、客户端、PIN、配置、重启与显示重置 | 探测中约 1.5 秒刷新，稳定后 30 秒；mutation 有缓存屏障和失败回滚 | 侧栏“+”会立即创建一个默认主机实体，不是先打开草稿表单 |
 | 日志 | 选择一台 Sunshine 主机，查看其 API 日志 | 30 秒刷新，最多渲染最新 2,000 行 | 不是 UnionC Server 运行日志，也不是审计日志 |
@@ -591,15 +590,15 @@ Agent 的 v2 创建配对请求/轮询状态与 `/api/agent/v1/report` 属于机
 | `/api/system/resources`、`/api/services` | 管理员 | Server 本机资源快照与 Sunshine 健康快照；读取不触发现场采样/网络探测 |
 | `/api/events/*` | 管理员会话 + 60 秒单次 ticket | 首帧快照和后续服务状态 SSE；慢消费者跳到最新状态，不做事件重放 |
 | `/api/audit-logs` | 管理员 | `before_id` 游标分页的审计导出；当前没有 Web 页面 |
-| `/api/monitoring/agent-instances*` | 管理员；修改需 CSRF | 创建、查询、取消一次性实例邀请，以及对同一实例重新配对 |
-| `/api/monitoring/hosts*` | 管理员；撤销需 CSRF | 主机分页、详情、历史，以及显式撤销；`/hosts/{id}` 保持 GET-only |
-| `/api/monitoring/managed-instances*` | 管理员；修改需 CSRF | 内联编辑 Server 备注和永久删除实例 |
+| `/api/monitoring/agent-instances*` | 管理员；修改需 CSRF | 创建、查询和取消一次性实例邀请；每次创建都预留新实例 ID |
+| `/api/monitoring/hosts*` | 管理员 | 主机分页、详情和历史；`/hosts/{id}` 保持 GET-only |
+| `/api/monitoring/managed-instances*` | 管理员；修改需 CSRF | 内联编辑名称和永久删除实例 |
 | `/api/agent/v1/report` | Agent Bearer + 限流 | 当前唯一权威指标上报数据面 |
 | `/api/agent/v2/*` | 未配对 Agent、公开激活页或 pairing secret | 创建/查询配对、提交一次性码、轮询最终状态 |
 | `/api/services/sunshine/hosts*` | 管理员；修改需 CSRF | 主机 CRUD/状态以及 apps、clients、config、locale、logs、PIN、restart、reset-display、covers 代理 |
 
 控制台会话、登录限流、Agent 限流和 SSE ticket 都是单进程内存状态；服务重启会清空它们，
-不会删除 SQLite 中的主机、历史、邀请、凭据 tombstone、Sunshine 配置或审计记录。
+不会删除 SQLite 中的主机、历史、邀请、凭据、Sunshine 配置或审计记录。
 
 ### 15.5 CLI 与服务入口
 
@@ -625,8 +624,8 @@ Agent 的 v2 创建配对请求/轮询状态与 `/api/agent/v1/report` 属于机
 1. 至少 CPU、内存、磁盘、网络四类基础采集，以及 capability/`null` 的缺失语义；
 2. 稳定实例 ID、每实例通信凭据和一个经过管理员授权的接入流程；
 3. Agent 主动出站上报、Server 身份校验、结构化 ACK 和报告幂等；
-4. 当前状态落库、主机列表/详情/历史摘要查询与 online/stale/offline/revoked 状态；
-5. 撤销、同实例重新配对和不允许凭据自动复活的生命周期；
+4. 当前状态落库、主机列表/详情/历史摘要查询与 online/stale/offline 状态；
+5. 实例创建、名称编辑、永久删除，以及不允许凭据自动复活的生命周期；
 6. 管理员认证以及能完成上述查看和生命周期操作的 Web 或等价客户端。
 
 spool、输入校验、CSRF、限流、schema 校验/恢复等被列为 `G`，不是因为它们可以在生产删除，
@@ -676,7 +675,7 @@ Windows release 制品包含 NVIDIA 支持而不含 OTLP；当前 macOS release 
 当前 canonical schema。
 
 这意味着现有旧部署不能原地升级：必须导出需要长期留存的数据，部署空的当前数据库，安装
-当前 Agent，清理旧本机身份后重新配对。新增任何旧字段 alias、默认回填或静默降级都必须先
+当前 Agent，清理旧本机身份后新建实例并配对。新增任何旧字段 alias、默认回填或静默降级都必须先
 改变本项目“只支持最新版本”的明确产品边界。
 
 ### 16.5 不应作为取舍删除的保障
@@ -690,7 +689,7 @@ Windows release 制品包含 NVIDIA 支持而不含 OTLP；当前 macOS release 
 - 生产 HTTPS、回环绑定、可信反代证明、安全响应头和上游响应体上限；
 - Sunshine 密码加密、密钥轮换与浏览器不回显；
 - 当前 schema 指纹、单实例锁、备份清单、同版本恢复验证和最新报告保留例外；
-- 撤销 tombstone 和“本地 purge 不等于 Server 撤销”的退役顺序；
+- Server 永久删除与本地 purge 的权限隔离和完整退役检查；
 - 对应受支持平台的文件权限、服务账户、安装回滚、同版本重装和 purge 安全检查。
 
 ## 17. 推荐产品组合与裁剪顺序
@@ -707,7 +706,7 @@ Windows release 制品包含 NVIDIA 支持而不含 OTLP；当前 macOS release 
 1. 删除完全不用的独立模块：OTLP、Sunshine、未支持平台制品、托盘或 GPU feature；
 2. 再简化体验层：SSE、总览、主题、逐设备详情和诊断命令；
 3. 最后才讨论历史深度、审计与备份等产品/运维能力，并为每项提供替代方案；
-4. 永远不要用“精简”名义删除凭据隔离、校验、ACK、撤销、CSRF、限流、原子落盘或恢复验证。
+4. 永远不要用“精简”名义删除凭据隔离、校验、ACK、实例删除事务、CSRF、限流、原子落盘或恢复验证。
 
 若只想部署基础监控，最干净的现状组合是：Server + Web + 默认或
 `--no-default-features` Agent，不配置 Sunshine 主机，不构建 OTLP，不运行 Windows 托盘。
@@ -734,9 +733,8 @@ Windows release 制品包含 NVIDIA 支持而不含 OTLP；当前 macOS release 
 - 列表/历史热路径不解析完整 payload；详情按 `latest_report_id` 读取最新完整报告。
 - 摘要中的网络、磁盘、GPU 等多设备值采用“最忙的单个设备”，不求和，避免 bridge、
   veth、bind mount 等重复计数；多块真实设备同时繁忙时可能低估总量。
-- revoked 主机默认保留身份、历史和 tombstone；管理员可另行二次确认并永久删除该实例及
-  关联数据。保留期任务仍只删除到期历史报告和审计记录，并为未硬删除的每台主机保留
-  最新一份报告。
+- 已激活主机没有 revoked 状态。管理员二次确认后会永久删除该实例及关联数据；保留期任务
+  只删除到期历史报告和审计记录，并为尚未删除的每台主机保留最新一份报告。
 - 温度/GPU 缺失通过 capability 和 `null` 表达。macOS 没有稳定的全局 GPU 利用率；
   Windows AMD/Intel 目前主要是 WDDM 聚合，未实现 ADLX/IGCL 厂商增强。
 - 没有告警规则、阈值通知、邮件/短信/Webhook、主机分组/标签、维护窗口或 SLA 计算。
@@ -755,15 +753,16 @@ Windows release 制品包含 NVIDIA 支持而不含 OTLP；当前 macOS release 
 - 常驻 `run` 的 OTLP 使用容量 128 的内存队列，没有磁盘 spool；进程退出、队列满或
   Collector 故障都可能丢点，但不会改变 UnionC 主上报的成功状态。一次性命令不补发旧
   spool 到 OTLP，当前报告在主 ACK 后同步尝试。
-- 本地 purge 不访问 Server。完整退役先在 Web 持久撤销，再按 DEB/RPM/Windows/macOS 各自
-  的受支持顺序完成并验证本地永久清理。
+- 本地 purge 不访问 Server。完整退役需要在 Web 永久删除实例，并按 DEB/RPM/Windows/macOS
+  各自的受支持顺序完成并验证本地永久清理；两项操作没有远程先后依赖。
 
 ### 18.4 Web 和管理能力边界
 
 - 主导航没有 URL Router；除公开激活路径外，页面不能深链，刷新回到总览。
 - 总览只显示 Server 本机资源和 Sunshine 服务，不聚合全部 Agent；短期 sparkline 只存在
   浏览器内存。
-- 主机页每页 20 台，页面标题的在线计数只覆盖当前页。没有搜索、筛选、排序或跨页聚合。
+- 主机页每页 20 台，没有搜索、筛选、排序或跨页聚合。详情只在管理员明确点击对应卡片的
+  “详情”后按需读取。
 - “日志”只显示单台 Sunshine API 日志，30 秒刷新并截到 2,000 行；没有 UnionC 运行日志、
   审计日志 UI、搜索、级别筛选、下载或实时追尾。
 - Settings 只改管理员密码；数据库、保留期、密钥、反代、TLS 和 Agent 参数都不在浏览器
@@ -826,7 +825,7 @@ Windows release 制品包含 NVIDIA 支持而不含 OTLP；当前 macOS release 
 | 共享 Agent 协议 | [`protocol/src/lib.rs`](../../protocol/src/lib.rs)、[`report.rs`](../../protocol/src/report.rs)、[`pairing.rs`](../../protocol/src/pairing.rs) | schema v1、主机指标/capability、配对和 ACK DTO |
 | Server 入口与路由 | [`server/src/main.rs`](../../server/src/main.rs)、[`server/src/startup.rs`](../../server/src/startup.rs)、[`server/src/http/mod.rs`](../../server/src/http/mod.rs) | CLI、启动顺序、后台任务、中间件与路由装配 |
 | 认证与访问控制 | [`server/src/auth/http.rs`](../../server/src/auth/http.rs)、[`server/src/http/access_control.rs`](../../server/src/http/access_control.rs) | 登录、Cookie、CSRF、改密、限流、反代证明、公共路径 |
-| Agent 控制面与数据面 | [`server/src/monitoring/http/mod.rs`](../../server/src/monitoring/http/mod.rs)、[`model/mod.rs`](../../server/src/monitoring/model/mod.rs)、[`store/mod.rs`](../../server/src/monitoring/store/mod.rs) | v1/v2 接入、校验、幂等、乱序、查询、撤销、重配对和保留 |
+| Agent 控制面与数据面 | [`server/src/monitoring/http/mod.rs`](../../server/src/monitoring/http/mod.rs)、[`model/mod.rs`](../../server/src/monitoring/model/mod.rs)、[`store/mod.rs`](../../server/src/monitoring/store/mod.rs) | v2 配对、报告校验、幂等、乱序、查询、名称编辑、永久删除和保留 |
 | Sunshine | [`server/src/sunshine/http/mod.rs`](../../server/src/sunshine/http/mod.rs)、[`server/src/sunshine/client.rs`](../../server/src/sunshine/client.rs)、[`server/src/sunshine/status.rs`](../../server/src/sunshine/status.rs) | CRUD、上游代理、体积限制、快慢探测与状态快照 |
 | 系统与事件 | [`server/src/system/http.rs`](../../server/src/system/http.rs)、[`server/src/system/resources.rs`](../../server/src/system/resources.rs) | health、ready、本机资源、审计导出、SSE ticket/stream |
 | SQLite 与密钥 | [`server/src/infra/database/mod.rs`](../../server/src/infra/database/mod.rs)、[`server/src/infra/database/maintenance/mod.rs`](../../server/src/infra/database/maintenance/mod.rs)、[`server/src/infra/secrets.rs`](../../server/src/infra/secrets.rs)、[`server/schema/sqlite.sql`](../../server/schema/sqlite.sql) | 当前 schema 初始化/校验、事务、保留、同版本备份恢复、完整性与 Sunshine 密文 |

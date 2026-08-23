@@ -225,7 +225,13 @@ function SystemSection({ host }: { host: SunshineHostInfo }) {
   );
 }
 
-export function HostPanel({ host }: { host: SunshineHostInfo }) {
+export function HostPanel({
+  host,
+  onClose,
+}: {
+  host: SunshineHostInfo;
+  onClose: () => void;
+}) {
   const [section, setSection] = useState<HostSection>("apps");
   const tabsId = useId();
 
@@ -248,6 +254,16 @@ export function HostPanel({ host }: { host: SunshineHostInfo }) {
             </button>
           ))}
         </nav>
+        <button
+          type="button"
+          className="icon-button sunshine-panel-close"
+          aria-label="关闭管理面板"
+          title="关闭"
+          autoFocus
+          onClick={onClose}
+        >
+          <X size={18} aria-hidden="true" />
+        </button>
       </div>
       <div role="tabpanel" id={`${tabsId}-panel-${section}`} aria-labelledby={`${tabsId}-tab-${section}`}>
         {section === "apps" && <AppsSection host={host} />}

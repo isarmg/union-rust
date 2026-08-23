@@ -117,9 +117,8 @@ monitored_hosts ◄──── agent_credentials
 
 ### 4.4 `monitored_hosts`
 
-稳定 Agent 实例：身份、capabilities、注册/最后出现时间、latest 报告指针、latest interval、`active/revoked` 生命周期。
-
-撤销不会删除这行，因为历史、审计和重新配对都需要稳定 tombstone。
+已激活的 Agent 实例：身份、capabilities、注册/最后出现时间、latest 报告指针和 latest interval。
+当前 schema 不保存主机生命周期状态字段；实例退役时整行及其关联数据被永久删除。
 
 ### 4.5 `agent_metric_reports`
 
@@ -127,11 +126,11 @@ monitored_hosts ◄──── agent_credentials
 
 ### 4.6 `agent_credentials`
 
-保存 credential ID、host ID、Agent secret 的 SHA-256、签发/撤销时间，并预留 `last_used_at`。当前报告认证路径尚未更新 `last_used_at`；有效性判断依赖 `revoked_at` 与主机生命周期。重新配对时旧 credential 被撤销，历史记录保留。
+保存 credential ID、host ID、Agent secret 的 SHA-256、签发时间，并预留 `last_used_at`。当前报告认证路径尚未更新 `last_used_at`；credential 随对应主机实例永久删除。
 
 ### 4.7 `agent_instance_invites`
 
-管理员邀请：预留 instance ID、activation code hash、展示名、状态、过期/激活/撤销时间。部分唯一索引保证一个 instance 同时最多一个 pending 邀请。
+管理员邀请：预留 instance ID、activation code hash、名称、状态、过期/激活/取消时间。状态为 `pending/active/cancelled`；过期状态由读取时按时间计算。
 
 ### 4.8 `agent_pairing_requests`
 
@@ -152,12 +151,11 @@ BEGIN IMMEDIATE
   1. 查 pairing request，确认 pending 且未过期
   2. 按 activation hash 查 invite，确认 pending 且未过期
   3. 防止 code 被别的 request 抢占
-  4. 新实例时创建 monitored_hosts；重配时沿用原实例
-  5. 撤销该实例旧 credential
-  6. 插入新 token hash
-  7. invite → active
-  8. pairing request → active + instance_id
-  9. 写审计
+  4. 创建新的 monitored_hosts 行
+  5. 插入该实例的新 token hash
+  6. invite → active
+  7. pairing request → active + instance_id
+  8. 写审计
 COMMIT
 ```
 
@@ -213,17 +211,18 @@ COMMIT
 ```text
 邀请：pending ──激活──> active
         ├─到期（响应计算为 expired）
-        └─取消──> revoked/cancelled 展示
+        └─取消──> cancelled
 
 配对：pending/waiting ──激活──> active
          ├─到期──> expired 展示
          └─拒绝──> denied
 
-实例：active ──管理员撤销──> revoked
-        revoked ──新邀请 + 新配对──> active
+实例：激活创建 ──管理员永久删除──> 不存在
 ```
 
-重新配对保留 instance 和历史；Server 撤销旧 credential，并激活 Agent 预先生成的新 secret 所对应的哈希。Server 不生成或回传 Agent secret。硬删除主机与撤销身份语义不同：管理台必须二次确认，Server 在单一事务中删除实例、历史、credential、配对请求和邀请，并保留独立审计记录。
+每次邀请都会预留新的 instance ID。再次执行本地配对会创建新实例，不接管旧实例或历史。
+Server 不生成或回传 Agent secret。管理台删除需要二次确认，并在单一事务中删除实例、历史、
+credential、配对请求和邀请，同时保留独立审计记录。
 
 ## 11. 数据保留期
 
@@ -279,7 +278,7 @@ manifest 包含应用版本、schema、key ID 和快照 SHA-256。两者必须�
 
 替换前的活动库若健康，命令会留下可再次交给 `restore` 的 `unionc.pre-restore-*.db` 与 manifest。若旧库已损坏且没有 WAL/SHM，可能只留下无 manifest、不能直接 `restore` 的 `unverified` 取证副本，然后继续替换；若损坏库仍有 WAL/SHM，命令会保留 main/WAL/SHM 完整文件族并拒绝替换，避免丢掉未 checkpoint 页。这些恢复点/取证文件不会自动清理；确认演练成功且已有异机备份后，再按类型成对或成组清理。
 
-恢复只接受当前同版本快照。旧版本数据需在旧系统导出中立格式、全新部署并重新配对；当前项目不提供导入桥。
+恢复只接受当前同版本快照。旧版本数据需在旧系统导出中立格式、全新部署并创建新实例配对；当前项目不提供导入桥。
 
 ## 13. 不要直接改生产数据库
 

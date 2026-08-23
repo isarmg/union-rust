@@ -1006,7 +1006,7 @@ mod tests {
     }
 
     #[test]
-    fn run_keeps_the_current_credential_during_a_non_active_repair() {
+    fn run_keeps_the_current_credential_during_an_incomplete_pairing_attempt() {
         let directory =
             std::env::temp_dir().join(format!("unionc-current-reporter-{}", Uuid::new_v4()));
         let config = test_config(directory.clone());
@@ -1072,7 +1072,7 @@ mod tests {
         .unwrap();
         assert!(
             existing_reporter_for_run(&config).unwrap().is_some(),
-            "a denied re-pair must not discard the still-authorized old credential"
+            "a denied pairing attempt must not discard the still-authorized credential"
         );
         assert!(has_current_authorized_identity(&config).unwrap());
 
@@ -1090,7 +1090,7 @@ mod tests {
         .unwrap();
         assert!(
             existing_reporter_for_run(&config).unwrap().is_some(),
-            "an expired re-pair must not discard the still-authorized old credential"
+            "an expired pairing attempt must not discard the still-authorized credential"
         );
         assert!(has_current_authorized_identity(&config).unwrap());
 
@@ -1173,7 +1173,7 @@ mod tests {
             mark_reauth_required_if_current(
                 &config,
                 Some((old_generation, old_request)),
-                "old reporter rejected during pending repair",
+                "old reporter rejected during pending pairing",
             )
             .unwrap()
         );
@@ -1206,13 +1206,13 @@ mod tests {
     }
 
     #[test]
-    fn revoked_authorization_state_is_explicit() {
-        let directory = std::env::temp_dir().join(format!("unionc-revoked-{}", Uuid::new_v4()));
+    fn rejected_authorization_state_is_explicit() {
+        let directory = std::env::temp_dir().join(format!("unionc-rejected-{}", Uuid::new_v4()));
         let config = test_config(directory.clone());
-        mark_reauth_required(&config, "HTTP 403 revoked").unwrap();
+        mark_reauth_required(&config, "HTTP 401 unauthorized").unwrap();
         let state = local_auth_state(&config).unwrap().unwrap();
         assert_eq!(state.status, "reauth_required");
-        assert!(state.reason.contains("403"));
+        assert!(state.reason.contains("401"));
         fs::remove_dir_all(directory).unwrap();
     }
 

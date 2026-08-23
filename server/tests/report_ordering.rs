@@ -31,7 +31,7 @@ fn identity(host_id: Uuid) -> HostIdentity {
         os_version: Some("6.1.0".into()),
         kernel_version: Some("6.1.0".into()),
         arch: "x86_64".into(),
-        agent_version: "0.3.3".into(),
+        agent_version: "0.3.4".into(),
     }
 }
 
@@ -48,7 +48,7 @@ fn report(
         "host": {
             "id": host_id, "os": "linux",
             "os_version": "6.1.0", "kernel_version": "6.1.0",
-            "arch": "x86_64", "agent_version": "0.3.3"
+            "arch": "x86_64", "agent_version": "0.3.4"
         },
         "interval_seconds": 10.0,
         "system": {
@@ -123,7 +123,7 @@ async fn a_late_arriving_old_report_is_stored_without_rewriting_host_state() {
         .await
         .expect("read")
         .expect("host exists");
-    assert_eq!(after_stale.name, "测试实例", "旧报文不得覆盖 Server 备注");
+    assert_eq!(after_stale.name, "测试实例", "旧报文不得覆盖 Server 名称");
     assert_eq!(
         after_stale
             .capabilities
@@ -169,7 +169,7 @@ async fn a_late_arriving_old_report_is_stored_without_rewriting_host_state() {
         .expect("host exists");
     assert_eq!(
         after_newer.name, "测试实例",
-        "更新的报文也不得覆盖 Server 备注"
+        "更新的报文也不得覆盖 Server 名称"
     );
     assert!(
         after_newer.last_seen_at >= last_seen_after_current,

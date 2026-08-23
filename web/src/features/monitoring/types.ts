@@ -17,11 +17,10 @@ export interface MonitoringHostSummary {
   kernel_version: string | null;
   arch: string;
   agent_version: string;
-  lifecycle_status: "active" | "revoked";
   registered_at: string;
   last_seen_at: string;
   latest_collected_at: string | null;
-  status: "online" | "stale" | "offline" | "revoked";
+  status: "online" | "stale" | "offline";
   capabilities: MonitoringCapability[];
   cpu_usage_percent: number | null;
   memory_usage_percent: number | null;
@@ -112,7 +111,6 @@ export interface MonitoringAgentReport {
   collected_at: string;
   host: {
     id: string;
-    name: string;
     os: string;
     os_version: string | null;
     kernel_version: string | null;
@@ -133,7 +131,7 @@ export interface MonitoringAgentReport {
   agent: { spool_pending_batches: number; collector_errors: number };
 }
 
-export type AgentInstanceStatus = "pending" | "expired" | "cancelled" | "revoked" | "active";
+export type AgentInstanceStatus = "pending" | "expired" | "cancelled" | "active";
 
 /** 管理端创建的单机 Agent 激活邀请；不包含任何 Agent 访问令牌。 */
 export interface AgentInstanceSummary {

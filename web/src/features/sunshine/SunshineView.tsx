@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Boxes, X } from "lucide-react";
+import { Boxes } from "lucide-react";
 import { useMutation, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ContentTitle, InlineNotice, LoadingBlock, MutationError } from "../../shared/components/ui";
+import { adjacentPanelLayout } from "../../shared/lib/adjacentPanel";
 import { sunshineApi as api } from "./api";
 import {
   applySunshineHostPatch,
@@ -23,35 +24,7 @@ import { HostPanel } from "./components/HostPanel";
 export { InlineHostField } from "./components/HostCard";
 export { appDraft } from "./components/AppsSection";
 
-export function managementPanelLayout({
-  cardWidth,
-  cardHeight,
-  columnGap,
-  rowGap,
-  column,
-  columnCount,
-  top,
-}: {
-  cardWidth: number;
-  cardHeight: number;
-  columnGap: number;
-  rowGap: number;
-  column: number;
-  columnCount: number;
-  top: number;
-}) {
-  const panelColumns = Math.min(3, columnCount);
-  const opensRight = column < Math.ceil(columnCount / 2);
-  const requestedStart = opensRight ? column + 1 : column - panelColumns;
-  const startColumn = Math.max(0, Math.min(requestedStart, columnCount - panelColumns));
-  return {
-    left: startColumn * (cardWidth + columnGap),
-    top,
-    width: panelColumns * cardWidth + (panelColumns - 1) * columnGap,
-    height: 3 * cardHeight + 2 * rowGap,
-    placement: opensRight ? "right" : "left",
-  } as const;
-}
+export { adjacentPanelLayout as managementPanelLayout } from "../../shared/lib/adjacentPanel";
 
 export function SunshineView({
   addTrigger = 0,
@@ -202,7 +175,7 @@ export function SunshineView({
       const columnCount = Math.max(1, gridStyle.gridTemplateColumns.split(/\s+/).filter(Boolean).length);
       const cardRect = selectedCard.getBoundingClientRect();
       const gridRect = grid.getBoundingClientRect();
-      const layout = managementPanelLayout({
+      const layout = adjacentPanelLayout({
         cardWidth: cardRect.width,
         cardHeight: cardRect.height,
         columnGap: Number.parseFloat(gridStyle.columnGap) || 0,
@@ -298,20 +271,11 @@ export function SunshineView({
               role="dialog"
               aria-label={`${selectedHost.name} 管理面板`}
             >
-              <header className="sunshine-manage-header">
-                <strong title={selectedHost.name}>{selectedHost.name} 管理</strong>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="关闭管理面板"
-                  title="关闭"
-                  autoFocus
-                  onClick={() => setSelectedId(null)}
-                >
-                  <X size={18} aria-hidden="true" />
-                </button>
-              </header>
-              <HostPanel key={selectedHost.id} host={selectedHost} />
+              <HostPanel
+                key={selectedHost.id}
+                host={selectedHost}
+                onClose={() => setSelectedId(null)}
+              />
             </aside>
           ) : null}
         </div>

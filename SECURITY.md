@@ -26,10 +26,9 @@ UnionC **强制**运行在 HTTPS 反向代理之后：
   （`config/runtime.rs`），因此不可能被直接暴露到公网；
 - 登录、改密与 Agent 接口要求 `X-Forwarded-Proto: https`、`X-Forwarded-For`，以及
   与服务端 `UNIONC_PROXY_SECRET` 恒定时间匹配的 `X-UnionC-Proxy-Secret`。反代必须覆盖
-  外部同名头；缺任一项返回 **421 Misdirected Request**（不是 403——Agent 报告的 403
-  表示主机生命周期已撤销，或当前有效 credential 与 body 中的 `host_id` 绑定不匹配；
-  未知、失效或被重配替换的 credential 返回 401。当前常驻 `run` 对 401/403 都会停止
-  投递并等待新的浏览器配对）；
+  外部同名头；缺任一项返回 **421 Misdirected Request**（不是 403——Agent 报告的 403 仅在当前有效 credential 与 body 中的
+  `host_id` 绑定不匹配时返回稳定机器码；未知 credential（包括实例已删除）返回 401。
+  当前常驻 `run` 仅把 UnionC 的稳定 401 视为需要创建新实例并配对；未知 401/403 保持重试）；
 - 按 IP 的限流取最后一个 `X-Forwarded-For` 头的**最右**一项；该项必须是裸 IP，
   非法、为空或携带端口都会返回 421，绝不向左回退到客户端可控值。该实现假定前面
   **恰好有一层**可信反代。若你在反代之前再叠加 CDN，必须相应调整，否则限流会退化。
@@ -90,8 +89,8 @@ Sunshine 返回的 HTTP 3xx 会按上游失败处理，不会请求 `Location` �
 
 - 普通卸载刻意保留本机 host-id、agent-token、配对状态、配置和 spool，避免误卸载后
   重装创建第二个身份；这不等同于永久退役。
-- 永久退役必须先在 Web 撤销实例，再显式执行平台 purge。purge 只清理本机且不会持有、
-  请求或伪造管理员凭据去调用 Server。
+- 永久退役必须分别在 Web 永久删除实例，并显式执行平台 purge。两项操作没有远程先后
+  依赖；purge 只清理本机且不会持有、请求或伪造管理员凭据去调用 Server。
 - Linux/macOS 只删除 root-only ownership marker 能证明由本包创建、且属性仍匹配的专用
   账户；Windows 只删除固定 Program Files/ProgramData 子路径，并拒绝接管同名非 UnionC
   服务或不可信的预存状态目录。
@@ -109,7 +108,7 @@ Sunshine 返回的 HTTP 3xx 会按上游失败处理，不会请求 `Location` �
 - 需要时为报告数据入口启用 mTLS（见 `docs/examples/caddy/Caddyfile.agent-api.example`）。不要对首次
   pairing/bootstrap 入口预先要求客户端证书；应拆分域名或路由，并在配对后另行签发证书
 - 首次部署后立即移除 `UNIONC_ALLOW_BOOTSTRAP` 与 `UNIONC_BOOTSTRAP_PASSWORD`
-- 退役主机使用 `POST /api/monitoring/hosts/{id}/revoke` 持久撤销；不要直接删除数据库行，
-  否则会丢失身份 tombstone、凭据吊销状态和审计关联
-- 恢复或轮换凭据时，为同一 `instance_id` 创建新邀请并完成浏览器重新配对，旧 credential
-  会在激活事务中撤销，历史身份保持不变
+- 退役主机使用管理台“删除”或 `DELETE /api/monitoring/managed-instances/{id}`；不要直接
+  删除数据库行。Server 会在单一事务中清理实例、历史、credential、配对请求和邀请并记录审计
+- credential 丢失或失效后，在管理台创建新实例并再次执行配对。当前版本不提供同实例
+  credential 轮换、主机撤销状态或恢复已删除实例的兼容入口

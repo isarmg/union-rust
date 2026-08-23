@@ -25,12 +25,11 @@ describe("pending Agent instances", () => {
       instance("active", "active"),
       instance("expired", "expired"),
       instance("cancelled", "cancelled"),
-      instance("revoked", "revoked"),
     ];
 
     expect(pendingAgentInstances(instances).map(({ request_id }) => request_id))
       .toEqual(["pending"]);
-    expect(instances).toHaveLength(5);
+    expect(instances).toHaveLength(4);
   });
 });
 

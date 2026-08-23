@@ -1,6 +1,6 @@
 # Agent 一次性授权配对协议
 
-本文描述当前 UnionC Agent 的首次配对、重新配对与撤销策略。身份建立只使用 v2 配对；
+本文描述当前 UnionC Agent 的一次性授权配对与实例删除策略。身份建立只使用 v2 配对；
 不改变指标数据面：配对完成后仍通过 `/api/agent/v1/report` 主动上报。
 
 ## 设计目标
@@ -10,7 +10,7 @@
 - Windows 本机页或公开激活页只提交短时一次性授权密钥，不接触长期 Agent secret；
 - Agent 本地生成 secret，Server 只保存 SHA-256；
 - 配对中断或响应丢失后可以安全重试；
-- 撤销是持久状态，只有管理员重新邀请并完成新配对才能恢复；
+- 退役只允许永久删除；再次接入必须创建新的实例与历史身份；
 - 继续保持 Agent 零入站端口、无命令通道、无自更新器；
 - 线路状态与本地状态都采用唯一的当前 schema，不接受旧字段或旧状态名。
 
@@ -18,7 +18,7 @@
 
 | 参与方 | 职责 | 持有的秘密 |
 |---|---|---|
-| 管理员浏览器 | 创建待激活实例、把授权密钥交给安装人员、撤销或重新配对 | 管理员会话、一次性授权密钥 |
+| 管理员浏览器 | 创建待激活实例、把授权密钥交给安装人员、改名或永久删除实例 | 管理员会话、一次性授权密钥 |
 | Windows 本机页 | 一次填写 Server 地址和授权密钥，请求固定 UAC 配对模式 | 本次操作内的授权密钥 |
 | 公开激活页 | CLI/其他平台核对设备信息、输入授权密钥 | 一次性授权密钥 |
 | Agent | 生成通信 secret、建立配对请求、轮询状态、持久化身份 | agent secret、polling secret |
@@ -35,7 +35,7 @@
 pending ──激活──> active
    │
    ├──过期──> expired（响应层计算状态）
-   └──取消──> cancelled/revoked
+   └──取消──> cancelled
 ```
 
 ### Agent 配对请求
@@ -50,8 +50,10 @@ waiting ──绑定邀请──> active
 ### 主机实例
 
 ```text
-active ──撤销──> revoked ──管理员重新配对──> active
+激活事务创建 active 实例 ──管理员永久删除──> 数据库中不存在
 ```
+
+删除后的设备再次接入时，管理员创建新的待激活实例；Server 分配新的 `instance_id`。
 
 网络错误不会触发状态转换。Server 只在数据库事务提交后返回成功；客户端丢失成功响应时，
 用相同请求重新查询或提交会得到同一结果。
@@ -122,15 +124,6 @@ X-CSRF-Token: ...
 }
 ```
 
-为已有主机重新配对时额外提交：
-
-```json
-{
-  "instance_id": "已有主机 UUID",
-  "display_name": "机房 A 主机",
-  "expires_in_minutes": 15
-}
-```
 
 创建响应：
 
@@ -147,8 +140,8 @@ X-CSRF-Token: ...
 ```
 
 `activation_code` 只在创建响应出现一次，响应设置 `Cache-Control: no-store`。
-`display_name` 是 Server 为该实例持有的备注，不来自 Agent。首次激活用它初始化主机卡片
-名称；重新配对不会用新邀请的值覆盖既有备注。
+`display_name` 是 Server 为该实例持有的名称，不来自 Agent。激活时用它初始化主机卡片；
+后续 Agent 上报不会覆盖。每次创建邀请都会预留新的 `instance_id`。
 
 ### 列出与取消邀请
 
@@ -162,15 +155,13 @@ DELETE /api/monitoring/agent-instances/{invite_request_id}
 ### 管理主机
 
 ```http
-POST /api/monitoring/hosts/{instance_id}/revoke
-PATCH /api/monitoring/managed-instances/{instance_id}
+PATCH  /api/monitoring/managed-instances/{instance_id}
 DELETE /api/monitoring/managed-instances/{instance_id}
 ```
 
-撤销会使所有当前凭据失效并把主机标记为 `revoked`，但保留身份和历史。重新启用必须创建
-绑定同一 `instance_id` 的新邀请并完成新的浏览器配对。
-`PATCH` 的 JSON 为 `{"remark":"..."}`，只更新 Server 持有的备注；Agent 上报和重新配对
-都不会覆盖。`DELETE` 则永久删除实例、历史、凭据和全部关联邀请，不可恢复。
+`PATCH` 的 JSON 为 `{"remark":"..."}`，只更新 Server 持有的名称；Agent 上报不会覆盖。
+`DELETE` 永久删除实例、历史、credential、配对请求和全部关联邀请，不可恢复。当前版本
+没有主机撤销端点，也没有对既有 `instance_id` 再签发 credential 的端点。
 
 ## Agent 接口
 
@@ -189,7 +180,7 @@ Content-Type: application/json
     "os_version": "...",
     "kernel_version": "...",
     "arch": "x86_64",
-    "agent_version": "0.3.3"
+    "agent_version": "0.3.4"
   },
   "token_hash": "64位小写SHA-256十六进制",
   "polling_secret_hash": "另一份64位小写SHA-256十六进制"
@@ -226,7 +217,7 @@ GET /api/agent/v2/pairing-requests/{request_id}
   "request_id": "...",
   "os": "linux",
   "arch": "x86_64",
-  "agent_version": "0.3.3",
+  "agent_version": "0.3.4",
   "status": "waiting",
   "expires_at": "2026-08-15T12:15:00Z"
 }
@@ -299,7 +290,7 @@ Content-Type: application/json
 以原子文件替换幂等写入，最后才把 pairing state 写成 `Active`。这是可恢复的多文件提交，
 不是一次覆盖全部文件的文件系统原子事务。成功时还会把持久化 JSON 的
 `pairing_endpoint` 清空。若 `UNIONC_AGENT_PAIRING_ENDPOINT` 长期存在，下次配置加载会重新
-应用该覆盖；否则 pairing/report 分域部署须在重配对前通过配置或环境变量恢复 bootstrap
+应用该覆盖；否则 pairing/report 分域部署须在下一次配对前通过配置或环境变量恢复 bootstrap
 endpoint。pairing origin 必须能提供 Server 相对路径指向的 `/agent/activate/...` SPA。
 
 ## 报告认证与 ACK
@@ -311,7 +302,7 @@ POST /api/agent/v1/report
 Authorization: Bearer <agent-secret>
 ```
 
-Server 只按 secret 的 SHA-256 查找 active credential。当前成功契约唯一为 HTTP 202、
+Server 只按 secret 的 SHA-256 查找仍存在的 credential。当前成功契约唯一为 HTTP 202、
 `Content-Type: application/json` 和完整 JSON ACK；Agent 不能把其他 2xx 或其他媒体类型
 当作成功。ACK 还必须核对：
 
@@ -325,42 +316,35 @@ Agent 可以安全删除对应 spool 项。
 
 代理误路由返回的 200 HTML、空响应或其他 JSON 都视为投递失败，报告保留在 spool。
 
-## 重新配对
+## 再次配对
 
-重新配对不建立第二台逻辑主机：
+再次执行配对会建立另一台逻辑主机，而不是修改既有实例：
 
-1. 管理员对现有 `instance_id` 创建新邀请；
-2. 新安装或修复后的 Agent 建立新 pairing request；
-3. 浏览器完成绑定；
-4. Server 在同一事务中插入新 credential、撤销旧 credential、更新 Agent 平台元数据并把
-   生命周期改回 active；Server 备注保持不变；
-5. 历史报告和 `instance_id` 保持不变。
+1. 管理员点击“+”创建新邀请，Server 预留新的 `instance_id`；
+2. Agent 建立新的 pairing request，浏览器或 Windows 本机页完成绑定；
+3. Server 在同一事务中创建新主机和唯一 credential；
+4. Agent 以可恢复的 `Activating` 日志替换本地 host ID、token 与 report endpoint；
+5. 旧 Server 实例及其历史保持原样，直到管理员明确删除。
 
-只有第 4 步成功提交才会撤销旧 credential。重新配对仍在 creating/pending，或最终被拒绝、
-过期时，本地 `auth-state` 仍为 `authorized` 的 Agent 会继续使用原 host/token 上报；重启也
-不会把一次失败的重新配对误当成原授权失效。首次配对没有旧授权，因此不适用这一回退。
-报告写事务会再次核对“该 host 下的这个精确 token hash 仍未撤销”：若轮换先提交，在途旧
-请求返回 401 且不落库；若报告先取得写事务，则它先完成、轮换随后撤销，形成明确的线性顺序。
+新配对仍在 creating/pending，或最终被拒绝、过期时，本地 `auth-state` 已是 `authorized`
+的 Agent 会继续使用原 host/token 上报；只有新实例成功激活并完成本地提交后才切换身份。
+报告写事务会再次核对该 host 与精确 token hash 是否仍存在：若管理员删除先提交，在途报告
+返回 401 且不落库；若报告先取得写事务，则报告先完成、删除随后级联清理，顺序明确。
 
-重复配对记录允许保留用于审计，因此数据库不能对 invite 或已激活 pairing request 的
-`instance_id` 设置“全历史唯一”约束；并发 pending 邀请由事务锁或局部唯一约束控制。
 尚未获管理员批准的 pending pairing request 不属于审计历史：过期后会由后续创建事务
 每批最多清理 512 条，并且全库最多保留 4096 条仍在有效期内的未决请求。达到上限时创建
 接口返回 429，避免匿名请求在 15 分钟有效期内无界扩大 SQLite/WAL 与磁盘占用；已激活
 记录不计入这个上限。被拒绝的请求会保留 30 天供 Agent 读取终态，之后与过期 pending
-记录共用同一批 512 条的有界清理。分批清理也避免升级旧数据库时由第一条新请求触发超大
-删除事务。
+记录共用同一批 512 条的有界清理。
 
-## 撤销与删除
+## 永久删除
 
-撤销是认证状态，不等于物理删除：
+删除是唯一的主机退役操作：
 
-- `revoked` 主机仍作为 tombstone 存在；
-- 所有 credential 设置 `revoked_at`；
-- 正常报告被拒绝；
-- 只有管理员新建、绑定同一实例的邀请才能恢复。
-
-如果提供“删除历史数据”，也应保留最小撤销 tombstone，避免丢失凭据撤销和审计关联。
+- 删除事务先写审计，再清理该实例的配对请求和邀请；
+- 删除主机行会级联清理历史报告与 credential；
+- 删除后旧 secret 的上报返回 401 + `unauthorized`；
+- 数据不可恢复；设备再次接入必须创建新实例并取得新的 `instance_id`。
 
 ## 响应丢失与并发语义
 
@@ -372,8 +356,8 @@ Agent 可以安全删除对应 spool 项。
 | 两个浏览器同时提交同一码 | SQLite `BEGIN IMMEDIATE` 在单写者事务中串行校验并消费，只有一个 request 能提交 |
 | Agent 状态响应丢失 | 使用 polling secret 重试，持续返回同一 instance ID |
 | 首次报告投递失败 | 配对仍成功；`run` 已先把报告写入 spool，可重试失败时保留，永久内容错误时丢弃 |
-| 重配对期间凭据并发 | 重新配对事务明确撤销此前凭据，不提供平滑兼容窗口 |
-| 跨服务器重配后遗留旧身份 spool | 新服务端返回 403 + `forbidden`；Agent 只丢弃不可能匹配新凭据的旧报文并继续 FIFO，不把新凭据误标为撤销 |
+| 新配对期间本地凭据并发 | 原 reporter 继续工作；新实例成功激活并完成本地提交后才切换，失败不会破坏原授权 |
+| 切换服务器后遗留旧身份 spool | 新服务端返回 403 + `agent_host_mismatch`；Agent 只丢弃不可能匹配新凭据的旧报文并继续 FIFO |
 
 ## 安全要求
 
@@ -395,7 +379,7 @@ Agent 可以安全删除对应 spool 项。
 当前版本不实现 `/api/agent/v1/register`、enrollment code、长期 enrollment token、浏览器
 返回明文 report secret 或旧 credential 回填。`/api/agent/v1/report` 中的 `v1` 是当前数据
 面固定路径，不表示仍支持旧的身份建立流程。旧 Agent 必须清理本地旧身份、安装当前版本并
-重新配对；Server 只接受当前协议和当前数据库 schema。
+创建新实例并配对；Server 只接受当前协议和当前数据库 schema。
 
 ## 软件分发边界
 
@@ -414,12 +398,12 @@ Web 只提示用户先安装 Agent，再运行 `unionc-agent pair --server https
 Server 与 Agent 的合同测试至少覆盖：
 
 - 新实例完整配对；
-- 已有实例重新配对并保留历史；
+- 再次配对获得新的 instance ID，且不会合并旧实例历史；
 - 激活码错误、过期、取消和重放；
 - 配对请求错误、过期和 polling secret 错误；
 - 同码并发提交；
 - 激活响应和状态响应丢失后的重试；
-- 撤销后报告失败，只有同实例重新配对可以恢复；
+- 永久删除级联清理历史与 credential，旧 secret 随后收到 401；
 - Server/Agent 在配对中途重启；
 - Activating 日志能在任意多文件提交中断点幂等恢复，且 `Active` 最后写入；
 - 错路由 200 响应不能被当作报告成功；

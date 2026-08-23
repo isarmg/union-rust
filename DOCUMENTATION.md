@@ -1,6 +1,6 @@
 # UnionC 项目文档
 
-> 版本：v0.3.3 ｜ 文档更新：2026-08-22
+> 版本：v0.3.4 ｜ 文档更新：2026-08-23
 > 本文是项目的完整说明：功能、架构、各组成部分、接口契约、部署与运维。
 
 ## 目录
@@ -13,7 +13,7 @@
   - [3.3 管理台前端 `web`](#33-管理台前端-web)
   - [3.4 可选的 OTLP 导出](#34-可选的-otlp-导出)
 - [4. 功能详解](#4-功能详解)
-  - [4.1 主机实例与一次性授权配对](#41-主机实例与一次性授权配对) ｜ [4.2 重新配对、撤销与删除边界](#42-重新配对撤销与删除边界)
+  - [4.1 主机实例与一次性授权配对](#41-主机实例与一次性授权配对) ｜ [4.2 配对与删除边界](#42-配对与删除边界)
   - [4.3 采集与投递](#43-采集与投递) ｜ [4.4 主机状态判定](#44-主机状态判定)
   - [4.5 Sunshine 管理](#45-sunshine-管理) ｜ [4.6 审计日志](#46-审计日志)
 - [5. 技术设计](#5-技术设计)
@@ -41,8 +41,8 @@ UnionC 是一套**只读**的多主机状态监控系统，外加一组 Sunshine
 |---|---|
 | **多主机监控** | 跨平台 Agent 采集 CPU / 内存 / 磁盘 / 网络 / 温度 / GPU，上报到中心服务端 |
 | **实时与历史** | 主机列表、实时详情、历史曲线（最多 1000 个采样点） |
-| **主机生命周期** | 管理台预留实例、浏览器一次性码激活、持久撤销与重新配对 |
-| **Windows 本机入口**（可选） | 通知区托盘打开本机浏览器配置，配对/重新配对、Server 连接检测、查看或启停服务 |
+| **主机生命周期** | 管理台预留实例、浏览器一次性码激活与永久删除 |
+| **Windows 本机入口**（可选） | 通知区托盘打开本机浏览器配置，配对、Server 连接检测、查看或启停服务 |
 | **本机资源** | 服务端自身的 CPU / 内存 / 磁盘 / 网络吞吐 |
 | **Sunshine 管理** | 多主机配置、应用与配对客户端管理、配置读写、日志 |
 | **OTLP 导出**（可选） | Agent 可同时把时序数据推送到 OpenTelemetry Collector |
@@ -171,7 +171,7 @@ server/src/
 │
 ├─ monitoring/      主机监控与实例生命周期
 │  ├─ model/          报文类型、校验、指标摘要计算
-│  ├─ http/           Agent 配对/上报 + 控制台查询/撤销
+│  ├─ http/           Agent 配对/上报 + 控制台查询/改名/删除
 │  └─ store/          配对、遥测、主机和保留期持久化
 │
 ├─ sunshine/        Sunshine 主机管理
@@ -335,7 +335,7 @@ React 19 + TypeScript + Vite + TanStack Query，按业务功能聚合源码和�
 | `features/<feature>/types.ts` | 与该业务 Server 响应对应的类型 |
 | `features/<feature>/queryKeys.ts` | 该业务的查询键，参数必须完整进入缓存键 |
 | `features/overview/` | 总览：健康、本机资源、服务状态 |
-| `features/monitoring/` | 主机监控：列表、实时指标、硬件详情、能力、历史曲线、配对管理 |
+| `features/monitoring/` | 主机监控：列表、相邻详情面板、分类表格、历史趋势、配对管理 |
 | `features/sunshine/` | Sunshine 主机、应用、客户端、配置管理 |
 | `features/logs/` / `settings/` | Sunshine 日志与管理员改密 |
 | `features/agent-activation/` | 公开激活页、严格路径解析与有限摘要 API |
@@ -392,7 +392,7 @@ OTLP/HTTP protobuf 旁路到该端点。Collector 挂掉不会让已成功的 Un
 
 1. 管理员在管理台创建一个待激活实例；Server 预留最终 `instance_id`，生成默认15分钟、
    单次使用的授权密钥（协议字段仍名为 `activation_code`），数据库只保存其 SHA-256；
-2. Agent 软件由独立渠道预先安装；Windows 安装人员从通知区托盘选择“配对/重新配对”，
+2. Agent 软件由独立渠道预先安装；Windows 安装人员从通知区托盘选择“配对”，
    其他平台或诊断场景运行 `unionc-agent pair --server https://unionc.example.com`；
 3. Agent 在本机生成 256-bit agent secret 与独立 polling secret，先持久化可恢复状态，
    只把二者哈希和有限设备摘要提交给 Server；
@@ -420,18 +420,16 @@ token、直接 report token 或旧状态回填。`/api/agent/v1/report` 是当�
 不是旧身份协议的兼容入口。完整协议、响应丢失语义和威胁模型见
 [docs/agent-pairing.md](docs/agent-pairing.md)。
 
-### 4.2 重新配对、撤销与删除边界
+### 4.2 配对与删除边界
 
 | 场景 | 操作 | 结果 |
 |---|---|---|
 | 首次接入 | 创建待激活实例并完成浏览器配对 | 新实例进入 active，Agent secret 从未经过浏览器 |
-| 凭据修复/换机 | 对现有 `instance_id` 创建新邀请 | 新 credential 激活、旧 credential 撤销，历史与 instance ID 不变 |
-| 主机退役 | `POST /api/monitoring/hosts/{id}/revoke` | 持久标记 revoked，拒绝全部 credential，保留身份和历史 |
-| 永久删除 | `DELETE /api/monitoring/managed-instances/{id}` | 原子删除实例、历史、credential、配对请求和邀请；不可恢复 |
+| 再次接入或换机 | 点击“+”创建另一个待激活实例并配对 | Server 分配新的 `instance_id`；旧实例和新实例的历史互不合并 |
+| 主机退役 | `DELETE /api/monitoring/managed-instances/{id}` | 原子删除实例、历史、credential、配对请求和邀请；不可恢复 |
 
-撤销与物理删除严格分开。常规退役应保留 revoked tombstone，以维持凭据拒绝状态、历史和
-审计关联；只有管理员明确确认永久删除时才清除实例数据。恢复 revoked 实例必须由管理员
-显式创建绑定该 `instance_id` 的新邀请。
+当前版本不提供主机“撤销”状态，也不提供对既有 `instance_id` 的重新授权。Agent 再次执行
+配对时，本地凭据只会在新实例成功激活后被替换；旧实例必须由管理员单独删除。
 
 ### 4.3 采集与投递
 
@@ -440,23 +438,22 @@ token、直接 report token 或旧状态回填。`/api/agent/v1/report` 是当�
   读 spool 长度 → 采样 → 先持久入队 → 唤醒独立投递 worker
 
 投递 worker（FIFO，每轮最多 32 批）:
-  ├─ 成功              → 校验 ACK、删除队首、重置退避；可选 OTLP 异步旁路
-  ├─ 400/409/413       → 内容或 ID 冲突，删除队首（重发必然再失败）
-  ├─ 401               → 保留队首；持久 reauth_required 并停止投递
-  ├─ 403               → 保留队首；持久 reauth_required 并停止投递
-  ├─ 421               → 保留队首并退避（反代契约错误，不触发重新注册）
-  └─ 其他暂时错误       → 保留队首并指数退避（上限 300 秒）
+  ├─ 成功                 → 校验 ACK、删除队首、重置退避；可选 OTLP 异步旁路
+  ├─ 400/409/413          → 内容或 ID 冲突，删除队首（重发必然再失败）
+  ├─ 401 + unauthorized   → 保留队首；持久 reauth_required 并停止投递
+  ├─ 403 + host mismatch  → 删除这一份不可能成功的旧身份报文
+  ├─ 其他 401/403/421     → 保留队首并退避（代理或部署链路可能恢复）
+  └─ 其他暂时错误          → 保留队首并指数退避（上限 300 秒）
 ```
 
-`SendError` 区分内容永久错误、未知/被替换凭据、主机生命周期撤销、credential/host_id
-绑定失配和暂时错误。实例遇到 401/403 都需要管理员为同一 `instance_id` 建立新邀请并
-重新配对；Agent 不调用其他身份端点自动恢复。
+`SendError` 区分内容永久错误、UnionC 明确返回的无效凭据、credential/host_id 绑定失配和
+暂时错误。实例被永久删除后，其 credential 随数据库行一起删除，Agent 下一次报告收到
+401 + `unauthorized` 并进入 `reauth_required`；恢复采集必须在管理台新建实例并完成配对。
 
 上图专指当前常驻 `run`。一次性的 `once` / `doctor --delivery` 会先排空已有队列，再直传
-当前采样；当前采样遇可重试错误才入队。Web 撤销不主动推送；Agent 在下一次报告被拒时才写
-`reauth_required`，当前进程停止投递但继续采样到有界 spool。`once` /
-`doctor --delivery` 只入队并返回错误，不改授权状态。常驻进程一旦重启，会因没有
-authorized reporter 在采样循环前退出并由服务管理器重试，直到重新配对。
+当前采样；当前采样遇可重试错误才入队。删除不会向 Agent 主动推送任何内容；Agent 只在下一次
+报告被拒时写 `reauth_required`，当前进程停止投递但继续采样到有界 spool。`once` /
+`doctor --delivery` 只入队并返回错误，不改授权状态。
 
 spool 采用"临时文件 + fsync + rename + 目录 fsync"原子落盘，文件名以毫秒时间戳零填充前缀，
 排序即投递顺序。反序列化失败的报文改名为 `.invalid` 隔离，且**计入容量预算**并
@@ -478,7 +475,6 @@ age ≤ max(interval × 12, 300s)  → stale
 否则                             → offline
 ```
 
-`lifecycle_status=revoked` 时不再按时间计算，API 固定返回 `status=revoked`。
 
 ### 4.5 Sunshine 管理
 
@@ -520,7 +516,8 @@ handler 不需要逐个透传；无上下文时（后台任务）记为 `system`
 
 | 前缀 | 动作 |
 |---|---|
-| `monitoring.host.` | `revoke` |
+| `monitoring.instance.` | `remark.update`、`delete` |
+| `monitoring.agent_instance.` | `invite.create`、`invite.cancel`、`activate` |
 | `sunshine.host.` | `create`、`update`、`delete` |
 | `sunshine.app.` | `save`、`close`、`delete` |
 | `sunshine.client.` | `pair`、`unpair`、`unpair_all`、`update` |
@@ -570,7 +567,7 @@ CPU 使用率、网络与磁盘吞吐都是两次采样之间的差值，而且*
 - 空数据目录在一个 `BEGIN IMMEDIATE` 事务中创建完整当前 schema，失败整体回滚；
 - 已有数据库必须与当前版本、基线 SHA-256、表/索引/触发器定义精确一致；
 - 不接受内置版本的有序前缀，不运行追加 migration，不补列、不回填旧 credential；
-- 后续 schema 变化直接替换当前基线，并要求部署方全新建库和重新配对。
+- 后续 schema 变化直接替换当前基线，并要求部署方全新建库和新建实例并配对。
 
 `schema_metadata` 只记录这一份当前基线的版本、应用版本与指纹，用于拒绝错误或非当前数据库，不是
 升级账本。可变 Sunshine 主机仍逐行保存在 `external_hosts`。
@@ -676,11 +673,10 @@ Agent 端点都**不**走会话中间件与 CSRF；它们按各自协议鉴权�
 | GET | `/api/monitoring/hosts` | 主机列表，`?limit&offset`（默认 200，上限 1000），响应含 `total` |
 | GET | `/api/monitoring/hosts/{id}` | 主机详情（含完整报文） |
 | GET | `/api/monitoring/hosts/{id}/history` | 历史曲线，`?from&to&limit`（默认 300，上限 1000） |
-| PATCH | `/api/monitoring/managed-instances/{id}` | 更新 Server 备注；Agent 后续上报和重新配对都不会覆盖 |
+| PATCH | `/api/monitoring/managed-instances/{id}` | 更新名称；名称仅由 Server 保存，Agent 上报不会覆盖 |
 | DELETE | `/api/monitoring/managed-instances/{id}` | 永久删除实例及全部关联数据 |
 | GET/POST | `/api/monitoring/agent-instances` | 列出邀请 / 创建待激活实例；创建响应才含一次性激活码 |
 | DELETE | `/api/monitoring/agent-instances/{invite_id}` | 取消尚未消费的激活邀请 |
-| POST | `/api/monitoring/hosts/{id}/revoke` | 持久撤销实例及全部 credential，保留历史与 tombstone |
 
 主机列表**必须分页**且必须告知总数：这是一条随部署规模线性增长的响应（每台主机都带
 capabilities 数组），而控制台每 10 秒轮询一次。`COUNT(*) OVER()` 在同一次扫描里带出
@@ -768,8 +764,8 @@ Agent 可以把配额全部塞进任意一个不限长的字符串，而这些�
 | `code` | 状态码 | 含义 |
 |---|---|---|
 | `bad_request` / `invalid_host` / `local_config_*` | 400 | 入参或本地配置不合法 |
-| `unauthorized` | 401 | 未认证；Agent token 未知、失效或被重配替换 |
-| `forbidden` / `agent_revoked` | 403 | CSRF/授权或身份绑定校验失败；`agent_revoked` 特指主机生命周期已被管理员持久撤销 |
+| `unauthorized` | 401 | 未认证；Agent token 未知，或其主机实例已被永久删除 |
+| `forbidden` / `agent_host_mismatch` | 403 | CSRF/授权失败，或 credential 与报文中的 `host_id` 不匹配 |
 | `misdirected_request` | **421** | 请求没走对链路——反代契约头或独立代理证明缺失/不匹配 |
 | `not_found` | 404 | 资源不存在 |
 | `conflict` | 409 | 状态冲突（如邀请/配对状态冲突、report_id 属于别的主机） |
@@ -790,16 +786,16 @@ Agent 可以把配额全部塞进任意一个不限长的字符串，而这些�
 | `schema_metadata` | `schema_version` | 当前唯一 schema 基线版本、应用版本与 SHA-256 指纹 |
 | `audit_logs` | `id` | 审计：动作、目标、明细、操作者、request_id |
 | `external_hosts` | `(kind, host_id)` | Sunshine 主机（地址独立成列以走 CHECK，密码独立加密） |
-| `monitored_hosts` | `host_id` | 被监控主机、当前状态和 active/revoked 生命周期 tombstone |
-| `agent_credentials` | `credential_id` | 每实例 pairing credential 的签发与撤销状态 |
+| `monitored_hosts` | `host_id` | 被监控主机、Server 名称与当前状态 |
+| `agent_credentials` | `credential_id` | 每实例唯一 pairing credential 的哈希与最近使用时间 |
 | `agent_instance_invites` | `invite_id` | 管理员创建的待激活实例、激活码哈希、预留 instance ID 与状态 |
 | `agent_pairing_requests` | `request_id` | Agent 发起的短时配对请求、设备摘要和两个本地 secret 的哈希 |
 | `agent_metric_reports` | `report_id` | 全部历史报告：校验过的 JSON 文本 + 9 个摘要数值列 |
 
 **索引**：`audit_logs(created_at)`、`monitored_hosts(last_seen_at DESC)`、
 `agent_metric_reports(host_id, collected_at DESC, report_id)`（历史查询）、
-`agent_metric_reports(received_at)`（保留期清理），以及配对请求/邀请的过期与 active
-credential 局部索引。
+`agent_metric_reports(received_at)`（保留期清理），以及配对请求/邀请的过期索引和
+credential 主机索引。
 
 **数据库侧的校验**并不只依赖应用层：全部表使用 SQLite `STRICT` 模式；UUID 以 36 字符
 文本存储并在 Rust 写入入口做规范解析；时间统一存 Unix 微秒；`config`/`capabilities`/`payload` 通过 `json_valid` 与 `json_type`
@@ -828,8 +824,8 @@ credential 局部索引。
   （`reduce(f64::max)`）而非求和，避免 veth/bridge、bind mount 造成重复计数。
 - 外键 `ON DELETE SET NULL` + 清理逻辑显式排除被引用行，**两道保险**确保长期离线
   主机的详情页不会因保留期清理而变空白。
-- `agent_metric_reports.host_id` 仍有 `ON DELETE CASCADE` 作为数据库完整性约束，但正常
-  撤销不再物理删除主机行，以保留凭据拒绝状态、历史和审计关联。
+- `agent_metric_reports.host_id` 使用 `ON DELETE CASCADE`：管理员永久删除实例时，历史报告与
+  credential 在同一事务中清除，不留下可继续鉴权的孤儿数据。
 - **上报对主机行只做一次写入**。三组列各有条件，用 `CASE` 在同一条 UPDATE 里表达：
   identity/capabilities 只在确实变化时替换；`last_seen_at` 只在报文代表当前状态时刷新；
   `latest_*` 指针只在新报文推进。SQLite 是单写者，减少同一事务内的写语句和被修改页面
@@ -912,11 +908,10 @@ credential 局部索引。
   `application/octet-stream`，并强制 `Content-Disposition: inline`
 - 上游响应体有大小上限（JSON 4 MiB / 封面 8 MiB），流式累计判断，超限即断开
 
-**为什么 421 而不是 403**。Agent 报告的 403 表示主机生命周期持久撤销，或当前有效
-credential 与 body 中的 `host_id` 绑定失配；两者都要求人工纠正身份状态并进入
-`reauth_required`。它绝不表示反代配置失败。若反向代理漏透传请求头也返回 403，一次部署
-配置错误就会把整批 Agent 伪装成“身份异常”。421 的语义是链路走错且可重试：反代修好后
-同一份报文原样重发即可。
+**为什么 421 而不是 403**。Agent 报告的 403 只保留给授权失败或 credential 与
+`host_id` 绑定失配；它绝不表示反代配置失败。若反向代理漏透传请求头也返回 403，一次
+部署配置错误就会把整批 Agent 伪装成“身份异常”。421 的语义是链路走错且可重试：反代
+修好后同一份报文原样重发即可。
 
 **为什么 XFF 也是硬要求**。若把它做成软降级（取不到 IP 就放行），三层配额里的两层会
 同时失效，只剩全局兜底。危险之处在于**这不产生任何信号**：一份只配了 XFP 的反代能通过
@@ -982,7 +977,7 @@ SQLite 与 Server 位于同一台 Linux 主机的本地磁盘。该拓扑不支�
 # 必须在工作区根执行——合并为 Cargo workspace 后产物在根 target/
 cargo build --release -p unionc
 NFPM_ARCH=amd64 server/packaging/linux/build-packages.sh
-sudo dpkg -i unionc_0.3.3_amd64.deb
+sudo dpkg -i unionc_0.3.4_amd64.deb
 ```
 
 两个 Linux 打包脚本都要求 `nfpm` 位于 `PATH`，或由 `NFPM_BIN` 指向可执行文件；正式发布
@@ -1003,10 +998,10 @@ sudo dpkg -i unionc_0.3.3_amd64.deb
 | 数据目录 | `/var/lib/unionc`（0700 unionc:unionc） |
 | 内嵌数据库 | `/var/lib/unionc/unionc.db`（显式首次 bootstrap 创建，0600 unionc:unionc） |
 
-环境文件中的 `UNIONC_PACKAGE_VERSION=0.3.3` 是不可修改的包归属标记；裸二进制部署不要求
+环境文件中的 `UNIONC_PACKAGE_VERSION=0.3.4` 是不可修改的包归属标记；裸二进制部署不要求
 设置它。包安装还以 `/var/lib/unionc-package` 中绑定当前版本与实际 UID/GID 的 root-only
 marker 校验账户和数据目录。缺少当前标记的既有环境文件、同名账户或数据目录一律拒绝接管；
-普通卸载会保留数据和 marker，只允许同一 0.3.3 重装。
+普通卸载会保留数据和 marker，只允许同一 0.3.4 重装。
 
 unit 显式设置 `UNIONC_DATA_DIR=/var/lib/unionc` 与 `WorkingDirectory`，并附一组
 systemd 硬化：`CapabilityBoundingSet=` 为空、`NoNewPrivileges`、`ProtectSystem=strict`、
@@ -1046,7 +1041,7 @@ Pre-release；当前不执行平台签名、公证、GPG 签名或 provenance，
 
 | 变量 | 必填 | 说明 |
 |---|---|---|
-| `UNIONC_PACKAGE_VERSION` | DEB/RPM 固定 | 包内必须精确为 `0.3.3`，仅供生命周期归属校验；不要修改，裸二进制部署不设置 |
+| `UNIONC_PACKAGE_VERSION` | DEB/RPM 固定 | 包内必须精确为 `0.3.4`，仅供生命周期归属校验；不要修改，裸二进制部署不设置 |
 | `UNIONC_ENV` | 生产必填 | 设为 `production` 启用全部生产约束 |
 | `UNIONC_DATA_DIR` | 强烈建议 | 数据目录绝对路径；各级不得为符号链接，最终目录须由服务 UID 所有且精确 0700；unit 已设为 `/var/lib/unionc` |
 | `UNIONC_SECRET_KEY` | 生产必填 | 32 字节主密钥的 Base64 |
@@ -1070,22 +1065,22 @@ apt/rpm 仓库、签名 Windows MSI/winget、签名并公证的 macOS pkg、MDM�
 # 必须在工作区根执行
 cargo build --release -p unionc-agent
 NFPM_ARCH=amd64 agent/packaging/linux/build-packages.sh
-sudo dpkg -i unionc-agent_0.3.3_amd64.deb
+sudo dpkg -i unionc-agent_0.3.4_amd64.deb
 ```
 
 Windows 当前只发布 x64 MSI。可双击安装，或在管理员命令提示符中执行；`PURGE=1` 只用于
-已经在 Web 撤销实例后的永久本地清理：
+已经在 Web 永久删除实例后的本地状态清理：
 
 ```cmd
-msiexec.exe /i UnionC-Agent-0.3.3-x64.msi /qn /norestart
-msiexec.exe /x UnionC-Agent-0.3.3-x64.msi /qn /norestart
-msiexec.exe /x UnionC-Agent-0.3.3-x64.msi PURGE=1 /qn /norestart
+msiexec.exe /i UnionC-Agent-0.3.4-x64.msi /qn /norestart
+msiexec.exe /x UnionC-Agent-0.3.4-x64.msi /qn /norestart
+msiexec.exe /x UnionC-Agent-0.3.4-x64.msi PURGE=1 /qn /norestart
 ```
 
 安装完成后的授权协议相同，Windows 另提供无需手写命令的托盘入口：
 
 1. 管理员在 Web 创建待激活实例并把一次性授权密钥交给安装人员；
-2. Windows 双击交互安装成功后，从通知区托盘右键选择“配对/重新配对”，在随机回环地址的
+2. Windows 双击交互安装成功后，从通知区托盘右键选择“配对”，在随机回环地址的
    本机页面一次填写 Server HTTPS 地址和一次性授权密钥，并接受机器级
    操作所需的 UAC；其他平台
    或 Windows 诊断场景以能写 Agent 私有状态目录的权限运行：
@@ -1115,11 +1110,11 @@ purge；Windows x64 WiX MSI 把只读程序与可变状态分离，以原生 SCM
 开始菜单入口；macOS pkg 使用专用账户、LaunchDaemon、
 日志轮转和本机卸载器。Windows 用户安装、同版本重装和卸载不依赖 PowerShell，也不识别或迁移
 旧计划任务安装。
-跨版本更新不提供迁移：先在 Web 撤销，再按平台规定顺序永久清理旧 Agent，然后由外部分发
-渠道安装当前制品并重新配对。Agent 不包含自更新器。
+跨版本更新不提供迁移：先在 Web 永久删除旧实例，再按平台规定顺序清理旧 Agent，然后由
+外部分发渠道安装当前制品、创建新实例并配对。Agent 不包含自更新器。
 
 普通卸载默认保留 host-id、agent-token、配置、配对状态和 spool，方便安全重装；永久退役
-必须先在 Web 撤销实例，再执行平台 purge。tag 当前只发布明确标记的 unsigned Pre-release，
+应先在 Web 永久删除实例，再执行平台 purge。tag 当前只发布明确标记的 unsigned Pre-release，
 不执行 Windows Authenticode、macOS Developer ID、公证/staple、GPG 清单签名或 provenance；
 这些制品仅用于测试验收。完整命令、路径、恢复语义和预发布限制见
 [Agent 安装、同版本重装、卸载与退役](docs/runbooks/agent-lifecycle.md)。
@@ -1131,7 +1126,7 @@ purge；Windows x64 WiX MSI 把只读程序与可变状态分离，以原生 SCM
 
 | 配置项 | 环境变量 | 默认 | 说明 |
 |---|---|---|---|
-| `application_version` | — | `0.3.3` | 持久配置必填且必须精确等于当前 Agent 包版本 |
+| `application_version` | — | `0.3.4` | 持久配置必填且必须精确等于当前 Agent 包版本 |
 | `endpoint` | `UNIONC_AGENT_ENDPOINT` | `http://127.0.0.1:8081/api/agent/v1/report` | 上报地址 |
 | `pairing_endpoint` | `UNIONC_AGENT_PAIRING_ENDPOINT` | 由标准 report endpoint 推导 | v2 配对请求地址；配对成功时持久化 JSON 字段会被清空，环境变量仍可在下次加载时覆盖 |
 | `interval_seconds` | `UNIONC_AGENT_INTERVAL_SECONDS` | 10 | 采集周期，1-3600 |
@@ -1149,10 +1144,10 @@ purge；Windows x64 WiX MSI 把只读程序与可变状态分离，以原生 SCM
 
 配置文件存在时必须包含表中的完整当前结构；缺字段、未知字段和不同
 `application_version` 都会在环境变量覆盖之前被拒绝。配置文件不存在时才使用编译期的
-0.3.3 默认值，成功配对会原子写出完整当前结构。
+0.3.4 默认值，成功配对会原子写出完整当前结构。
 
 pairing/report 分域时，配对成功会把持久化 JSON 中的 `pairing_endpoint` 清为 `null`。
-若服务长期设置 `UNIONC_AGENT_PAIRING_ENDPOINT`，下次加载会自动重新覆盖；否则重新配对前
+若服务长期设置 `UNIONC_AGENT_PAIRING_ENDPOINT`，下次加载会自动重新覆盖；否则新建实例并配对前
 必须通过配置或环境变量恢复 bootstrap endpoint，才不会从 report endpoint 推导。Server
 返回相对激活路径，因此 pairing origin 还必须提供或反代 `/agent/activate/...` SPA。TLS CA 和客户端身份当前由
 UnionC、pairing 与 OTLP 共用，OTLP 若需另一套客户端证书必须增加网关或修改代码。
@@ -1186,7 +1181,7 @@ journalctl -u unionc --since '1 hour ago' -p warning      # 近期告警
 1. 通过组织的软件渠道安装 Agent；管理台不分发安装包；
 2. 管理台打开“主机”，点击侧栏“+”，生成默认 15 分钟有效的一次性授权密钥；Server 同时
    为实例建立可内联编辑的备注，Agent 不采集或上报设备名称；
-3. Windows 从托盘选择“配对/重新配对”；其他平台或诊断场景运行
+3. Windows 从托盘选择“配对”；其他平台或诊断场景运行
    `unionc-agent pair --server https://unionc.example.com`；
 4. Windows 在本机配置页同时填写 Server 地址和一次性授权密钥，接受 UAC 后即可；
    CLI/其他平台打开输出的 `/agent/activate/{request_id}`，核对设备摘要并输入授权密钥；
@@ -1206,8 +1201,8 @@ ls -la /var/lib/unionc-agent/spool/      # spool 堆积说明投递失败
 | 日志现象 | 含义 | 处置 |
 |---|---|---|
 | `报文被永久拒绝` | 400/409/413，内容或 report ID 不符合契约 | 检查 Agent 版本与配置是否与服务端契约一致 |
-| `服务端拒绝了当前凭据` | 401（未知、失效或被重配替换） | 在管理台为同一实例创建邀请并重新配对；没有 token 恢复或自动注册入口 |
-| `主机已撤销或 credential/host_id 绑定失配` / `reauth_required` | 403 | 不会自动注册或换身份；管理员核对实例后，为同一 instance ID 创建新邀请并重新配对 |
+| `服务端拒绝了当前凭据` / `reauth_required` | 401（未知凭据或实例已删除） | 在管理台创建新实例并配对；没有 token 恢复或自动注册入口 |
+| `credential/host_id 绑定失配` | 403 | 当前报文属于另一实例；Agent 丢弃这一份不可能成功的报文，管理员应核对本地身份状态 |
 | 提示`这是部署配置问题，不是凭据失效` | 421 | 反代契约头或 `X-UnionC-Proxy-Secret` 缺失/不匹配；改反代配置，**不要**动令牌 |
 | `配对请求过期/被拒绝` | 未在有效期内完成浏览器激活 | 重新运行 `pair` 并使用新的实例激活码 |
 | `spool 连续 N 次操作失败` | 磁盘持续故障 | 检查磁盘空间与 `/var/lib/unionc-agent` 权限 |
@@ -1227,10 +1222,9 @@ unionc-agent probe | jq '.capabilities[] | select(.name | startswith("gpu"))'
 
 ### 10.5 主机退役
 
-管理台 → 主机 → 对应主机内容块 → **撤销**。
-这会持久标记 revoked 并吊销该实例全部 credential，身份和历史继续保留作为 tombstone，
-操作记入审计日志。若以后恢复，必须对同一 instance ID 重新完成管理员授权的浏览器配对。
-内容块中的**删除**是另一项不可恢复操作，会清除该实例的历史、凭据和全部关联邀请。
+管理台 → 主机 → 对应主机内容块 → **删除**。确认后会原子清除该实例的历史、credential、
+配对请求和邀请，操作不可恢复并记入审计日志。若设备以后再次接入，必须点击“+”创建新的
+实例并配对；Server 会分配新的 `instance_id`。
 
 ### 10.6 数据保留
 
@@ -1309,7 +1303,7 @@ schema 生成的快照；它会精确校验基线指纹和 schema，不接受版
 恢复。普通生产启动与 `backup`、`integrity-check`、`rekey` 只接受已存在的精确当前库；
 `restore` 可把完整验证的备份发布到缺失目标。旧 Server 数据库、旧配置与旧 Agent 身份不能
 就地升级或导入。需要留存旧数据时，应先在旧环境导出为独立、长期可读的中立格式，随后
-部署空库、安装当前 Agent 并重新配对；UnionC 不提供把该导出重新导入当前库的桥接命令。
+部署空库、安装当前 Agent 并新建实例并配对；UnionC 不提供把该导出重新导入当前库的桥接命令。
 
 ### 10.8 故障速查
 
@@ -1378,7 +1372,7 @@ Collector。它验证 Agent → Collector 能否接收，不覆盖 Collector exp
 | `csrf_double_submit.rs` | 每会话随机令牌，固定值必须失败 |
 | `http_access.rs` | 公开/受保护路径划分与反代契约 |
 | `security_headers.rs` | 全局安全头在错误响应上同样生效 |
-| `agent_pairing.rs` | 当前浏览器配对、重新配对、撤销与凭据吊销 |
+| `agent_pairing.rs` | 当前浏览器配对、激活、删除并发与数据级联 |
 | `agent_protocol_contract.rs` | Server 与共享 protocol crate 对当前 wire schema 的一致性 |
 | `report_ordering.rs` | 补传的旧报文不回写主机状态；重放幂等 |
 | `latest_report_retention.rs` | 保留期清理不会删掉被引用的最新报告 |
@@ -1446,11 +1440,11 @@ agent job 的三次 feature `check` 不是冗余：默认 feature 是 `nvidia`�
 1.011ms（噪声范围内），但写入慢 37%，索引 12MB 而表才 16MB。报告按时间顺序写入，
 同一主机的相邻行物理上本就聚集，回表几乎不产生 I/O。
 
-**为什么 401/403 单独成类而不算普通“可重试”**
-算作 Transient 的后果是 Agent 永远重试，数据堆进 spool 直到撑满。401 表示 secret
-未知/失效，或 active 主机上的旧 credential 已被重配替换；403 表示主机生命周期已撤销，
-或当前有效 credential 与 body `host_id` 失配。二者都进入重新授权且不会触发自动注册，
-只有管理员为同一实例完成新配对才能恢复。
+**为什么只把带稳定机器码的 401 视为需要重新授权**
+若把 UnionC 明确返回的 `401 + unauthorized` 当作普通暂时错误，Agent 会永远重试，数据堆进
+spool 直到撑满。该响应表示 secret 未知或实例已被永久删除，恢复方式是在管理台创建新实例并
+配对。credential 与 body `host_id` 失配使用 403 + `agent_host_mismatch`，只丢弃这一份
+不可能成功的报文；代理生成的未知 401/403 仍按暂时错误退避。
 
 **为什么限流要分桶**
 只有全局桶时，攻击者用任意用户名打满配额就能让合法管理员在整个窗口内无法登录——
@@ -1479,8 +1473,7 @@ agent job 的三次 feature `check` 不是冗余：默认 feature 是 `nvidia`�
 原因，前端显示"不支持"而非"0%"。
 
 **为什么反代契约不满足返回 421 而不是 403**
-403 属于需要人工纠正的身份语义（主机生命周期撤销或有效 credential/`host_id` 失配），
-会让 Agent 停止自动注册并等待浏览器重新授权。二者混用会把一次反向代理漏配契约头或
+403 保留给授权失败或 credential/`host_id` 失配。二者混用会把一次反向代理漏配契约头或
 代理证明误报成整批实例身份异常。421 归入可重试类，反代修好后原样重发即可。
 
 **为什么 XFF 缺失要硬失败而不是降级**
@@ -1516,4 +1509,4 @@ OTLP 本就是尽力而为的次要输出，漏一个点远好过重复计数。
 **为什么只有一份当前数据库基线**
 项目只承诺最新版本，维护历史 migration 会让路由已经严格而持久层仍需接受旧 shape，扩大
 测试和审计面。`server/schema/sqlite.sql` 因此直接描述当前完整 schema；空库原子创建，非当前
-schema 明确拒绝。代价是版本变化时现有部署必须导出留存数据、全新建库并重新配对。
+schema 明确拒绝。代价是版本变化时现有部署必须导出留存数据、全新建库并新建实例并配对。

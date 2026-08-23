@@ -31,16 +31,14 @@ use validation::*;
 pub struct CreateAgentInstanceRequest {
     pub display_name: Option<String>,
     pub expires_in_minutes: Option<i64>,
-    /// Re-pair an existing instance while preserving its report history.
-    pub instance_id: Option<String>,
 }
 
 impl CreateAgentInstanceRequest {
-    pub fn validated(&self) -> AppResult<(String, i64, Option<String>)> {
+    pub fn validated(&self) -> AppResult<(String, i64)> {
         let display_name = self
             .display_name
             .as_deref()
-            .unwrap_or("新 Agent")
+            .unwrap_or("概览")
             .trim()
             .to_string();
         validate_text("agent instance display_name", &display_name, 255)?;
@@ -50,15 +48,7 @@ impl CreateAgentInstanceRequest {
                 "expires_in_minutes must be between 5 and 1440".to_string(),
             ));
         }
-        let instance_id = self
-            .instance_id
-            .as_deref()
-            .map(|value| {
-                validate_canonical_uuid("instance_id", value)?;
-                Ok::<String, AppError>(value.to_string())
-            })
-            .transpose()?;
-        Ok((display_name, expires_in_minutes, instance_id))
+        Ok((display_name, expires_in_minutes))
     }
 }
 
@@ -135,7 +125,6 @@ pub struct HostSummary {
     pub kernel_version: Option<String>,
     pub arch: String,
     pub agent_version: String,
-    pub lifecycle_status: String,
     pub registered_at: DateTime<Utc>,
     pub last_seen_at: DateTime<Utc>,
     pub latest_collected_at: Option<DateTime<Utc>>,

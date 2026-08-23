@@ -2503,7 +2503,7 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 
 [[package]]
 name = "unionc"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2539,7 +2539,7 @@ dependencies = [
 
 [[package]]
 name = "unionc-agent"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2567,7 +2567,7 @@ dependencies = [
 
 [[package]]
 name = "unionc-protocol"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "chrono",
  "serde",

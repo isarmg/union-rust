@@ -216,7 +216,7 @@ describe("session verification", () => {
     const invitation: CreatedAgentInstance = {
       request_id: "request-1",
       instance_id: "host-1",
-      display_name: "新监控主机",
+      display_name: "概览",
       status: "pending",
       activation_code: "one-time-secret",
       expires_at: "2026-08-23T12:15:00Z",

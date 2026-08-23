@@ -7,8 +7,8 @@ use crate::monitoring::{AgentInstanceSummary, PairingStatus};
 pub const MAX_PENDING_PAIRING_REQUESTS: i64 = 4_096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RevokeInviteResult {
-    Revoked,
+pub enum CancelInviteResult {
+    Cancelled,
     NotFound,
     NotPending,
 }
@@ -16,7 +16,6 @@ pub enum RevokeInviteResult {
 #[derive(Debug)]
 pub enum CreateInviteResult {
     Created(AgentInstanceSummary),
-    InstanceNotFound,
     Conflict,
 }
 

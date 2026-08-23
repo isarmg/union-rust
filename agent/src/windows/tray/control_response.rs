@@ -16,7 +16,7 @@ fn render_configuration() -> HttpResponse {
              <div class=status-grid aria-label=Agent状态>\
              <section class=status-card><h2>Windows 服务</h2><strong id=service aria-live=polite>正在建立安全的本地会话…</strong><p id=service-detail class=hint>服务状态来自 Windows SCM。</p></section>\
              <section class=status-card><h2>管理端可达性</h2><strong id=connection aria-live=polite>尚未检测</strong><button id=check-connection class=secondary type=button>立即检测</button><p class=hint>这里只检查管理端 /api/health，不代表遥测已成功上报。</p></section></div>\
-             <section id=pair><h2>配对或重新配对</h2><p class=hint>配对会替换此机器当前绑定，并在必要时重启 Agent 服务。</p>\
+             <section id=pair><h2>配对</h2><p class=hint>配对会替换此机器当前本地绑定，并在 Server 中创建新的主机实例；必要时会重启 Agent 服务。</p>\
              <form data-endpoint=/pair><label for=server>服务器地址</label><input id=server name=server type=url maxlength=2048 required aria-describedby=server-hint placeholder=\"https://unionc.example.com\">\
              <p id=server-hint class=hint>填写完整管理台 Origin（协议、主机和可选端口），不要附加路径。</p>\
              <label for=activation-code>一次性授权密钥</label><input id=activation-code name=activation_code type=password maxlength=256 required autocomplete=one-time-code spellcheck=false aria-describedby=code-hint placeholder=\"uci_…\">\

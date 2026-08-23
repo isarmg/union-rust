@@ -7,7 +7,6 @@ pub struct StoredHost {
     /// Server-owned operator remark; the Agent wire protocol carries no device name.
     pub name: String,
     pub identity: HostIdentity,
-    pub lifecycle_status: String,
     pub capabilities: Vec<Capability>,
     pub registered_at: DateTime<Utc>,
     pub last_seen_at: DateTime<Utc>,

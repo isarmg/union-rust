@@ -11,7 +11,7 @@ members = ["server", "agent", "protocol"]
 # 成员会把 server 也拉进来。
 
 [workspace.package]
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 

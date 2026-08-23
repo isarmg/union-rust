@@ -237,7 +237,7 @@ fn show_tray_menu(window: HWND) {
         let menu = unsafe { CreatePopupMenu() }.context("failed to create tray menu")?;
         let _menu = MenuHandle(menu);
         append_menu(menu, COMMAND_OPEN_LOCAL, "打开本地配置")?;
-        append_menu(menu, COMMAND_PAIR, "配对 / 重新配对")?;
+        append_menu(menu, COMMAND_PAIR, "配对")?;
         append_menu(menu, COMMAND_STATUS, "打开状态与连接检测")?;
         let action = match query_service_state() {
             Ok(ServiceState::Running) | Ok(ServiceState::StartPending) => ServiceAction::Stop,

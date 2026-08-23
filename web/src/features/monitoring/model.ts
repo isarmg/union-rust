@@ -41,7 +41,6 @@ export function metricTone(
 export function statusMeta(status: MonitoringHostSummary["status"]) {
   if (status === "online") return { label: "在线", tone: "good" as const };
   if (status === "stale") return { label: "数据过期", tone: "warn" as const };
-  if (status === "revoked") return { label: "已撤销", tone: "danger" as const };
   return { label: "离线", tone: "danger" as const };
 }
 

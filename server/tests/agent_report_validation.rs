@@ -29,7 +29,7 @@ fn valid_report() -> Value {
             "os_version": "6.1.0",
             "kernel_version": "6.1.0",
             "arch": "x86_64",
-            "agent_version": "0.3.3"
+            "agent_version": "0.3.4"
         },
         "interval_seconds": 10.0,
         "system": {
@@ -748,7 +748,7 @@ fn programmatic_report() -> AgentReport {
             os_version: None,
             kernel_version: None,
             arch: "x86_64".into(),
-            agent_version: "0.3.3".into(),
+            agent_version: "0.3.4".into(),
         },
         interval_seconds: 10.0,
         system: SystemSnapshot {

@@ -106,7 +106,6 @@ GET  /api/events?ticket=...
 GET    /api/monitoring/hosts
 GET    /api/monitoring/hosts/{host_id}
 GET    /api/monitoring/hosts/{host_id}/history
-POST   /api/monitoring/hosts/{host_id}/revoke
 PATCH  /api/monitoring/managed-instances/{host_id}
 DELETE /api/monitoring/managed-instances/{host_id}
 GET    /api/monitoring/agent-instances

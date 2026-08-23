@@ -56,13 +56,6 @@ CREATE TABLE monitored_hosts (
     latest_report_id        TEXT,
     latest_collected_at     INTEGER,
     latest_interval_seconds REAL,
-    lifecycle_status        TEXT NOT NULL DEFAULT 'active'
-                                CHECK (lifecycle_status IN ('active', 'revoked')),
-    revoked_at              INTEGER,
-    CHECK (
-        (lifecycle_status = 'active' AND revoked_at IS NULL)
-        OR (lifecycle_status = 'revoked' AND revoked_at IS NOT NULL)
-    ),
     FOREIGN KEY (latest_report_id)
         REFERENCES agent_metric_reports(report_id)
         ON DELETE SET NULL
@@ -114,13 +107,11 @@ CREATE TABLE agent_credentials (
                    ),
     issued_at      INTEGER NOT NULL
                        DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER)),
-    last_used_at   INTEGER,
-    revoked_at     INTEGER
+    last_used_at   INTEGER
 ) STRICT;
 
-CREATE INDEX idx_agent_credentials_host_active
-    ON agent_credentials(host_id)
-    WHERE revoked_at IS NULL;
+CREATE INDEX idx_agent_credentials_host
+    ON agent_credentials(host_id);
 
 CREATE TABLE agent_instance_invites (
     invite_id            TEXT PRIMARY KEY CHECK (length(invite_id) = 36),
@@ -131,17 +122,17 @@ CREATE TABLE agent_instance_invites (
                          ),
     display_name         TEXT NOT NULL CHECK (length(trim(display_name)) BETWEEN 1 AND 255),
     status               TEXT NOT NULL DEFAULT 'pending'
-                             CHECK (status IN ('pending', 'active', 'revoked')),
+                             CHECK (status IN ('pending', 'active', 'cancelled')),
     expires_at           INTEGER NOT NULL,
     created_at           INTEGER NOT NULL
                              DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER)),
     activated_at         INTEGER,
-    revoked_at           INTEGER,
+    cancelled_at         INTEGER,
     CHECK (expires_at > created_at),
     CHECK (
-        (status = 'pending' AND activated_at IS NULL AND revoked_at IS NULL)
-        OR (status = 'active' AND activated_at IS NOT NULL AND revoked_at IS NULL)
-        OR (status = 'revoked' AND revoked_at IS NOT NULL)
+        (status = 'pending' AND activated_at IS NULL AND cancelled_at IS NULL)
+        OR (status = 'active' AND activated_at IS NOT NULL AND cancelled_at IS NULL)
+        OR (status = 'cancelled' AND cancelled_at IS NOT NULL)
     )
 ) STRICT;
 

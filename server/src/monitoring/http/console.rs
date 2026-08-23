@@ -4,7 +4,7 @@ use crate::state::AppState;
 
 use super::{
     cancel_agent_instance, create_agent_instance, delete_host, host_detail, host_history,
-    list_agent_instances, list_hosts, revoke_host, update_instance_remark,
+    list_agent_instances, list_hosts, update_instance_remark,
 };
 
 pub(super) fn router() -> Router<AppState> {
@@ -12,10 +12,6 @@ pub(super) fn router() -> Router<AppState> {
         .route("/api/monitoring/hosts", get(list_hosts))
         .route("/api/monitoring/hosts/{host_id}", get(host_detail))
         .route("/api/monitoring/hosts/{host_id}/history", get(host_history))
-        .route(
-            "/api/monitoring/hosts/{host_id}/revoke",
-            axum::routing::post(revoke_host),
-        )
         .route(
             "/api/monitoring/agent-instances",
             get(list_agent_instances).post(create_agent_instance),

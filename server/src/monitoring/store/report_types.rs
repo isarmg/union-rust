@@ -3,15 +3,14 @@
 pub enum StoreReportError {
     #[error("report_id already belongs to another host")]
     ReportIdBelongsToAnotherHost,
-    #[error("monitoring host is not active")]
-    HostNotActive,
-    #[error("monitoring credential is no longer active")]
-    CredentialNotActive,
+    #[error("monitoring host no longer exists")]
+    HostNotFound,
+    #[error("monitoring credential no longer exists")]
+    CredentialNotFound,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonitoringTokenAuthentication {
     Active(String),
-    Revoked,
     Unknown,
 }

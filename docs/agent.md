@@ -42,8 +42,8 @@ sudo unionc-agent pair \
 得到长期 Agent secret；Server 也从未接收该 secret 的明文。激活成功后 Agent 保存
 Server 分配的稳定 `instance_id`，并继续使用现有 `/api/agent/v1/report` 数据面。
 
-Agent 不采集、不配置也不上报设备名称。管理台主机名称是 Server 自己持有的备注，由邀请
-创建并可在主机卡片内编辑；遥测上报与重新配对都不会改写它。
+Agent 不采集、不配置也不上报设备名称。管理台主机名称由 Server 自己持有，在创建邀请时
+初始化并可在主机卡片内编辑；遥测上报不会改写它。
 
 配对请求与 secret 在首次 POST 前就写入私有状态文件，因此命令中断或响应丢失后，重新
 执行 `pair` 会恢复同一个请求。常驻的 `run` 进程也能继续轮询尚未批准的请求。完整协议见
@@ -70,11 +70,10 @@ macOS 使用相同命令，但服务账户是 `_unioncagent`、配置位于
 临时生成且不持久化的 UUID，不是配对后的稳定实例 ID。
 `once` 会先补传状态目录中的历史积压，再发送当前报文，适合由外部调度器周期执行；网络
 仍不可用时当前报文留在 spool。配对凭据被拒后不会回退到其他身份建立流程。
-主机生命周期被管理员明确撤销时返回 403 + `agent_revoked`；当前有效 credential 与报告
-`host_id` 绑定不匹配时返回 403 + `forbidden`；未知/失效、以及主机仍 active 但已被重配
-替换的 credential 返回 401。当前常驻 `run` 只在 401 或 `agent_revoked` 时持久记录
-`reauth_required`，停止投递但继续采样到有界 spool。`forbidden` 表示该份报文本身属于另一
-身份，Agent 会丢弃它并继续 FIFO，因而跨服务器重新配对不会被旧 spool 队首锁死。
+未知 credential 或实例已被永久删除时，Server 返回 401 + `unauthorized`；当前 credential
+与报告 `host_id` 绑定不匹配时返回 403 + `agent_host_mismatch`。常驻 `run` 只对带稳定
+机器码的 401 持久记录 `reauth_required`，停止投递但继续采样到有界 spool。身份不匹配
+表示该份报文本身属于另一实例，Agent 会丢弃它并继续 FIFO，避免旧 spool 队首阻塞新身份。
 
 配置文件路径可用 `--config PATH` 或 `UNIONC_AGENT_CONFIG` 指定。以下环境变量**优先于**
 配置文件：`UNIONC_AGENT_ENDPOINT`、`UNIONC_AGENT_PAIRING_ENDPOINT`、
@@ -84,9 +83,9 @@ macOS 使用相同命令，但服务账户是 `_unioncagent`、配置位于
 `UNIONC_AGENT_TLS_CA_PEM`、`UNIONC_AGENT_TLS_IDENTITY_PEM`、
 `UNIONC_AGENT_TLS_IDENTITY_PKCS12`、`UNIONC_AGENT_TLS_IDENTITY_PASSWORD`、
 `UNIONC_AGENT_ALLOW_INSECURE_HTTP`。
-配置文件一旦存在，就必须是当前 0.3.3 的完整结构，并包含
-`"application_version": "0.3.3"`；缺字段、未知字段或其他应用版本都会在读取时被拒绝，
-环境变量不会替旧结构补字段。只有配置文件不存在时才使用编译进 0.3.3 的完整默认配置，
+配置文件一旦存在，就必须是当前 0.3.4 的完整结构，并包含
+`"application_version": "0.3.4"`；缺字段、未知字段或其他应用版本都会在读取时被拒绝，
+环境变量不会替旧结构补字段。只有配置文件不存在时才使用编译进 0.3.4 的完整默认配置，
 配对成功后再原子写入当前结构。
 未指定状态目录时使用 Linux `/var/lib/unionc-agent`、Windows
 `%ProgramData%\UnionC Agent` 或 macOS `/Library/Application Support/UnionC Agent`。
@@ -105,7 +104,7 @@ spool 上限小于 1 MiB、非回环的明文 HTTP、endpoint 内嵌凭据、同
 Agent 还没有客户端证书；需要把 bootstrap/pairing 与受 mTLS 保护的 report 入口拆开。
 配对成功会把持久化 JSON 的 `pairing_endpoint` 清空，以后未被覆盖时从 report endpoint
 推导。若服务长期设置 `UNIONC_AGENT_PAIRING_ENDPOINT`，下次加载会自动恢复该覆盖；否则
-分域部署须在重新配对前通过配置或环境变量恢复 bootstrap endpoint。Server 返回相对激活
+分域部署须在下一次配对前通过配置或环境变量恢复 bootstrap endpoint。Server 返回相对激活
 路径，所以 pairing origin 也必须提供或反代 `/agent/activate/...` SPA，不能只暴露配对 API。
 配置、Agent secret 和证书文件必须只允许服务账户读取。
 
@@ -136,20 +135,18 @@ systemd 用 0755 并**每次启动都重设**，而 Agent 的 chmod 要等到第
 | 状态码 | 分类 | 处置 |
 |---|---|---|
 | 400 / 409 / 413 | 内容或 report ID 冲突（改不了） | `run` 删除已排队报文；一次性命令不入队。重发只会再次失败 |
-| 401 | 未知/失效 credential，或主机仍 active 但该 credential 已被重配替换/撤销 | `run` 保留已排队的队首并进入 `reauth_required`；一次性命令把当前报告入队并失败，但不改授权状态 |
-| 403 + `agent_revoked` | 主机生命周期已撤销 | `run` 保留已排队的队首并进入 `reauth_required`；一次性命令把当前报告入队并失败，但不改授权状态 |
-| 403 + `forbidden` | 当前有效 credential 与报告 `host_id` 不匹配 | 该报文永久无效，`run` 删除队首后继续投递；一次性命令不入队 |
-| 其他或无法解析的 403 | 代理/WAF 或不兼容服务端拒绝 | 保留队首并退避，不擅自撤销凭据或丢弃报告 |
+| 401 + `unauthorized` | 未知 credential，或主机实例已被永久删除 | `run` 保留已排队的队首并进入 `reauth_required`；一次性命令把当前报告入队并失败，但不改授权状态 |
+| 403 + `agent_host_mismatch` | credential 与报告 `host_id` 不匹配 | 该报文永久无效，`run` 删除队首后继续投递；一次性命令不入队 |
+| 其他或无法解析的 401/403 | 代理/WAF 或不兼容服务端拒绝 | 保留队首并退避，不擅自改变凭据或丢弃报告 |
 | **421** | 链路问题——反代契约头或独立代理证明缺失/不匹配 | `run` 保留队首并退避；一次性命令把当前报告入队。**不是**凭据失效，绝不触发重新注册 |
 | 其他 4xx / 5xx / 网络故障 | 仅需等待 | `run` 保留队首并指数退避（上限 300 秒）；一次性命令把当前报告入队 |
 
 421 必须早于 401/403 匹配。二者混用的代价是：一次反向代理漏配请求头的**部署失误**，
 在客户端表现为每台 Agent 的凭据失效——故障现象与根因毫不相关。
 
-Web 撤销不会主动推送到本机，Agent 要在下一次报告响应才得知。一次性的 `once` /
-`doctor --delivery` 遇到 401 或 `agent_revoked` 时只保留报告并返回错误，不写
-`reauth_required`。正在运行的 `run` 写入该状态后会继续采样；重启后则无法取得 authorized
-reporter，在进入采样循环前退出并由服务管理器重试，直到同实例重新配对。
+Web 永久删除不会主动推送到本机，Agent 要在下一次报告收到 401 才得知。一次性的 `once` /
+`doctor --delivery` 只保留报告并返回错误，不写 `reauth_required`。正在运行的 `run`
+写入该状态后会继续采样；恢复上报需要管理员创建新实例并完成配对。
 
 spool 文件名以零填充的毫秒时间戳为前缀，字典序即投递顺序；每轮最多补传 32 批，
 避免长时间断线恢复后独占网络与采样线程。反序列化失败的报文隔离为 `.invalid`，
@@ -196,8 +193,8 @@ Windows/macOS 的私有传感器接口以及需要管理员权限的查询不会
 - Windows：首选 x64 WiX MSI，用户可双击安装或通过 `msiexec.exe /i`、winget、GPO、
   Intune/MDM 部署，不依赖 PowerShell。程序安装到 Program Files，可变状态留在 ProgramData；
   原生 `UnionCAgent` Windows Service 以 LocalService 运行，专属 service SID 访问凭据；独立
-  的普通用户托盘伴侣通过 HKLM Run 在每个登录会话启动，并提供本地浏览器配置、配对/
-  重新配对、Server 连接检测与服务状态/启停。本地页一次提交 Server 地址和一次性授权密钥；
+  的普通用户托盘伴侣通过 HKLM Run 在每个登录会话启动，并提供本地浏览器配对、
+  Server 连接检测与服务状态/启停。本地页一次提交 Server 地址和一次性授权密钥；
   连接检测在页面可见时每 30 秒访问一次公开的 `/api/health`，不会读取或展示 Agent secret。
   涉及机器状态的操作才请求 UAC。用户选择退出时，在 UAC 下停止服务成功后才退出托盘；
   该操作不改变 `Automatic` 启动类型，因此下次启动 Windows 时服务仍会自动运行。安装器的
@@ -231,11 +228,11 @@ DEB/RPM 包负责完整的本地生命周期，Agent 本身不包含自更新器
 | 安装 | `apt install ./unionc-agent_*.deb` | `dnf install ./unionc-agent-*.rpm` | 创建并设为 0700/0600 | 不创建，随后浏览器配对 |
 | 同版本重装 | `apt install --reinstall ./当前包.deb` | `dnf reinstall ./当前包.rpm` | 保留 | 不变 |
 | 普通卸载 | `apt remove unionc-agent` | `dnf remove unionc-agent` | **保留**，便于原身份重装 | 不变 |
-| 永久退役 | 管理台撤销后执行 `apt purge unionc-agent` | 管理台撤销后先执行 `unionc-agent-purge --yes`，再 `dnf remove unionc-agent` | **删除** | 仅由管理台撤销 |
+| 永久退役 | 管理台删除后执行 `apt purge unionc-agent` | 管理台删除后先执行 `unionc-agent-purge --yes`，再 `dnf remove unionc-agent` | **删除** | 由管理台永久删除 |
 
-跨版本不承诺状态或安装布局迁移。部署新版本应先在 Web 撤销旧实例，再按平台规定顺序完成
-卸载与永久本地清理，然后安装当前制品并重新配对；只有同一当前版本的 reinstall 会复用
-现有状态。
+跨版本不承诺状态或安装布局迁移。部署新版本应先在 Web 永久删除旧实例，再按平台规定顺序
+完成卸载与本地清理，然后安装当前制品、创建新实例并配对；只有同一当前版本的 reinstall
+会复用现有状态。
 
 安装脚本在 systemd 正常运行时会启用、重启并验证服务；`Type=notify` 使重启操作一直等待到
 配置、主机身份、采集器和持久 spool 全部初始化完成。未配对或 Server 暂时不可达不属于启动
@@ -263,7 +260,7 @@ marker 缺失只有在 NSS 明确确认对应用户或组也不存在时才表�
 `unionc-agent-purge` 要求 root 和显式 `--yes`，删除目标均为脚本内固定绝对路径。
 
 本地 purge **不会调用 Server**，因为卸载时网络和管理凭据都不可靠，也不能让一台主机
-自行删除审计记录。永久退役顺序必须是：先在 Web 撤销实例，再 purge 本机。配置引用到
+自行删除审计记录。永久退役顺序必须是：先在 Web 永久删除实例，再 purge 本机。配置引用到
 上述目录之外的组织 CA、客户端证书或密钥由部署方管理，不在 purge 范围内。
 
 Linux tar.gz 只是便携二进制，不会创建账户、安装 unit 或提供重装/卸载事务；具体边界见

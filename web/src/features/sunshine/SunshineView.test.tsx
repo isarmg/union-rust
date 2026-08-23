@@ -262,6 +262,11 @@ describe("Sunshine host panel state", () => {
     const dialog = await screen.findByRole("dialog", { name: "Host one 管理面板" });
     expect(dialog.closest(".sunshine-master-detail")).toBeTruthy();
     expect(container.querySelector(".sunshine-master-detail.has-panel")).toBeNull();
+    expect(within(dialog).queryByText("Host one 管理")).toBeNull();
+    expect(
+      within(dialog).getByRole("button", { name: "关闭管理面板" })
+        .closest(".sunshine-panel-nav-row"),
+    ).toBeTruthy();
 
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "Host one 管理面板" })).toBeNull();

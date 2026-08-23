@@ -72,9 +72,6 @@ impl FromRequestParts<AppState> for AuthenticatedReport {
         .map_err(|error| agent_database_unavailable("authenticate monitoring report", error))?
         {
             crate::monitoring::store::MonitoringTokenAuthentication::Active(host_id) => host_id,
-            crate::monitoring::store::MonitoringTokenAuthentication::Revoked => {
-                return Err(AppError::AgentRevoked);
-            }
             crate::monitoring::store::MonitoringTokenAuthentication::Unknown => {
                 return Err(AppError::Unauthorized);
             }
@@ -111,9 +108,8 @@ async fn create_agent_instance(
     let request: CreateAgentInstanceRequest = serde_json::from_slice(&body).map_err(|error| {
         AppError::BadRequest(format!("invalid agent instance request: {error}"))
     })?;
-    let (display_name, expires_in_minutes, requested_instance_id) = request.validated()?;
-    let existing_instance = requested_instance_id.is_some();
-    let instance_id = requested_instance_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let (display_name, expires_in_minutes) = request.validated()?;
+    let instance_id = uuid::Uuid::new_v4().to_string();
     let invite_id = uuid::Uuid::new_v4().to_string();
     let activation_code = format!("uci_{}", uuid::Uuid::new_v4().simple());
     let expires_at = Utc::now() + chrono::Duration::minutes(expires_in_minutes);
@@ -124,17 +120,11 @@ async fn create_agent_instance(
         &token_hash(&activation_code),
         &display_name,
         expires_at,
-        existing_instance,
     )
     .await
     .map_err(|error| agent_database_unavailable("create agent instance invite", error))?
     {
         crate::monitoring::store::CreateInviteResult::Created(summary) => summary,
-        crate::monitoring::store::CreateInviteResult::InstanceNotFound => {
-            return Err(AppError::NotFound(
-                "monitored instance not found".to_string(),
-            ));
-        }
         crate::monitoring::store::CreateInviteResult::Conflict => {
             return Err(AppError::Conflict(
                 "an unconsumed invite already exists for this instance".to_string(),
@@ -170,15 +160,15 @@ async fn cancel_agent_instance(
     Path(request_id): Path<String>,
 ) -> AppResult<StatusCode> {
     let request_id = validate_uuid(&request_id, "agent instance request id")?;
-    match crate::monitoring::store::revoke_agent_instance_invite(state.db().as_ref(), &request_id)
+    match crate::monitoring::store::cancel_agent_instance_invite(state.db().as_ref(), &request_id)
         .await
         .map_err(|error| agent_database_unavailable("cancel agent instance invite", error))?
     {
-        crate::monitoring::store::RevokeInviteResult::Revoked => Ok(StatusCode::NO_CONTENT),
-        crate::monitoring::store::RevokeInviteResult::NotFound => Err(AppError::NotFound(
+        crate::monitoring::store::CancelInviteResult::Cancelled => Ok(StatusCode::NO_CONTENT),
+        crate::monitoring::store::CancelInviteResult::NotFound => Err(AppError::NotFound(
             "agent instance invite not found".to_string(),
         )),
-        crate::monitoring::store::RevokeInviteResult::NotPending => Err(AppError::Conflict(
+        crate::monitoring::store::CancelInviteResult::NotPending => Err(AppError::Conflict(
             "only a pending agent instance invite can be cancelled".to_string(),
         )),
     }
@@ -492,22 +482,6 @@ async fn update_instance_remark(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn revoke_host(
-    State(state): State<AppState>,
-    Path(host_id): Path<String>,
-) -> AppResult<StatusCode> {
-    let host_id = validate_host_id(&host_id)?;
-    require_database(&state).await?;
-    if !crate::monitoring::store::revoke_monitored_host(state.db().as_ref(), &host_id)
-        .await
-        .map_err(|error| agent_database_unavailable("revoke monitored host", error))?
-    {
-        return Err(AppError::NotFound("monitored host not found".to_string()));
-    }
-    state.agents.forget_host(&host_id).await;
-    Ok(StatusCode::NO_CONTENT)
-}
-
 async fn delete_host(
     State(state): State<AppState>,
     Path(host_id): Path<String>,
@@ -527,11 +501,7 @@ async fn delete_host(
 fn host_summary(stored: crate::monitoring::store::StoredHost) -> HostSummary {
     // 指标直接来自数据库的摘要数值列；此处不再解析 latest_report JSON 文本。
     let metrics = stored.metrics;
-    let status = if stored.lifecycle_status == "revoked" {
-        "revoked".to_string()
-    } else {
-        host_status(stored.last_seen_at, stored.latest_interval_seconds)
-    };
+    let status = host_status(stored.last_seen_at, stored.latest_interval_seconds);
     HostSummary {
         id: stored.identity.id,
         name: stored.name,
@@ -540,7 +510,6 @@ fn host_summary(stored: crate::monitoring::store::StoredHost) -> HostSummary {
         kernel_version: stored.identity.kernel_version,
         arch: stored.identity.arch,
         agent_version: stored.identity.agent_version,
-        lifecycle_status: stored.lifecycle_status,
         registered_at: stored.registered_at,
         last_seen_at: stored.last_seen_at,
         latest_collected_at: stored.latest_collected_at,
@@ -622,8 +591,8 @@ fn map_store_report_error(error: anyhow::Error) -> AppError {
         Some(crate::monitoring::store::StoreReportError::ReportIdBelongsToAnotherHost) => {
             AppError::Conflict(error.to_string())
         }
-        Some(crate::monitoring::store::StoreReportError::HostNotActive) => AppError::AgentRevoked,
-        Some(crate::monitoring::store::StoreReportError::CredentialNotActive) => {
+        Some(crate::monitoring::store::StoreReportError::HostNotFound) => AppError::Unauthorized,
+        Some(crate::monitoring::store::StoreReportError::CredentialNotFound) => {
             AppError::Unauthorized
         }
         None => agent_database_unavailable("store monitoring report", error),

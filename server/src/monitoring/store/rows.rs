@@ -39,7 +39,7 @@ pub(super) fn host_select(with_payload: bool, suffix: &str) -> String {
     format!(
         r#"
         SELECT h.host_id,h.name,h.os,h.os_version,h.kernel_version,
-               h.arch,h.agent_version,h.lifecycle_status,
+               h.arch,h.agent_version,
                h.capabilities,
                h.registered_at,h.last_seen_at,
                h.latest_collected_at,h.latest_interval_seconds,
@@ -90,7 +90,6 @@ pub(super) fn stored_host_from_row(
             arch: row.try_get("arch")?,
             agent_version: row.try_get("agent_version")?,
         },
-        lifecycle_status: row.try_get("lifecycle_status")?,
         capabilities,
         registered_at: timestamp(&row, "registered_at")?,
         last_seen_at: timestamp(&row, "last_seen_at")?,

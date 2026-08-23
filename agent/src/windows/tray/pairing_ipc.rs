@@ -8,7 +8,7 @@ fn elevated_pair(
     let server = validate_server_base(&server)?;
     let origin = reqwest::Url::parse(&server)?.origin().ascii_serialization();
     let confirmation = format!(
-        "即将把此 Windows 设备配对到：\n\n{origin}\n\n重新配对成功会替换当前设备绑定。只有确认该地址属于你的 UnionC 服务器时才继续。",
+        "即将把此 Windows 设备配对到：\n\n{origin}\n\n配对成功会替换当前本地绑定，并在 Server 中创建新的主机实例。只有确认该地址属于你的 UnionC 服务器时才继续。",
     );
     match message_box(
         &confirmation,

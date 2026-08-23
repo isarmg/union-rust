@@ -41,18 +41,13 @@ pub enum AppError {
     /// This stable code lets the Agent discard only that impossible report.
     #[error("agent credential does not belong to the reported host")]
     AgentHostMismatch,
-    /// The Agent's host instance is persistently revoked. Distinct from an
-    /// unknown or superseded token so the daemon can enter a deauthorized state.
-    #[error("agent credential has been revoked")]
-    AgentRevoked,
     /// 请求没有经过预期的反向代理链路（缺少 `X-Forwarded-Proto` / `X-Forwarded-For`），
     /// 返回 421 Misdirected Request。
     ///
     /// # 为什么不复用 403
     ///
-    /// 这不是"凭据不对"，而是"请求走错了路"——凭据可能完全有效。二者混用 403 会造成
-    /// 真实的误判：Agent 把 403 归类为持久撤销并停止自动注册，于是一次反向代理漏透传
-    /// 请求头的**部署配置失误**，在客户端表现为整台实例被退役。
+    /// 这不是"凭据不对"，而是"请求走错了路"——凭据可能完全有效。一次反向代理漏透传
+    /// 请求头属于可恢复的部署配置失误，不应伪装成 Agent 授权错误。
     /// 421 的语义正是"这台服务器不该接收这个请求"，且它天然属于可重试类——
     /// 运维修好反代之后，同一份报文原样重发即可成功。
     #[error("{0}")]
@@ -103,9 +98,7 @@ impl IntoResponse for AppError {
             }
             AppError::UnsupportedMediaType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             AppError::Unauthorized => StatusCode::UNAUTHORIZED,
-            AppError::Forbidden(_) | AppError::AgentHostMismatch | AppError::AgentRevoked => {
-                StatusCode::FORBIDDEN
-            }
+            AppError::Forbidden(_) | AppError::AgentHostMismatch => StatusCode::FORBIDDEN,
             AppError::MisdirectedRequest(_) => StatusCode::MISDIRECTED_REQUEST,
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::Gone(_) => StatusCode::GONE,
@@ -132,7 +125,6 @@ impl IntoResponse for AppError {
             AppError::AgentHostMismatch => {
                 "agent credential does not belong to the reported host".to_string()
             }
-            AppError::AgentRevoked => "agent credential has been revoked".to_string(),
             AppError::MisdirectedRequest(msg) => msg.clone(),
             AppError::NotFound(msg) => msg.clone(),
             AppError::Gone(msg) => msg.clone(),
@@ -173,7 +165,6 @@ impl AppError {
             Self::Unauthorized => "unauthorized",
             Self::Forbidden(_) => "forbidden",
             Self::AgentHostMismatch => "agent_host_mismatch",
-            Self::AgentRevoked => "agent_revoked",
             Self::MisdirectedRequest(_) => "misdirected_request",
             Self::NotFound(_) => "not_found",
             Self::Gone(_) => "gone",

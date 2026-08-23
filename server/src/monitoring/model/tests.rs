@@ -10,7 +10,7 @@ mod tests {
             "host": {
                 "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
                 "os": "windows", "os_version": null,
-                "kernel_version": null, "arch": "x86_64", "agent_version": "0.3.3"
+                "kernel_version": null, "arch": "x86_64", "agent_version": "0.3.4"
             },
             "interval_seconds": 10.0,
             "system": {
@@ -47,7 +47,7 @@ mod tests {
             "host": {
                 "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
                 "os": "linux", "os_version": null,
-                "kernel_version": null, "arch": "x86_64", "agent_version": "0.3.3"
+                "kernel_version": null, "arch": "x86_64", "agent_version": "0.3.4"
             },
             "interval_seconds": 10.0,
             "system": {
@@ -86,6 +86,13 @@ mod tests {
             .is_err()
         );
         assert!(
+            serde_json::from_value::<CreateAgentInstanceRequest>(serde_json::json!({
+                "display_name": "agent",
+                "instance_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+            }))
+            .is_err()
+        );
+        assert!(
             serde_json::from_value::<AgentPairingRequest>(serde_json::json!({
                 "host": {
                     "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -93,7 +100,7 @@ mod tests {
                     "os_version": null,
                     "kernel_version": null,
                     "arch": "x86_64",
-                    "agent_version": "0.3.3"
+                    "agent_version": "0.3.4"
                 },
                 "token_hash": "a".repeat(64),
                 "polling_secret_hash": "b".repeat(64),
@@ -112,17 +119,11 @@ mod tests {
     }
 
     #[test]
-    fn management_instance_id_requires_canonical_uuid() {
-        for instance_id in [
-            "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
-            "aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa",
-        ] {
-            let request = CreateAgentInstanceRequest {
-                display_name: None,
-                expires_in_minutes: None,
-                instance_id: Some(instance_id.to_string()),
-            };
-            assert!(request.validated().is_err(), "accepted {instance_id}");
-        }
+    fn management_instance_defaults_match_the_host_page() {
+        let request = CreateAgentInstanceRequest {
+            display_name: None,
+            expires_in_minutes: None,
+        };
+        assert_eq!(request.validated().unwrap(), ("概览".to_string(), 15));
     }
 }

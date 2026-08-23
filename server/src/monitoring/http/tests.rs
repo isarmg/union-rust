@@ -402,19 +402,19 @@ mod tests {
             AppError::Conflict(_)
         ));
 
-        let revoked = anyhow::Error::new(
-            crate::monitoring::store::StoreReportError::HostNotActive,
+        let deleted_host = anyhow::Error::new(
+            crate::monitoring::store::StoreReportError::HostNotFound,
         );
         assert!(matches!(
-            map_store_report_error(revoked),
-            AppError::AgentRevoked
+            map_store_report_error(deleted_host),
+            AppError::Unauthorized
         ));
 
-        let superseded = anyhow::Error::new(
-            crate::monitoring::store::StoreReportError::CredentialNotActive,
+        let deleted_credential = anyhow::Error::new(
+            crate::monitoring::store::StoreReportError::CredentialNotFound,
         );
         assert!(matches!(
-            map_store_report_error(superseded),
+            map_store_report_error(deleted_credential),
             AppError::Unauthorized
         ));
 

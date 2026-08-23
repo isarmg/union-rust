@@ -5,7 +5,7 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
 service_name=unionc-agent.service
-package_version=0.3.3
+package_version=0.3.4
 account_state_dir=/var/lib/unionc-agent-package
 config_dir=/etc/unionc-agent
 config_path="$config_dir/config.json"
@@ -502,13 +502,13 @@ case "${1:-}" in
     fi
     cat <<'EOF'
 UnionC Agent 的本地配置、凭据、spool、GPU drop-in 和包管理的专用账户已清理。
-此操作没有连接 UnionC Server；请确认已在管理台撤销对应实例。
+此操作没有连接 UnionC Server；请确认已在管理台永久删除对应实例。
 EOF
     ;;
   *)
     cat <<EOF
 UnionC Agent 程序和系统服务已移除；本地配置、实例凭据、spool 与专用账户均已保留。
-重新安装同一 $package_version 包后可继续使用原实例。跨版本安装前必须先 purge 并重新配对。
+重新安装同一 $package_version 包后可继续使用原实例。跨版本安装前必须先永久删除旧实例、purge，再创建新实例并配对。
 EOF
     ;;
 esac

@@ -1,4 +1,4 @@
-//! Browser-assisted Agent pairing, activation, revocation and re-pairing.
+//! Browser-assisted Agent pairing, activation and managed-instance deletion.
 
 use axum::{
     body::{Body, to_bytes},
@@ -52,10 +52,9 @@ async fn app_with_database(url: String) -> (axum::Router, database::DbPool) {
 }
 
 #[tokio::test]
-async fn report_write_rechecks_the_exact_credential_after_authentication() {
-    let url = common::test_database_url(
-        "report_write_rechecks_the_exact_credential_after_authentication",
-    );
+async fn report_write_rechecks_host_existence_after_authentication() {
+    let url =
+        common::test_database_url("report_write_rechecks_host_existence_after_authentication");
     let mut settings = Settings::default();
     settings.database.url = url.to_string();
     let pool = database::connect(&settings).await.expect("connect");
@@ -63,60 +62,41 @@ async fn report_write_rechecks_the_exact_credential_after_authentication() {
         .await
         .expect("initialize schema");
 
-    let host_id = Uuid::new_v4();
-    let host_id_text = host_id.to_string();
+    let host_id_text = Uuid::new_v4().to_string();
     let host: unionc::monitoring::HostIdentity =
         serde_json::from_value(report_body(&host_id_text)["host"].clone())
             .expect("valid host fixture");
-    let old_token = secret();
-    let old_hash = hash(&old_token);
-    common::insert_active_monitoring_host(&pool, &host, &old_hash)
+    let token_hash = hash(&secret());
+    common::insert_active_monitoring_host(&pool, &host, &token_hash)
         .await
         .expect("insert host");
 
-    // Model the first half of the HTTP handler: this request authenticated
-    // before a concurrent administrator-approved re-pair rotated the token.
+    // Model the first half of the HTTP handler: authentication completed just
+    // before an administrator permanently deleted the instance.
     assert_eq!(
-        unionc::monitoring::store::monitoring_host_for_token(&pool, &old_hash)
+        unionc::monitoring::store::monitoring_host_for_token(&pool, &token_hash)
             .await
-            .expect("authenticate old credential"),
+            .expect("authenticate credential"),
         unionc::monitoring::store::MonitoringTokenAuthentication::Active(host_id_text.clone())
     );
-
-    let new_hash = hash(&secret());
-    let now = database::now_epoch_micros();
-    let mut transaction = database::begin_write(&pool).await.expect("begin rotation");
-    query("UPDATE agent_credentials SET revoked_at=?2 WHERE host_id=?1 AND revoked_at IS NULL")
-        .bind(&host_id_text)
-        .bind(now)
-        .execute(transaction.connection())
-        .await
-        .expect("revoke old credential");
-    query(
-        "INSERT INTO agent_credentials(credential_id,host_id,token_hash,issued_at) \
-         VALUES(?1,?2,?3,?4)",
-    )
-    .bind(Uuid::new_v4().to_string())
-    .bind(&host_id_text)
-    .bind(&new_hash)
-    .bind(now)
-    .execute(transaction.connection())
-    .await
-    .expect("insert replacement credential");
-    transaction.commit().await.expect("commit rotation");
+    assert!(
+        unionc::monitoring::store::delete_monitored_host(&pool, &host_id_text)
+            .await
+            .expect("delete host")
+    );
 
     let stale_in_flight: unionc::monitoring::AgentReport =
         serde_json::from_value(report_body(&host_id_text)).expect("valid report");
     let error = unionc::monitoring::store::store_authenticated_monitoring_report(
         &pool,
         &stale_in_flight,
-        &old_hash,
+        &token_hash,
     )
     .await
-    .expect_err("the revoked in-flight credential must not write");
+    .expect_err("the deleted in-flight host must not accept a report");
     assert!(matches!(
         error.downcast_ref::<unionc::monitoring::store::StoreReportError>(),
-        Some(unionc::monitoring::store::StoreReportError::CredentialNotActive)
+        Some(unionc::monitoring::store::StoreReportError::HostNotFound)
     ));
     let report_count: i64 = query("SELECT COUNT(*) AS count FROM agent_metric_reports")
         .fetch_one(&pool)
@@ -125,14 +105,6 @@ async fn report_write_rechecks_the_exact_credential_after_authentication() {
         .try_get("count")
         .unwrap();
     assert_eq!(report_count, 0);
-
-    unionc::monitoring::store::store_authenticated_monitoring_report(
-        &pool,
-        &stale_in_flight,
-        &new_hash,
-    )
-    .await
-    .expect("the replacement credential remains valid");
 }
 
 #[tokio::test]
@@ -412,7 +384,7 @@ fn pairing_body(token: &str, polling_secret: &str) -> serde_json::Value {
             "os_version": "test",
             "kernel_version": "test-kernel",
             "arch": "x86_64",
-            "agent_version": "0.3.3"
+            "agent_version": "0.3.4"
         },
         "token_hash": hash(token),
         "polling_secret_hash": hash(polling_secret)
@@ -430,7 +402,7 @@ fn report_body(instance_id: &str) -> serde_json::Value {
             "os_version": "test",
             "kernel_version": "test-kernel",
             "arch": "x86_64",
-            "agent_version": "0.3.3"
+            "agent_version": "0.3.4"
         },
         "interval_seconds": 10.0,
         "system": {
@@ -458,15 +430,8 @@ fn report_body(instance_id: &str) -> serde_json::Value {
     })
 }
 
-async fn create_invite(
-    app: &axum::Router,
-    display_name: &str,
-    instance_id: Option<&str>,
-) -> serde_json::Value {
-    let mut body = serde_json::json!({"display_name": display_name});
-    if let Some(instance_id) = instance_id {
-        body["instance_id"] = serde_json::Value::String(instance_id.to_string());
-    }
+async fn create_invite(app: &axum::Router, display_name: &str) -> serde_json::Value {
+    let body = serde_json::json!({"display_name": display_name});
     let (status, body) = call_json(
         app,
         console("POST", "/api/monitoring/agent-instances"),
@@ -547,6 +512,16 @@ async fn current_pairing_contract_rejects_removed_fields_and_noncanonical_uuids(
         &app,
         console("POST", "/api/monitoring/agent-instances"),
         serde_json::json!({"display_name": "strict", "enrollment_code": "removed"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = call_json(
+        &app,
+        console("POST", "/api/monitoring/agent-instances"),
+        serde_json::json!({
+            "display_name": "strict",
+            "instance_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        }),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -645,7 +620,7 @@ async fn current_pairing_contract_rejects_removed_fields_and_noncanonical_uuids(
 async fn pairing_is_atomic_replay_safe_and_creation_is_idempotent() {
     let url = common::test_database_url("pairing_is_atomic_replay_safe_and_creation_is_idempotent");
     let (app, pool) = app_with_database(url.to_string()).await;
-    let invite = create_invite(&app, "paired instance", None).await;
+    let invite = create_invite(&app, "paired instance").await;
     let instance_id = invite["instance_id"].as_str().unwrap();
     let activation_code = invite["activation_code"].as_str().unwrap();
     let token = secret();
@@ -735,9 +710,9 @@ async fn pairing_is_atomic_replay_safe_and_creation_is_idempotent() {
         StatusCode::ACCEPTED
     );
 
-    // Re-pairing to another server leaves older host reports at the head of the durable spool.
+    // Pairing the Agent to another Server leaves older host reports at the head of the durable spool.
     // The dedicated machine code lets the Agent discard only those impossible reports without
-    // treating an unrelated generic 403 as either a host mismatch or a revoked credential.
+    // treating an unrelated generic 403 as a stable UnionC authorization result.
     let previous_instance_id = Uuid::new_v4().to_string();
     let (mismatch_status, mismatch_body) = report(&app, &previous_instance_id, &token).await;
     assert_eq!(mismatch_status, StatusCode::FORBIDDEN, "{mismatch_body}");
@@ -745,7 +720,7 @@ async fn pairing_is_atomic_replay_safe_and_creation_is_idempotent() {
     assert_eq!(
         report(&app, instance_id, &token).await.0,
         StatusCode::ACCEPTED,
-        "the identity mismatch must not revoke the current credential"
+        "the identity mismatch must not invalidate the current credential"
     );
 
     let (unauthenticated_status, _) = call_body(
@@ -795,29 +770,19 @@ async fn pairing_is_atomic_replay_safe_and_creation_is_idempotent() {
     let (deleted, _) = call_empty(
         &app,
         console(
-            "POST",
-            &format!("/api/monitoring/hosts/{instance_id}/revoke"),
+            "DELETE",
+            &format!("/api/monitoring/managed-instances/{instance_id}"),
         ),
     )
     .await;
     assert_eq!(deleted, StatusCode::NO_CONTENT);
-    query("DELETE FROM monitored_hosts WHERE host_id=?1")
-        .bind(instance_id)
-        .execute(&pool)
-        .await
-        .expect("cleanup host tombstone");
-    query("DELETE FROM agent_instance_invites WHERE invite_id=?1")
-        .bind(invite["request_id"].as_str().unwrap())
-        .execute(&pool)
-        .await
-        .expect("cleanup invite");
 }
 
 #[tokio::test]
 async fn expired_pairing_and_invite_are_never_activated() {
     let url = common::test_database_url("expired_pairing_and_invite_are_never_activated");
     let (app, pool) = app_with_database(url.to_string()).await;
-    let invite = create_invite(&app, "expiring instance", None).await;
+    let invite = create_invite(&app, "expiring instance").await;
     let token = secret();
     let polling_secret = secret();
     let (_, pairing) = create_pairing(&app, pairing_body(&token, &polling_secret)).await;
@@ -894,7 +859,7 @@ async fn expired_pairing_and_invite_are_never_activated() {
 async fn administrators_can_update_remark_then_permanently_delete_an_instance() {
     let url = common::test_database_url("administrators_can_update_remark_then_delete_an_instance");
     let (app, pool) = app_with_database(url.to_string()).await;
-    let invite = create_invite(&app, "managed instance", None).await;
+    let invite = create_invite(&app, "managed instance").await;
     let instance_id = invite["instance_id"].as_str().unwrap();
     let token = secret();
     let polling_secret = secret();
@@ -928,6 +893,15 @@ async fn administrators_can_update_remark_then_permanently_delete_an_instance() 
     )
     .await;
     assert_eq!(read_resource_delete, StatusCode::METHOD_NOT_ALLOWED);
+    let (removed_revoke_endpoint, _) = call_empty(
+        &app,
+        console(
+            "POST",
+            &format!("/api/monitoring/hosts/{instance_id}/revoke"),
+        ),
+    )
+    .await;
+    assert_eq!(removed_revoke_endpoint, StatusCode::NOT_FOUND);
 
     let (invalid_name, _) = call_json(
         &app,
@@ -971,7 +945,6 @@ async fn administrators_can_update_remark_then_permanently_delete_an_instance() 
     assert_eq!(detail_status, StatusCode::OK, "{detail}");
     assert_eq!(detail["host"]["name"], "客厅工作站");
 
-    let pending_invite = create_invite(&app, "pending replacement", Some(instance_id)).await;
     let pending_token = secret();
     let pending_poll = secret();
     let mut pending_body = pairing_body(&pending_token, &pending_poll);
@@ -1025,9 +998,8 @@ async fn administrators_can_update_remark_then_permanently_delete_an_instance() 
             .unwrap();
     assert_eq!(first_request_count, 0);
     let invite_count: i64 =
-        query("SELECT COUNT(*) AS count FROM agent_instance_invites WHERE invite_id IN (?1,?2)")
+        query("SELECT COUNT(*) AS count FROM agent_instance_invites WHERE invite_id=?1")
             .bind(invite["request_id"].as_str().unwrap())
-            .bind(pending_invite["request_id"].as_str().unwrap())
             .fetch_one(&pool)
             .await
             .expect("count deleted invites")
@@ -1057,230 +1029,4 @@ async fn administrators_can_update_remark_then_permanently_delete_an_instance() 
         report(&app, instance_id, &token).await.0,
         StatusCode::UNAUTHORIZED
     );
-}
-
-#[tokio::test]
-async fn revoke_is_terminal_until_an_admin_re_pairs_the_same_instance() {
-    let url =
-        common::test_database_url("revoke_is_terminal_until_an_admin_re_pairs_the_same_instance");
-    let (app, pool) = app_with_database(url.to_string()).await;
-    let first_invite = create_invite(&app, "stable instance", None).await;
-    let instance_id = first_invite["instance_id"].as_str().unwrap();
-    let first_token = secret();
-    let first_poll = secret();
-    let (_, first_pairing) = create_pairing(&app, pairing_body(&first_token, &first_poll)).await;
-    let first_request_id = first_pairing["request_id"].as_str().unwrap();
-    assert_eq!(
-        activate(
-            &app,
-            first_request_id,
-            first_invite["activation_code"].as_str().unwrap()
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
-    assert_eq!(
-        {
-            let mut old_report = report_body(instance_id);
-            old_report["report_id"] = serde_json::Value::String(Uuid::new_v4().to_string());
-            old_report["collected_at"] =
-                serde_json::to_value(Utc::now() + Duration::minutes(4)).unwrap();
-            old_report["capabilities"] = serde_json::json!([{
-                "name": "old-generation-capability",
-                "available": true,
-                "source": "test",
-                "error_kind": null,
-                "message": null
-            }]);
-            call_json(
-                &app,
-                Request::post("/api/agent/v1/report")
-                    .header("authorization", format!("Bearer {first_token}")),
-                old_report,
-            )
-            .await
-            .0
-        },
-        StatusCode::ACCEPTED,
-        "the first credential generation must establish an intentionally future latest point"
-    );
-
-    // An invite issued before decommissioning is an outstanding capability to
-    // reactivate this exact tombstone. Revocation must retire it (and a pending
-    // request for the same id), otherwise the old activation code can undo the
-    // later administrator action.
-    let stale_invite = create_invite(&app, "stale re-pair", Some(instance_id)).await;
-    let stale_token = secret();
-    let stale_poll = secret();
-    let mut stale_pairing_body = pairing_body(&stale_token, &stale_poll);
-    stale_pairing_body["host"]["id"] = serde_json::Value::String(instance_id.to_string());
-    let (stale_status, stale_pairing) = create_pairing(&app, stale_pairing_body).await;
-    assert_eq!(stale_status, StatusCode::CREATED, "{stale_pairing}");
-    let stale_request_id = stale_pairing["request_id"].as_str().unwrap();
-
-    let (revoked, _) = call_empty(
-        &app,
-        console(
-            "POST",
-            &format!("/api/monitoring/hosts/{instance_id}/revoke"),
-        ),
-    )
-    .await;
-    assert_eq!(revoked, StatusCode::NO_CONTENT);
-    assert_eq!(
-        poll(&app, stale_request_id, &stale_poll).await["status"],
-        "denied"
-    );
-    let (stale_activation, _) = activate(
-        &app,
-        stale_request_id,
-        stale_invite["activation_code"].as_str().unwrap(),
-    )
-    .await;
-    assert_eq!(stale_activation, StatusCode::CONFLICT);
-    let (old_report_status, old_report_body) = report(&app, instance_id, &first_token).await;
-    assert_eq!(old_report_status, StatusCode::FORBIDDEN);
-    assert_eq!(old_report_body["code"], "agent_revoked");
-    assert_eq!(
-        poll(&app, first_request_id, &first_poll).await["status"],
-        "denied"
-    );
-    assert_eq!(
-        activate(
-            &app,
-            first_request_id,
-            first_invite["activation_code"].as_str().unwrap()
-        )
-        .await
-        .0,
-        StatusCode::CONFLICT
-    );
-
-    let lifecycle: String = query("SELECT lifecycle_status FROM monitored_hosts WHERE host_id=?1")
-        .bind(instance_id)
-        .fetch_one(&pool)
-        .await
-        .expect("host tombstone")
-        .try_get("lifecycle_status")
-        .unwrap();
-    assert_eq!(lifecycle, "revoked");
-
-    // An explicit administrator invite is the only path that reactivates the
-    // same instance, rotating credentials while preserving its report rows.
-    let second_invite = create_invite(&app, "stable instance re-pair", Some(instance_id)).await;
-    assert_eq!(second_invite["instance_id"], instance_id);
-    let second_token = secret();
-    let second_poll = secret();
-    let (_, second_pairing) = create_pairing(&app, pairing_body(&second_token, &second_poll)).await;
-    let second_request_id = second_pairing["request_id"].as_str().unwrap();
-    let (second_activation, body) = activate(
-        &app,
-        second_request_id,
-        second_invite["activation_code"].as_str().unwrap(),
-    )
-    .await;
-    assert_eq!(second_activation, StatusCode::OK, "{body}");
-    assert_eq!(body["instance_id"], instance_id);
-
-    let reset = unionc::monitoring::store::get_monitored_host(&pool, instance_id)
-        .await
-        .expect("read re-paired host")
-        .expect("re-paired host exists");
-    assert!(reset.latest.is_none());
-    assert!(reset.latest_collected_at.is_none());
-    assert!(reset.latest_interval_seconds.is_none());
-    assert!(reset.capabilities.is_empty());
-    let retained_old_payload: Option<String> =
-        query("SELECT payload FROM agent_metric_reports WHERE host_id=?1")
-            .bind(instance_id)
-            .fetch_one(&pool)
-            .await
-            .expect("retained old report")
-            .try_get("payload")
-            .unwrap();
-    assert!(
-        retained_old_payload.is_none(),
-        "the previous generation must not retain a detail payload after re-pairing"
-    );
-
-    let new_report_id = Uuid::new_v4().to_string();
-    let mut new_report = report_body(instance_id);
-    new_report["report_id"] = serde_json::Value::String(new_report_id.clone());
-    new_report["collected_at"] = serde_json::to_value(Utc::now()).unwrap();
-    new_report["capabilities"] = serde_json::json!([{
-        "name": "new-generation-capability",
-        "available": true,
-        "source": "test",
-        "error_kind": null,
-        "message": null
-    }]);
-    assert_eq!(
-        call_json(
-            &app,
-            Request::post("/api/agent/v1/report")
-                .header("authorization", format!("Bearer {second_token}")),
-            new_report,
-        )
-        .await
-        .0,
-        StatusCode::ACCEPTED,
-        "a new-generation report must become current despite the old future timestamp"
-    );
-    let current = unionc::monitoring::store::get_monitored_host(&pool, instance_id)
-        .await
-        .expect("read current host")
-        .expect("current host exists");
-    assert_eq!(current.name, "stable instance");
-    assert_eq!(current.capabilities.len(), 1);
-    assert_eq!(current.capabilities[0].name, "new-generation-capability");
-    assert_eq!(
-        current
-            .latest
-            .as_ref()
-            .map(|report| report.report_id.as_str()),
-        Some(new_report_id.as_str())
-    );
-    assert_eq!(
-        report(&app, instance_id, &first_token).await.0,
-        // The instance is active again, but this superseded secret remains
-        // invalid. 403 is reserved for a currently revoked host tombstone.
-        StatusCode::UNAUTHORIZED
-    );
-    let report_count: i64 =
-        query("SELECT COUNT(*) AS count FROM agent_metric_reports WHERE host_id=?1")
-            .bind(instance_id)
-            .fetch_one(&pool)
-            .await
-            .expect("report count")
-            .try_get("count")
-            .unwrap();
-    assert_eq!(report_count, 2, "re-pair must preserve the first report");
-
-    let (deleted, _) = call_empty(
-        &app,
-        console(
-            "POST",
-            &format!("/api/monitoring/hosts/{instance_id}/revoke"),
-        ),
-    )
-    .await;
-    assert_eq!(deleted, StatusCode::NO_CONTENT);
-    query("DELETE FROM monitored_hosts WHERE host_id=?1")
-        .bind(instance_id)
-        .execute(&pool)
-        .await
-        .expect("cleanup host tombstone");
-    query("DELETE FROM agent_pairing_requests WHERE request_id=?1")
-        .bind(stale_request_id)
-        .execute(&pool)
-        .await
-        .expect("cleanup stale pairing");
-    for invite in [&first_invite, &stale_invite, &second_invite] {
-        query("DELETE FROM agent_instance_invites WHERE invite_id=?1")
-            .bind(invite["request_id"].as_str().unwrap())
-            .execute(&pool)
-            .await
-            .expect("cleanup invite");
-    }
 }

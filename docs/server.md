@@ -128,7 +128,7 @@ unit 已包含一组 systemd 硬化选项，并显式设置 `UNIONC_DATA_DIR` �
 `Type=notify` 只会在环境、密钥、SQLite、路由和监听端口全部初始化成功后报告就绪；已启用
 服务的同版本重装会等待这一就绪信号，并在启动失败或随后不再 active 时让包配置失败。
 
-包内环境文件的 `UNIONC_PACKAGE_VERSION=0.3.3` 是安装归属标记，不是可调运行参数，不能
+包内环境文件的 `UNIONC_PACKAGE_VERSION=0.3.4` 是安装归属标记，不是可调运行参数，不能
 删除或修改。安装脚本还会把 `/var/lib/unionc-package` 中的版本化 marker 与实际 UID/GID、
 账户 home/shell、数据目录所有权和 0700 权限逐一比对；既有文件、账户或目录缺少当前标记
 时会 fail closed，不执行旧安装接管。marker 目录必须保持 `root:root/0700`，其中状态文件
@@ -137,7 +137,7 @@ unit 已包含一组 systemd 硬化选项，并显式设置 `UNIONC_DATA_DIR` �
 `/usr/bin/unionc`，不能由同名外部
 程序替换。`/etc/unionc` 必须是不可由非 root 写入的真实目录；`unionc.env` 必须是 root 拥有、
 0640 且没有其他硬链接的真实文件，其组只能是 root 或当前 marker 记录的 `unionc` GID。普通
-卸载保留数据与 marker，仅支持同一 0.3.3 重装。新建专用账户前，安装脚本先原子发布并同步
+卸载保留数据与 marker，仅支持同一 0.3.4 重装。新建专用账户前，安装脚本先原子发布并同步
 `pending-group` 或 `pending-user` 意图（包含预选 UID/GID），再要求账户工具创建同一个数值身份；
 确认 NSS 中名称、UID/GID、home、shell 以及唯一、锁定的 shadow/gshadow 记录均严格匹配后，
 才同步发布 `managed-group` 或 `managed-user` 提交 marker；即使 `/etc` 与 `/var` 分属不同文件
@@ -239,7 +239,7 @@ staging 升级，也不会回填缺失字段。版本、schema 或指纹任一�
 `integrity-check`、`rekey` 不会创建缺失数据库；`restore` 是唯一例外，可把已完整验证的
 备份发布到缺失目标。旧 Server 数据库不能就地打开、
 升级或导入。需要留存旧数据时，应先在旧系统中导出为独立的中立格式，再部署当前版本并
-重新配对 Agent；该导出不属于 UnionC 当前版本的可导入数据源。
+创建新实例并配对 Agent；该导出不属于 UnionC 当前版本的可导入数据源。
 
 ## 密钥轮换
 
@@ -301,9 +301,9 @@ Error: encrypted secret uses key id '2025q1', which is not in the keyring
 - `POST /api/agent/v2/pairing-requests/{request_id}/status`：Agent 用
   `Authorization: Pairing ...` 轮询，成功后取得非秘密的最终 `instance_id`。
 
-激活事务会一次性绑定邀请、配对请求、实例和 credential。为已有 `instance_id` 创建邀请
-表示重新配对：实例 ID 和历史不变，旧 credential 被撤销。创建请求和激活请求都支持
-响应丢失后的幂等重试；激活码不能被另一个 request 抢走。
+激活事务会一次性绑定邀请、配对请求、新实例和唯一 credential。每次创建邀请都会预留新的
+`instance_id`；当前接口不接受调用方指定既有实例。创建请求和激活请求都支持响应丢失后的
+幂等重试；激活码不能被另一个 request 抢走。
 
 协议细节与状态机见 [agent-pairing.md](agent-pairing.md)。
 
@@ -315,18 +315,15 @@ Error: encrypted secret uses key id '2025q1', which is not in the keyring
 - `GET /api/monitoring/hosts`、`/{id}`、`/{id}/history`：管理员会话只读查询；
   列表支持 `?limit&offset`（默认 200、上限 1000）并返回 `total`；历史支持
   `?from&to&limit`（默认 300、上限 1000）；
-- `PATCH /api/monitoring/managed-instances/{id}`：保存 Server 备注；Agent 不上报设备名称，
-  后续遥测和重新配对都不会覆盖；
-- `POST /api/monitoring/hosts/{id}/revoke`：持久撤销该实例的全部 credential，保留实例
-  tombstone 和历史。之后只有管理员为同一实例明确创建新邀请并完成浏览器配对才能恢复；
+- `PATCH /api/monitoring/managed-instances/{id}`：保存名称；Agent 不上报设备名称，
+  后续遥测不会覆盖；
 - `DELETE /api/monitoring/managed-instances/{id}`：永久删除实例、历史、credential、配对请求和邀请，
   不可恢复；删除动作本身仍写入独立审计记录。
 
-凭据查找区分“当前无效”和“实例退役”：未知或已被新 secret 取代的凭据返回 401；
-`lifecycle_status=revoked` 的实例返回 403。
-当前常驻 `run` 对 401、403 都会持久进入 `reauth_required`、停止投递并继续把采样写入
-有界 spool，且不会调用其他身份端点自动复活。`once` / `doctor --delivery` 不写授权状态，
-只把可重试报告入队并返回失败。421 仍只表示反向代理链路错误。
+未知 credential 或已删除实例返回 401 + `unauthorized`。当前常驻 `run` 会持久进入
+`reauth_required`、停止投递并继续把采样写入有界 spool；恢复需要管理员创建新实例并配对。
+credential 与报告 `host_id` 不匹配返回 403 + `agent_host_mismatch`，Agent 只丢弃对应的
+不可能成功报文。`once` / `doctor --delivery` 不写授权状态；421 仍只表示反向代理链路错误。
 
 ### 当前协议边界
 

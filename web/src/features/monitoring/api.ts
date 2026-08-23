@@ -28,11 +28,6 @@ export const monitoringApi = {
       expectedStatus: 204,
     },
   ),
-  /** 只吊销 Agent 凭据，保留主机和历史数据。 */
-  monitoringRevokeHost: (id: string) => request<void>(
-    `${monitoringHostPath(id)}/revoke`,
-    { method: "POST", expectedStatus: 204 },
-  ),
   /** 永久删除主机、历史数据、凭据和关联邀请。 */
   monitoringDeleteHost: (id: string) => request<void>(
     monitoringManagedInstancePath(id),
@@ -42,10 +37,10 @@ export const monitoringApi = {
     "/api/monitoring/agent-instances",
     { signal },
   ),
-  monitoringCreateAgentInstance: (display_name: string, expires_in_minutes: number, instance_id?: string) =>
+  monitoringCreateAgentInstance: (display_name: string, expires_in_minutes: number) =>
     request<CreatedAgentInstance>("/api/monitoring/agent-instances", {
       method: "POST",
-      body: JSON.stringify({ display_name, expires_in_minutes, ...(instance_id ? { instance_id } : {}) }),
+      body: JSON.stringify({ display_name, expires_in_minutes }),
       expectedStatus: 201,
     }),
   monitoringCancelAgentInstance: (requestId: string) => request<void>(
