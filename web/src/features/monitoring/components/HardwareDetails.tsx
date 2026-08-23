@@ -328,7 +328,9 @@ export function MonitoringHostPanel({
         {section === "storage" ? <StorageTable report={report} /> : null}
         {section === "gpu" ? <GpuTable report={report} /> : null}
         {section === "temperature" ? <TemperatureTable report={report} /> : null}
-        {section === "capabilities" ? <CapabilityTable capabilities={host.capabilities} /> : null}
+        {section === "capabilities" ? (
+          <CapabilityTable capabilities={report?.capabilities ?? host.capabilities} />
+        ) : null}
         {section === "history" ? (
           <section className="monitoring-history-panel">
             {historyLoading ? <LoadingBlock label="正在读取历史指标" /> : null}

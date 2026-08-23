@@ -23,9 +23,14 @@ pub(super) const METRIC_COLUMNS: [&str; 9] = [
     "gpu_memory_usage_percent",
 ];
 
-/// Build the common host query. List reads deliberately avoid selecting the
-/// potentially large JSON payload; detail reads request it explicitly.
+/// Build the common host query. List reads deliberately avoid selecting either
+/// potentially large JSON field; detail reads request them explicitly.
 pub(super) fn host_select(with_payload: bool, suffix: &str) -> String {
+    let capabilities = if with_payload {
+        "h.capabilities"
+    } else {
+        "CAST('[]' AS TEXT) AS capabilities"
+    };
     let payload = if with_payload {
         "r.payload AS latest_report"
     } else {
@@ -40,7 +45,7 @@ pub(super) fn host_select(with_payload: bool, suffix: &str) -> String {
         r#"
         SELECT h.host_id,h.name,h.os,h.os_version,h.kernel_version,
                h.arch,h.agent_version,
-               h.capabilities,
+               {capabilities},
                h.registered_at,h.last_seen_at,
                h.latest_collected_at,h.latest_interval_seconds,
                COUNT(*) OVER() AS total,

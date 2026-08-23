@@ -25,13 +25,7 @@ const host: MonitoringHostSummary = {
   last_seen_at: "2026-08-23T12:10:00Z",
   latest_collected_at: "2026-08-23T12:10:00Z",
   status: "online",
-  capabilities: [{
-    name: "gpu.nvidia",
-    available: true,
-    source: "nvidia-smi",
-    error_kind: null,
-    message: null,
-  }],
+  capabilities: [],
   cpu_usage_percent: 25,
   memory_usage_percent: 50,
   network_received_bytes_per_second: 1024,
@@ -42,6 +36,14 @@ const host: MonitoringHostSummary = {
   gpu_utilization_percent: 40,
   gpu_memory_usage_percent: 30,
 };
+
+const reportedCapabilities: MonitoringAgentReport["capabilities"] = [{
+    name: "gpu.nvidia",
+    available: true,
+    source: "nvidia-smi",
+    error_kind: null,
+    message: null,
+}];
 
 const report: MonitoringAgentReport = {
   schema_version: 1,
@@ -113,7 +115,7 @@ const report: MonitoringAgentReport = {
       source: "nvidia-smi",
     }],
   },
-  capabilities: host.capabilities,
+  capabilities: reportedCapabilities,
   agent: { spool_pending_batches: 0, collector_errors: 0 },
 };
 
@@ -191,6 +193,7 @@ describe("monitoring host detail panel", () => {
       await user.click(within(dialog).getByRole("tab", { name: tab }));
       expect(within(dialog).getByRole("table", { name: table })).toBeTruthy();
     }
+    expect(within(dialog).getByText("gpu.nvidia")).toBeTruthy();
 
     await user.click(within(dialog).getByRole("tab", { name: "历史" }));
     await waitFor(() => expect(api.monitoringHistory).toHaveBeenCalledWith(host.id));

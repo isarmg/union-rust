@@ -670,7 +670,7 @@ Agent 端点都**不**走会话中间件与 CSRF；它们按各自协议鉴权�
 | GET | `/api/services` | Sunshine 服务状态快照（同上） |
 | GET | `/api/events` | SSE 状态推送（用短效票据鉴权，非会话 Cookie） |
 | POST | `/api/events/ticket` | 签发 60 秒一次性 SSE 票据 |
-| GET | `/api/monitoring/hosts` | 主机列表，`?limit&offset`（默认 200，上限 1000），响应含 `total` |
+| GET | `/api/monitoring/hosts` | 主机列表，`?limit&offset`（默认 200，上限 1000），响应含 `total`；`capabilities` 固定为空数组 |
 | GET | `/api/monitoring/hosts/{id}` | 主机详情（含完整报文） |
 | GET | `/api/monitoring/hosts/{id}/history` | 历史曲线，`?from&to&limit`（默认 300，上限 1000） |
 | PATCH | `/api/monitoring/managed-instances/{id}` | 更新名称；名称仅由 Server 保存，Agent 上报不会覆盖 |
@@ -678,9 +678,10 @@ Agent 端点都**不**走会话中间件与 CSRF；它们按各自协议鉴权�
 | GET/POST | `/api/monitoring/agent-instances` | 列出邀请 / 创建待激活实例；创建响应才含一次性激活码 |
 | DELETE | `/api/monitoring/agent-instances/{invite_id}` | 取消尚未消费的激活邀请 |
 
-主机列表**必须分页**且必须告知总数：这是一条随部署规模线性增长的响应（每台主机都带
-capabilities 数组），而控制台每 10 秒轮询一次。`COUNT(*) OVER()` 在同一次扫描里带出
-总数，因此仍是一次往返——截断而不告知比不分页更糟。
+主机列表**必须分页**且必须告知总数：这是一条随部署规模线性增长、且控制台每 10 秒
+轮询一次的响应。列表只读取卡片所需标量；为保持线协议兼容，`capabilities` 字段仍存在但
+固定为 `[]`，完整能力仅从单主机详情取得。`COUNT(*) OVER()` 在同一次扫描里带出总数，
+因此仍是一次往返——截断而不告知比不分页更糟。
 
 监控控制面所有带请求体的写接口都使用 16 KiB 上限；登录与改密单独收紧到 4 KiB。
 

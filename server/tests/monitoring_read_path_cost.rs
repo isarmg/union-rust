@@ -209,6 +209,10 @@ async fn list_and_history_do_not_read_report_payloads() {
             .all(|host| host.metrics.cpu_usage_percent.is_some()),
         "列表接口必须能从摘要列取到 CPU 指标"
     );
+    assert!(
+        mine.iter().all(|host| host.capabilities.is_empty()),
+        "高频列表接口必须投影空 capabilities，避免读取和传输大 JSON"
+    );
     // `EXPLAIN QUERY PLAN`、`latest == None` 与摘要列断言才是可重复的契约。
     // 不把共享 CI 主机上的绝对墙钟时间设为成败条件；调度抢占、杀毒扫描或慢盘都会让
     // 500ms 阈值偶发失败，却与查询是否读取完整 JSON 无关。耗时仍打印供基准观察。
@@ -254,6 +258,11 @@ async fn list_and_history_do_not_read_report_payloads() {
     assert!(
         detail.metrics.cpu_usage_percent.is_some(),
         "详情接口的摘要同样应来自数值列"
+    );
+    assert_eq!(
+        detail.capabilities.len(),
+        8,
+        "详情接口仍必须返回完整 capabilities"
     );
 
     // 清理
