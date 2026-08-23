@@ -252,7 +252,10 @@ function Start-TrayForRemovalSmoke {
 function Get-UnionCAgentArpEntries {
     $uninstallRoot = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
     return @(Get-ChildItem -LiteralPath $uninstallRoot | Get-ItemProperty |
-        Where-Object DisplayName -eq "UnionC Agent")
+        Where-Object {
+            $displayName = $_.PSObject.Properties["DisplayName"]
+            $null -ne $displayName -and $displayName.Value -eq "UnionC Agent"
+        })
 }
 
 function Assert-ArpVersion([string]$ExpectedVersion) {
