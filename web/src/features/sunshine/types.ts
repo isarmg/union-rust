@@ -26,7 +26,7 @@ export type SunshineHostPatchRequest = Partial<SunshineHostSaveRequest>;
 
 export interface SunshineApp {
   name: string;
-  cmd?: string;
+  cmd?: string | null;
   index: number;
   "image-path"?: string | null;
   "working-dir"?: string;
@@ -42,8 +42,7 @@ export interface SunshineApp {
 }
 
 export interface SunshineAppsResponse { apps: SunshineApp[]; }
-export interface SunshineClient { name: string; uuid: string; enabled: boolean; }
+export interface SunshineClient { name?: string | null; uuid: string; enabled: boolean; }
 export interface SunshineClientsResponse { status: boolean; named_certs: SunshineClient[]; }
 export interface SunshineLogsResponse { content: string; }
 export type SunshineConfig = Record<string, unknown>;
-

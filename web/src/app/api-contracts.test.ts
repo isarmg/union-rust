@@ -124,6 +124,93 @@ describe("API request contracts", () => {
     expect(JSON.parse(String(init.body))).toEqual({ name: "Living room" });
   });
 
+  it("normalizes current Sunshine collection responses at the API boundary", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({
+        apps: [
+          { name: "Desktop", cmd: null, vendor_extension: { enabled: true } },
+          { name: "Game", cmd: "game.exe" },
+        ],
+        ignored: true,
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        status: false,
+        named_certs: [
+          { name: null, uuid: "client-one", enabled: true, vendor_extension: 7 },
+        ],
+        ignored: true,
+      }));
+
+    await expect(api.sunshineApps("sunshine/one")).resolves.toEqual({
+      apps: [
+        {
+          name: "Desktop",
+          cmd: null,
+          vendor_extension: { enabled: true },
+          index: 0,
+        },
+        { name: "Game", cmd: "game.exe", index: 1 },
+      ],
+    });
+    await expect(api.sunshineClients("sunshine/one")).resolves.toEqual({
+      status: false,
+      named_certs: [
+        { name: null, uuid: "client-one", enabled: true, vendor_extension: 7 },
+      ],
+    });
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      "/api/services/sunshine/hosts/sunshine%2Fone/apps",
+      "/api/services/sunshine/hosts/sunshine%2Fone/clients",
+    ]);
+  });
+
+  it("rejects malformed Sunshine application collections before rendering", async () => {
+    const malformed = [
+      { apps: null },
+      { apps: [null] },
+      { apps: [{ cmd: "missing name" }] },
+      { apps: [{ name: "Desktop", cmd: {} }] },
+      { apps: [{ name: "x".repeat(1_025) }] },
+      { apps: Array.from({ length: 513 }, () => ({ name: "Desktop" })) },
+    ];
+
+    for (const payload of malformed) {
+      fetchMock.mockResolvedValueOnce(jsonResponse(payload));
+      await expect(api.sunshineApps("sunshine-one"))
+        .rejects.toThrow("Sunshine 应用列表响应格式无效");
+    }
+  });
+
+  it("rejects malformed Sunshine client collections before rendering", async () => {
+    const malformed = [
+      { status: true, named_certs: null },
+      { status: true, named_certs: [null] },
+      { status: true, named_certs: [{ uuid: "missing-enabled" }] },
+      { status: true, named_certs: [{ uuid: "client", enabled: "yes" }] },
+      { status: true, named_certs: [{ uuid: "x".repeat(129), enabled: true }] },
+      {
+        status: true,
+        named_certs: [
+          { uuid: "duplicate", enabled: true },
+          { uuid: "duplicate", enabled: false },
+        ],
+      },
+      {
+        status: true,
+        named_certs: Array.from(
+          { length: 513 },
+          (_, index) => ({ uuid: `client-${index}`, enabled: true }),
+        ),
+      },
+    ];
+
+    for (const payload of malformed) {
+      fetchMock.mockResolvedValueOnce(jsonResponse(payload));
+      await expect(api.sunshineClients("sunshine-one"))
+        .rejects.toThrow("Sunshine 客户端列表响应格式无效");
+    }
+  });
+
   it("renames and permanently deletes an encoded monitoring host", async () => {
     fetchMock
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
