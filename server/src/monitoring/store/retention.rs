@@ -4,10 +4,6 @@
 /// 太大则又回到"一个长事务"的老问题。
 const RETENTION_BATCH: i64 = 10_000;
 
-/// 单次清理的批次上限，防止异常情况下无限循环。
-/// 10_000 × 1_000 = 一千万行，远超任何一天的正常增量。
-const MAX_RETENTION_BATCHES: usize = 1_000;
-
 /// 按保留期清理历史报告。
 ///
 /// **保留每台主机当前的最新一份报告**，即使它已超出保留期。报文体只存在于本表，
@@ -31,7 +27,10 @@ pub async fn prune_monitoring_history(pool: &DbPool, retention_days: i64) -> any
     // DELETE 后的页面进入 freelist 并供后续写入复用，不会立即缩小数据库
     // 文件；若运维上确实需要把大量空间归还给文件系统，应在低峰窗口单独执行
     // VACUUM，而不应把它放进日常保留期任务。
-    for _ in 0..MAX_RETENTION_BATCHES {
+    // `cutoff` 在进入函数时固定，而正常报告的 received_at 由 Server 写入当前时间，
+    // 因此待删集合是有限的。必须持续到不足一批；若在固定批数处返回并照常睡 24 小时，
+    // 合法写入速率高于该上限时，超期积压反而会永久增长。
+    loop {
         let mut tx = database::begin_write(pool).await?;
         let affected = query(
             r#"
@@ -54,7 +53,9 @@ pub async fn prune_monitoring_history(pool: &DbPool, retention_days: i64) -> any
         .rows_affected();
         tx.commit().await?;
 
-        removed += affected;
+        removed = removed
+            .checked_add(affected)
+            .ok_or_else(|| anyhow::anyhow!("monitoring retention removed-row count overflow"))?;
         // 不足一批说明已经删干净了。
         if affected < RETENTION_BATCH as u64 {
             break;

@@ -246,7 +246,7 @@ async fn batched_pruning_removes_everything_across_multiple_batches() {
     .await
     .expect("register");
 
-    // 一批是 10 000 行，这里多造一行，强制进入第二批。SQLite 没有
+    // 一批是 10 000 行，这里多造一行，强制进入第二批。
     // SQLite 没有内建的序列生成表，用 QueryBuilder 分块灵活地灌数，同时避免超过
     // SQLite 单条语句的绑定变量上限。
     const ROWS: i64 = 10_001;
