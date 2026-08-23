@@ -65,6 +65,16 @@ function renderWithClient(node: React.ReactNode) {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function activationCodes(queryClient: QueryClient): string[] {
   return queryClient.getMutationCache().getAll().flatMap((mutation) => {
     const data = mutation.state.data;
@@ -120,6 +130,37 @@ describe("Agent activation-code lifetime", () => {
 
     await expectSecretCleared(queryClient);
     expect(api.monitoringCancelAgentInstance).toHaveBeenCalledWith(created.request_id);
+  }, 15_000);
+
+  it("keeps a non-secret retry action when invitation cancellation fails", async () => {
+    vi.spyOn(api, "monitoringAgentInstances").mockResolvedValue([]);
+    vi.spyOn(api, "monitoringCreateAgentInstance").mockResolvedValue(created);
+    const firstCancellation = deferred<void>();
+    vi.spyOn(api, "monitoringCancelAgentInstance")
+      .mockReturnValueOnce(firstCancellation.promise)
+      .mockResolvedValueOnce();
+    const { queryClient, rerenderWithClient } = renderWithClient(
+      <AgentInstances activeHostIds={new Set()} addTrigger={0} />,
+    );
+
+    triggerAgentCreation(rerenderWithClient);
+    await expectSecretVisible(queryClient);
+    fireEvent.click(screen.getByRole("button", { name: "取消邀请并清除授权密钥" }));
+
+    await expectSecretCleared(queryClient);
+    expect(screen.getByText("正在取消 Agent 邀请…")).toBeTruthy();
+    await act(async () => {
+      firstCancellation.reject(new Error("cancel failed"));
+      await firstCancellation.promise.catch(() => undefined);
+    });
+
+    expect(await screen.findByText("cancel failed")).toBeTruthy();
+    expect(screen.queryByText(created.activation_code)).toBeNull();
+    expect(activationCodes(queryClient)).not.toContain(created.activation_code);
+    fireEvent.click(screen.getByRole("button", { name: "重试取消邀请" }));
+    await waitFor(() => expect(api.monitoringCancelAgentInstance).toHaveBeenCalledTimes(2));
+    expect(api.monitoringCancelAgentInstance).toHaveBeenLastCalledWith(created.request_id);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "重试取消邀请" })).toBeNull());
   }, 15_000);
 
   it("clears first-pairing mutation data when the invitation reaches a terminal state", async () => {

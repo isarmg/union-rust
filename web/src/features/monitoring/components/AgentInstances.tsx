@@ -224,6 +224,7 @@ export function AgentInstances({
   };
   const visible = createMutation.isPending
     || createMutation.isError
+    || cancelMutation.isPending
     || cancelMutation.isError
     || Boolean(created)
     || Boolean(creationOutcome);
@@ -232,8 +233,16 @@ export function AgentInstances({
   return (
     <section className="section-band agent-instances" aria-live="polite">
       {createMutation.isPending ? <InlineNotice tone="warn" text="正在创建 Agent 邀请…" /> : null}
+      {cancelMutation.isPending ? <InlineNotice tone="warn" text="正在取消 Agent 邀请…" /> : null}
       <MutationError mutation={createMutation} />
       <MutationError mutation={cancelMutation} />
+      {cancelMutation.isError && cancelMutation.variables ? (
+        <ActionButton
+          icon={X}
+          label="重试取消邀请"
+          onClick={() => cancelMutation.mutate(cancelMutation.variables)}
+        />
+      ) : null}
       {created && createdStatus === "pending"
         ? <ActivationCodePanel created={created} onClose={cancelCreated} />
         : null}
