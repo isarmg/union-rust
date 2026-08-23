@@ -17,7 +17,7 @@ fn load_preferences(path: &Path) -> anyhow::Result<TrayPreferences> {
         bytes.len() <= 16 * 1024,
         "tray preferences file is too large"
     );
-    let preferences: TrayPreferences =
+    let mut preferences: TrayPreferences =
         serde_json::from_slice(&bytes).context("tray preferences are invalid")?;
     if !preferences.server.is_empty() {
         preferences.server = validate_server_base(&preferences.server)?;
