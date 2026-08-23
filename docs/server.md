@@ -154,8 +154,9 @@ gshadow/shadow，安装会保留 pending 并 fail closed，待账户数据库修
 版本。发布工作流会先确认严格版本 tag 的提交属于 `main` 历史，并对该提交复用完整 CI；
 来源校验和 CI 均成功后才允许任何平台开始打包。tag 必须与 Cargo workspace 的严格
 `MAJOR.MINOR.PATCH` 版本完全一致；
-Server 制品与 Agent 三平台制品最终一起进入 SHA256SUMS、GPG 分离签名、provenance
-attestation 和 GitHub Release，Agent 原有 job 与生命周期门禁保持独立。
+Server 制品与 Agent 三平台制品最终一起进入未签名 `SHA256SUMS` 和明确标记为 unsigned 的
+GitHub Pre-release；当前不执行 GPG 签名或 provenance attestation，Agent 原有 job 与生命周期
+门禁保持独立。
 
 包依赖按发行版分别声明：DEB 依赖提供 `useradd/groupadd` 的 `passwd` 与 `systemd`，RPM
 依赖 `shadow-utils` 与 `systemd`；不能把 Debian 的 `adduser` 名称复用到 RPM。发布 job 会：

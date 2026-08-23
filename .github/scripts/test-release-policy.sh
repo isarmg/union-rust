@@ -39,3 +39,28 @@ for artifact_job in server-linux linux windows macos; do
   job_has_line "$artifact_job" '    needs: [verify-release-ref, full-ci]' ||
     fail "$artifact_job does not require release-source verification and full CI"
 done
+
+grep -Fq '          prerelease: true' "$release_workflow" ||
+  fail 'unsigned tag releases must be marked as GitHub prereleases'
+grep -Fq 'UnionC-Agent-{0}-x64-unsigned.msi' "$release_workflow" ||
+  fail 'Windows release artifact is not explicitly named as unsigned'
+grep -Fq 'unionc-agent-$version-unsigned.pkg' "$release_workflow" ||
+  fail 'macOS release artifact is not explicitly named as unsigned'
+grep -Fq 'This prerelease intentionally contains unsigned artifacts.' "$release_workflow" ||
+  fail 'unsigned release warning is missing'
+grep -Fq 'xargs -0 sha256sum > SHA256SUMS' "$release_workflow" ||
+  fail 'unsigned release does not generate a checksum manifest'
+
+for forbidden in \
+  Set-AuthenticodeSignature \
+  notarytool \
+  attest-build-provenance \
+  LINUX_SIGNING_KEY_BASE64 \
+  WINDOWS_SIGNING_PFX_BASE64 \
+  MACOS_SIGNING_P12_BASE64 \
+  APPLE_NOTARY_KEY_P8_BASE64
+do
+  if grep -Fq "$forbidden" "$release_workflow"; then
+    fail "release workflow must not execute signing, notarization, or attestation: $forbidden"
+  fi
+done

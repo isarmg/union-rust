@@ -121,6 +121,6 @@ if [ -n "$installer_identity" ]; then
 else
   productbuild --distribution "$script_dir/Distribution.xml" \
     --resources "$script_dir/Resources" --package-path "$packages" "$output"
-  echo "Built unsigned development package: $output"
-  echo "Do not distribute it as a production package; it is not notarized or stapled."
+  echo "Built unsigned package: $output"
+  echo "Use only as an explicitly marked prerelease; it is not signed, notarized, or stapled."
 fi

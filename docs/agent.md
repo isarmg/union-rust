@@ -203,18 +203,17 @@ Windows/macOS 的私有传感器接口以及需要管理员权限的查询不会
   静默安装不会在 SYSTEM/session 0 启动托盘，用户下次登录或从开始菜单运行即可。
   当前版本只支持 WiX MSI/SCM 服务安装，不包含旧 PowerShell 计划任务安装入口。
 - macOS：设置 `BINARY`、`VERSION` 后执行 `packaging/macos/build-pkg.sh`，生成带专用隐藏
-  账户、LaunchDaemon、日志轮转和卸载器的 pkg。开发构建可以不签名；tag 发布强制完成
-  Developer ID Application/Installer 签名、Hardened Runtime、notarytool 和 staple。
+  账户、LaunchDaemon、日志轮转和卸载器的 pkg。当前 workflow 只生成文件名带 `unsigned`
+  的未签名、未公证预发布包。
 
 推送严格 `vMAJOR.MINOR.PATCH` 标签时，`.github/workflows/release.yml` 先确认标签提交属于
 `main` 历史，并在同一次运行中复用完整 CI；全部检查通过后才生成 Linux amd64
-deb/rpm/tar、Windows x64 MSI 和 macOS universal pkg。Windows 发布先签名 Agent、托盘伴侣
-和原生维护三个 EXE，再构建并签名 MSI；
-正式 tag 缺签名 secret 会失败。成功发布包含平台签名、
-`SHA256SUMS`、GPG 分离签名和 provenance attestation。管理台仍不托管或选择这些制品，
-APT/YUM/winget/MDM 等渠道元数据继续由分发系统负责。
+deb/rpm/tar、Windows x64 unsigned MSI 和 macOS universal unsigned pkg。正式 tag 创建明确
+标记的 GitHub Pre-release，只包含未签名 `SHA256SUMS`，不执行 Authenticode、Developer ID、
+Apple 公证、GPG 签名或 provenance attestation。管理台仍不托管或选择这些制品，
+APT/YUM/winget/MDM 等渠道元数据继续由分发系统负责；当前制品仅用于测试验收。
 
-三平台全新安装、同版本重装、普通卸载、purge、退役顺序和发布 secret 见
+三平台全新安装、同版本重装、普通卸载、purge、退役顺序和预发布限制见
 [Agent 安装、同版本重装、卸载与退役](runbooks/agent-lifecycle.md)。
 
 Linux 基础 unit 使用 `PrivateDevices=yes`，适合不采集 GPU 的主机。需要 GPU 时，确认

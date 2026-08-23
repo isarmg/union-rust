@@ -780,8 +780,9 @@ Windows release 制品包含 NVIDIA 支持而不含 OTLP；当前 macOS release 
   当前版本环境标记和 UID/GID ownership marker 拒绝接管旧安装布局。软件仓库、MDM、GPO、winget、
   域名、证书、反代和更新策略仍由部署方提供。
 - 普通 Agent 卸载有意保留身份、凭据和 spool，便于重装继续同一实例；显式 purge 才清理。
-- 正式 tag 流水线要求 Windows Authenticode、macOS Developer ID/公证、SHA-256、GPG 签名
-  和 provenance。开发制品可无签名，不应当作正式交付物。
+- tag 流水线当前只发布明确标记为 unsigned 的 GitHub Pre-release：保留 SHA-256 清单，
+  不执行 Windows Authenticode、macOS Developer ID/公证、GPG 签名或 provenance；这些制品
+  仅用于测试验收，不应当作稳定交付物。
 - Release workflow 不生成或上传 Web 静态制品；部署方必须自行执行前端构建并由可信反代
   托管。仓库也不提供容器镜像、APT/YUM/winget 仓库或 MDM/GPO 分发服务。
 - 全新 Server DEB/RPM 安装不会自动 enable/start；管理员必须先配置主密钥、生产代理证明、
@@ -832,7 +833,7 @@ Windows release 制品包含 NVIDIA 支持而不含 OTLP；当前 macOS release 
 | Windows 本机入口 | [`agent/src/windows/tray`](../../agent/src/windows/tray)、[`agent/src/windows/maintenance`](../../agent/src/windows/maintenance) | 托盘、随机回环页、UAC 固定命令、SCM 与 MSI 生命周期辅助 |
 | Web 框架与请求层 | [`web/src/app/App.tsx`](../../web/src/app/App.tsx)、[`shared/api/client.ts`](../../web/src/shared/api/client.ts)、[`app/hooks.ts`](../../web/src/app/hooks.ts) | 认证状态、内存导航、懒加载、CSRF、超时、SSE 与轮询 |
 | Web 业务页面 | [`web/src/features`](../../web/src/features) | 总览、主机/邀请/历史、公开激活、Sunshine、日志和设置 |
-| CI 与发布 | [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)、[`.github/workflows/release.yml`](../../.github/workflows/release.yml) | 三平台构建测试、包生命周期、签名、公证、清单和 provenance |
+| CI 与发布 | [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)、[`.github/workflows/release.yml`](../../.github/workflows/release.yml) | 三平台构建测试、包生命周期、unsigned Pre-release 和 SHA-256 清单 |
 
 ### 19.2 本轮可执行验证
 

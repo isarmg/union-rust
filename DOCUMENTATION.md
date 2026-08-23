@@ -1,6 +1,6 @@
 # UnionC 项目文档
 
-> 版本：v0.3.2 ｜ 文档更新：2026-08-20
+> 版本：v0.3.2 ｜ 文档更新：2026-08-22
 > 本文是项目的完整说明：功能、架构、各组成部分、接口契约、部署与运维。
 
 ## 目录
@@ -1033,8 +1033,9 @@ RPM，并以无动态解释器门禁避免继承构建机 glibc 下限；tag
 `shadow-utils + systemd`，不跨发行版复用 `adduser` 名称。门禁会在 Ubuntu 真实验证 DEB
 安装、systemd/SQLite 启动、在线备份、同 schema 清单恢复与完整性检查，
 并在 Fedora 容器真实安装 RPM，验证脚本顺序、专用用户启动和状态保留卸载。
-通过后 Server 与 Agent 制品共同进入 SHA256SUMS、GPG 签名、provenance attestation 和
-GitHub Release；两者的构建与生命周期 job 相互独立。
+通过后 Server 与 Agent 制品共同进入未签名 `SHA256SUMS` 和明确标记为 unsigned 的 GitHub
+Pre-release；当前不执行平台签名、公证、GPG 签名或 provenance，两者的构建与生命周期 job
+相互独立。
 
 ### 9.3 服务端环境变量
 
@@ -1113,9 +1114,9 @@ purge；Windows x64 WiX MSI 把只读程序与可变状态分离，以原生 SCM
 渠道安装当前制品并重新配对。Agent 不包含自更新器。
 
 普通卸载默认保留 host-id、agent-token、配置、配对状态和 spool，方便安全重装；永久退役
-必须先在 Web 撤销实例，再执行平台 purge。tag 发布强制 Windows Authenticode、macOS
-Developer ID + notarization/staple，以及签名的制品清单；缺少签名 secret 时发布失败，不会
-降级上传未签名正式制品。完整命令、路径、恢复语义和 secret 清单见
+必须先在 Web 撤销实例，再执行平台 purge。tag 当前只发布明确标记的 unsigned Pre-release，
+不执行 Windows Authenticode、macOS Developer ID、公证/staple、GPG 清单签名或 provenance；
+这些制品仅用于测试验收。完整命令、路径、恢复语义和预发布限制见
 [Agent 安装、同版本重装、卸载与退役](docs/runbooks/agent-lifecycle.md)。
 
 ### 9.5 Agent 配置

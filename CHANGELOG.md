@@ -3,19 +3,32 @@
 本文件记录 UnionC 的显著变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [0.3.2] — 未发布
+## [0.3.2] — 2026-08-22
 
 ### 修复
 
 - Server 不再把活动 SQLite 被删除、重命名、替换或新增硬链接后的旧文件描述符误判为健康；
   readiness、依赖数据库的管理面与 Agent 数据路径会 fail closed，连接池拒绝继续签出旧 inode，
   且首次观察到身份异常后要求停服检查并重启。
+- Server 数据目录现在逐级拒绝符号链接和不安全的可写祖先，只认领私有空目录或具有严格
+  权限的既有 UnionC 数据，并以持久 marker 防止误把系统路径或其他应用目录当作自身数据。
+- 数据库权限、inode 身份与重开检查进入 readiness 和连接签出路径，避免权限漂移、ABA
+  替换或缺失数据库被健康缓存掩盖。
+- Agent 关停信号改为可靠广播，避免接收方在启动竞态中漏掉停止通知。
+- Server 的 Sunshine 集成测试改用进程内测试密钥，不再依赖仓库中残留的开发数据目录，
+  消除干净 GitHub runner 上才暴露的测试执行顺序依赖。
 
 ### 新增
 
 - Windows Agent 托盘增加 Server 连接检测：本地配置页自动每 30 秒检查一次，也可手动
   重试；托盘菜单可同时查看 Windows 服务状态和管理端 `/api/health` 可达性。检测采用
   4 秒总超时、禁用重定向并限制响应大小，同时明确主机在线状态仍以认证遥测为准。
+
+### 变更
+
+- `v*` 标签发布当前明确作为 unsigned GitHub Pre-release：Windows MSI 与 macOS pkg 文件名
+  标记 `unsigned`，只生成未签名 `SHA256SUMS`，不执行平台签名、Apple 公证、GPG 签名或
+  provenance attestation。
 
 ### 移除
 

@@ -326,80 +326,37 @@ sudo /usr/local/share/unionc-agent/uninstall.sh --purge --yes
 漂移或账户被改造时，purge 不删除账户，并保留 bookkeeping、receipt 和卸载器，返回 `2`；
 修复后可以安全重试。
 
-## 6. 发布签名和供应链验证
+## 6. 未签名预发布与完整性校验
 
-`.github/workflows/release.yml` 区分两类运行：
+`.github/workflows/release.yml` 的 `workflow_dispatch` 和 `v*` tag 都生成未经平台签名的测试
+制品。tag 运行成功后会创建明确标记为 **Pre-release** 的 GitHub Release；Windows MSI 与
+macOS pkg 文件名还包含 `unsigned`，Release 正文会再次说明以下步骤均未执行：
 
-- `workflow_dispatch`：生成可供测试的开发制品，Windows MSI 与 macOS pkg 可以未签名且会
-  明确作为开发产物；
-- `v*` tag：强制生产签名。缺少任何必要 secret 会失败，不发布降级的未签名制品。
+- Windows Authenticode；
+- macOS Developer ID 签名、Apple 公证与 staple；
+- `SHA256SUMS` 的 GPG 签名；
+- GitHub provenance attestation。
 
-两类运行都会复用 `.github/workflows/ci.yml` 的完整检查。正式 tag 还必须是严格的
-`vMAJOR.MINOR.PATCH`，且其提交必须已经位于 `main` 历史中；四个平台的制品任务只有在来源
-校验和完整 CI 都成功后才会启动。仓库内门禁用于防止误发；GitHub 端还应以 tag ruleset
-限制 `v*` 标签的创建、更新和删除权限，避免有标签写权限的主体从未受信提交改写工作流。
+因此当前工作流不读取签名或 Apple 公证 secrets。未签名制品只适合隔离测试和内部验收，
+不能当作可验证发布者身份的稳定交付物；Windows 可能显示未知发布者，macOS 的 Gatekeeper
+也可能拒绝安装。恢复稳定发布前必须重新建立平台签名、公证、清单签名和 provenance 门禁，
+不能只把 GitHub 的 `prerelease` 标志改为 `false`。
 
-由于 MSI ProductVersion 的约束，包含 Windows 制品的 tag 必须是严格的
-`vMAJOR.MINOR.PATCH`，且字段范围为 `255.255.65535` 以内；预发布标识应写在 Release 说明
-而不是 MSI 版本字段中。tag 版本还必须与 `unionc-agent` 的 Cargo package version 精确
-一致，避免制品元数据与 Agent 自报版本不一致。
+两类运行仍复用 `.github/workflows/ci.yml` 的完整检查。tag 必须是严格的
+`vMAJOR.MINOR.PATCH`，其提交必须已经位于 `main` 历史中，版本必须与 Cargo package version
+精确一致；四个平台的制品任务只有在来源校验和完整 CI 都成功后才会启动。GitHub 端还应以
+tag ruleset 限制 `v*` 标签的创建、更新和删除权限。
 
-正式发布所需 GitHub Actions secrets：
-
-| 平台/用途 | Secret |
-|---|---|
-| Windows Authenticode PFX | `WINDOWS_SIGNING_PFX_BASE64` |
-| Windows PFX 密码 | `WINDOWS_SIGNING_PFX_PASSWORD` |
-| macOS 证书 P12 | `MACOS_SIGNING_P12_BASE64` |
-| macOS P12 密码 | `MACOS_SIGNING_P12_PASSWORD` |
-| Developer ID Application identity | `MACOS_APPLICATION_IDENTITY` |
-| Developer ID Installer identity | `MACOS_INSTALLER_IDENTITY` |
-| App Store Connect API 私钥 | `APPLE_NOTARY_KEY_P8_BASE64` |
-| API key ID / issuer ID | `APPLE_NOTARY_KEY_ID` / `APPLE_NOTARY_ISSUER_ID` |
-| Release manifest GPG 私钥 | `LINUX_SIGNING_KEY_BASE64` |
-| GPG 密码 | `LINUX_SIGNING_KEY_PASSPHRASE` |
-| 固定 GPG 指纹 | `LINUX_SIGNING_KEY_FINGERPRINT` |
-
-tag 发布会执行：
-
-- Windows Agent、托盘伴侣和原生维护程序先分别 Authenticode 签名并验证，再由 WiX 4.0.6
-  构建 MSI，最后签名并验证 MSI；四个制品必须使用同一签名者；
-- macOS universal Mach-O 使用 Hardened Runtime 和 Developer ID Application 签名；
-- pkg 使用 Developer ID Installer 签名，再通过 `notarytool`、staple 和 Gatekeeper 验证；
-- 对所有制品生成 `SHA256SUMS`、分离 GPG 签名和 GitHub provenance attestation。
-
-GPG 公钥随 Release 提供只是传输便利；使用方仍应通过组织网站、配置管理或其他独立渠道
-固定并核对指纹。APT/YUM 仓库运营方还必须签名仓库元数据。
-
-下载后的最低验证流程：
+工作流会为下载文件生成未签名的 `SHA256SUMS`。它能检查下载过程中的偶发损坏，但清单与
+制品来自同一 Release，不能独立证明发布者身份：
 
 ```bash
-# 公钥和指纹必须先通过独立渠道确认
-gpg --verify SHA256SUMS.asc SHA256SUMS
 sha256sum --check SHA256SUMS
-
-# 可选：验证 GitHub 构建 provenance
-gh attestation verify unionc-agent_ARTIFACT --repo OWNER/REPOSITORY
 ```
 
-Windows 安装前使用组织固定的证书发布者或指纹验证 MSI；安装后还可验证落地的 Agent：
-
-```cmd
-signtool.exe verify /pa /all /v UnionC-Agent-0.3.2-x64.msi
-signtool.exe verify /pa /all /v "%ProgramFiles%\UnionC Agent\unionc-agent.exe"
-signtool.exe verify /pa /all /v "%ProgramFiles%\UnionC Agent\unionc-agent-tray.exe"
-```
-
-也可以在文件属性的“数字签名”页检查发布者和时间戳。只看到“签名有效”还不够，仍须与组织
-独立渠道固定的发布证书身份核对。
-
-macOS 安装前验证 Installer 签名、Gatekeeper 和 stapled ticket：
-
-```bash
-pkgutil --check-signature unionc-agent_VERSION.pkg
-spctl --assess --type install --verbose=4 unionc-agent_VERSION.pkg
-xcrun stapler validate unionc-agent_VERSION.pkg
-```
+由于 MSI ProductVersion 的约束，包含 Windows 制品的 tag 仍须满足
+`vMAJOR.MINOR.PATCH`，且字段范围在 `255.255.65535` 以内。预发布状态记录在 GitHub Release
+元数据和警告正文中，不写入 MSI ProductVersion。
 
 ## 7. 自动验证
 
@@ -411,9 +368,9 @@ xcrun stapler validate unionc-agent_VERSION.pkg
   以及真实 MSI 的不可信预置状态拒绝、同名 foreign service 拒绝、托盘文件
   与 Run/开始菜单注册、运行中托盘优雅关闭、fresh install → preserve uninstall → same-version reinstall →
   `PURGE=1`，并验证 service SID、配置、owner 和 DACL；
-- macOS：shell/plist 与账户/嵌套组 fail-closed mock 校验，以及 pkg install → reinstall →
-  preserve uninstall → reinstall → purge；正式 tag 额外执行 codesign、pkg signature、
-  notary、stapler 和 Gatekeeper 验证。
+- macOS：shell/plist 与账户/嵌套组 fail-closed mock 校验，以及未签名 pkg 的 install →
+  reinstall → preserve uninstall → reinstall → purge；不执行 codesign、pkg signature、
+  notary、stapler 或 Gatekeeper 发布验证。
 
 Rust 三平台编译和 Agent 功能测试继续由常规 CI 承担。包生命周期测试不替代真实组织环境
 中的代理、私有 CA、GPO/MDM、EDR 和系统升级兼容性验收。
