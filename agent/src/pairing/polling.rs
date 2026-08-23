@@ -32,6 +32,9 @@ pub async fn poll_existing(config: &AgentConfig) -> anyhow::Result<Option<Pairin
         return Ok(Some(progress_from_terminal(state)));
     };
     validate_state_version(version)?;
+    config
+        .validate_durable_report_endpoint(&report_endpoint)
+        .context("stored report endpoint is unsafe")?;
 
     let endpoint = pairing_status_endpoint(&pairing_endpoint, request_id)?;
     let client = build_client(config)?;

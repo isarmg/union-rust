@@ -59,6 +59,9 @@ pub async fn activate_pending_with_code(
             }
         }
     };
+    config
+        .validate_durable_report_endpoint(&report_endpoint)
+        .context("stored report endpoint is unsafe")?;
     validate_activation_url_request(&activation_url, &pairing_endpoint, request_id)?;
     let endpoint = activation_endpoint(&pairing_endpoint)?;
     let endpoint_display = endpoint.as_str().to_string();

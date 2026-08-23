@@ -42,7 +42,8 @@ fn validate_active_binding(config: &AgentConfig, binding: &ActiveBinding) -> any
     if binding.generation.is_nil() || binding.request_id.is_nil() || binding.instance_id.is_nil() {
         bail!("active binding contains a nil UUID");
     }
-    crate::config::validate_endpoint(&binding.report_endpoint, config.allow_insecure_http)
+    config
+        .validate_durable_report_endpoint(&binding.report_endpoint)
         .context("active binding report endpoint is unsafe")
 }
 

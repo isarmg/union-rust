@@ -140,6 +140,10 @@ pub struct AgentConfig {
     pub tls_identity_password: Option<String>,
     pub tls_ca_pem: Option<PathBuf>,
     pub allow_insecure_http: bool,
+    /// Exact plaintext policy loaded from the durable JSON file before any
+    /// process-local environment or command-line override is applied.
+    #[serde(skip)]
+    pub(crate) persisted_allow_insecure_http: bool,
     #[serde(skip)]
     pub config_path: Option<PathBuf>,
     #[serde(skip)]
@@ -199,6 +203,7 @@ impl Default for AgentConfig {
             tls_identity_password: None,
             tls_ca_pem: None,
             allow_insecure_http: false,
+            persisted_allow_insecure_http: false,
             config_path: None,
             server_override: None,
             endpoint_override: None,
@@ -368,10 +373,6 @@ impl AgentConfig {
         }
         let (mut config, config_issue) =
             Self::load_selected_config(config_path.as_deref(), command)?;
-        // Pairing commits Active before mirroring the report endpoint back to
-        // the administrator-owned config. Only a policy already present in
-        // that file is therefore safe across a crash in the commit window.
-        let persisted_pairing_allow_insecure_http = config.allow_insecure_http;
         config.apply_environment()?;
         config.config_path = config_path;
         config.server_override = server_override;
@@ -389,10 +390,7 @@ impl AgentConfig {
         }
         if command == AgentCommand::Pair {
             config.apply_pair_options()?;
-            validate_persisted_pairing_transport(
-                &config.endpoint,
-                persisted_pairing_allow_insecure_http,
-            )?;
+            config.validate_durable_report_endpoint(&config.endpoint)?;
         } else if let Some(endpoint) = config.endpoint_override.take() {
             config.endpoint = endpoint;
         }
@@ -419,11 +417,17 @@ impl AgentConfig {
                 }
             })
             .and_then(|bytes| {
-                serde_json::from_slice(&bytes)
+                serde_json::from_slice::<Self>(&bytes)
                     .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
             });
         match loaded {
-            Ok(config) => Ok((config, None)),
+            Ok(mut config) => {
+                // Pairing commits Active before mirroring its endpoint back to
+                // this administrator-owned file. Capture the original policy
+                // so a process-local override cannot authorize durable state.
+                config.persisted_allow_insecure_http = config.allow_insecure_http;
+                Ok((config, None))
+            }
             Err(error) if command == AgentCommand::Status => Ok((
                 Self::default(),
                 Some(format!("failed to load {}: {error}", path.display())),
@@ -642,6 +646,18 @@ impl AgentConfig {
         })
     }
 
+    /// Validate an endpoint that will outlive this process. Remote plaintext
+    /// requires both durable administrator authorization and the effective
+    /// runtime policy, so an environment or CLI override cannot revive or
+    /// create a persistent insecure binding by itself.
+    pub(crate) fn validate_durable_report_endpoint(
+        &self,
+        report_endpoint: &str,
+    ) -> anyhow::Result<()> {
+        validate_persisted_pairing_transport(report_endpoint, self.persisted_allow_insecure_http)?;
+        validate_endpoint(report_endpoint, self.allow_insecure_http)
+    }
+
     /// Save the browser-pairing endpoint only after the pending request has
     /// been durably recorded. This makes an interrupted `pair` resumable.
     pub fn persist_after_pairing(&self) -> anyhow::Result<PathBuf> {
@@ -651,6 +667,9 @@ impl AgentConfig {
     fn persist_durable_config(&self) -> anyhow::Result<PathBuf> {
         let path = self.config_path.clone().unwrap_or_else(default_config_path);
         let mut persisted = self.clone();
+        // Never launder a process-local plaintext override into the durable
+        // policy while saving a successfully paired endpoint.
+        persisted.allow_insecure_http = self.persisted_allow_insecure_http;
         persisted.config_path = None;
         persisted.server_override = None;
         persisted.endpoint_override = None;
@@ -1056,6 +1075,35 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn saving_pairing_config_preserves_the_original_plaintext_policy() {
+        let root = std::env::temp_dir().join(format!(
+            "unionc-agent-persisted-http-policy-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+
+        for original_policy in [false, true] {
+            let path = root.join(format!("config-{original_policy}.json"));
+            let mut original = AgentConfig::default();
+            original.allow_insecure_http = original_policy;
+            fs::write(&path, serde_json::to_vec_pretty(&original).unwrap()).unwrap();
+
+            let (mut loaded, issue) =
+                AgentConfig::load_selected_config(Some(&path), AgentCommand::Pair).unwrap();
+            assert!(issue.is_none());
+            assert_eq!(loaded.persisted_allow_insecure_http, original_policy);
+            loaded.config_path = Some(path.clone());
+            loaded.allow_insecure_http = !original_policy;
+            loaded.persist_durable_config().unwrap();
+
+            let saved: AgentConfig = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(saved.allow_insecure_http, original_policy);
+        }
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

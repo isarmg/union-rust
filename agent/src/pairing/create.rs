@@ -141,6 +141,9 @@ async fn finish_create_request(
     // persisted a remote plaintext bootstrap endpoint under looser rules.
     crate::config::validate_pairing_endpoint(&pairing_endpoint)
         .context("stored pairing endpoint is unsafe")?;
+    config
+        .validate_durable_report_endpoint(&report_endpoint)
+        .context("stored report endpoint is unsafe")?;
     let client = build_client(config)?;
     let response = client
         .post(&pairing_endpoint)

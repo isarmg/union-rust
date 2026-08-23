@@ -84,6 +84,117 @@ mod tests {
         assert!(format!("{error:#}").contains("browser pairing requires HTTPS"));
     }
 
+    #[tokio::test]
+    async fn transient_plaintext_override_cannot_resume_durable_pairing_stages() {
+        let directory = std::env::temp_dir().join(format!(
+            "unionc-pairing-durable-http-policy-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let pairing_endpoint =
+            "http://127.0.0.1:1/api/agent/v2/pairing-requests".to_string();
+        let report_endpoint = "http://192.0.2.10:1/api/agent/v1/report".to_string();
+        let config = AgentConfig {
+            endpoint: report_endpoint.clone(),
+            pairing_endpoint: Some(pairing_endpoint.clone()),
+            state_dir: directory.clone(),
+            allow_insecure_http: true,
+            persisted_allow_insecure_http: false,
+            request_timeout_seconds: 1,
+            ..AgentConfig::default()
+        };
+        let generation = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let activation_url = format!("http://127.0.0.1:1/agent/activate/{request_id}");
+
+        let creating = StoredPairingState::Creating {
+            version: PAIRING_STATE_VERSION,
+            generation,
+            pairing_endpoint: pairing_endpoint.clone(),
+            report_endpoint: report_endpoint.clone(),
+            host: test_host(),
+            bearer_secret: random_secret(),
+            polling_secret: random_secret(),
+        };
+        let create_error = finish_create_request(&config, creating)
+            .await
+            .expect_err("a transient override must not resume durable Creating state");
+        assert!(
+            format!("{create_error:#}")
+                .contains("requires allow_insecure_http=true in the existing persistent config")
+        );
+
+        let pending = StoredPairingState::Pending {
+            version: PAIRING_STATE_VERSION,
+            generation,
+            request_id,
+            activation_url: activation_url.clone(),
+            expires_at: Utc::now() + TimeDelta::minutes(10),
+            poll_interval: 1,
+            pairing_endpoint: pairing_endpoint.clone(),
+            report_endpoint: report_endpoint.clone(),
+            bearer_secret: random_secret(),
+            polling_secret: random_secret(),
+        };
+        persist_state(&config, &pending).unwrap();
+        let activation_error = activate_pending_with_code(
+            &config,
+            generation,
+            request_id,
+            "uci_test_authorization_key",
+        )
+        .await
+        .expect_err("a transient override must not activate durable Pending state");
+        assert!(
+            format!("{activation_error:#}")
+                .contains("requires allow_insecure_http=true in the existing persistent config")
+        );
+        let polling_error = poll_existing(&config)
+            .await
+            .expect_err("a transient override must not poll durable Pending state");
+        assert!(
+            format!("{polling_error:#}")
+                .contains("requires allow_insecure_http=true in the existing persistent config")
+        );
+
+        let instance_id = Uuid::new_v4();
+        let activating = StoredPairingState::Activating {
+            version: PAIRING_STATE_VERSION,
+            generation,
+            request_id,
+            activation_url,
+            expires_at: Utc::now() + TimeDelta::minutes(10),
+            poll_interval: 1,
+            instance_id,
+            pairing_endpoint,
+            report_endpoint: report_endpoint.clone(),
+            bearer_secret: random_secret(),
+        };
+        let commit_error = finish_activating_unlocked(&config, activating)
+            .expect_err("a transient override must not commit durable Activating state");
+        assert!(
+            format!("{commit_error:#}")
+                .contains("requires allow_insecure_http=true in the existing persistent config")
+        );
+        assert!(!directory.join("agent-token").exists());
+        assert!(!directory.join("host-id").exists());
+        assert!(!active_binding_path(&config).exists());
+
+        let binding = ActiveBinding {
+            version: PAIRING_STATE_VERSION,
+            generation,
+            request_id,
+            instance_id,
+            report_endpoint,
+        };
+        assert!(validate_active_binding(&config, &binding).is_err());
+        let mut durable_config = config.clone();
+        durable_config.persisted_allow_insecure_http = true;
+        validate_active_binding(&durable_config, &binding).unwrap();
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     fn one_shot_pairing_server() -> (String, thread::JoinHandle<()>) {
         one_shot_pairing_server_with_activation_url(|request_id| {
             format!("/agent/activate/{request_id}")

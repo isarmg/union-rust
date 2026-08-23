@@ -129,6 +129,9 @@ fn finish_activating_unlocked(
         bail!("internal error: expected an activating pairing state");
     };
     validate_state_version(version)?;
+    config
+        .validate_durable_report_endpoint(&report_endpoint)
+        .context("stored report endpoint is unsafe")?;
     persist_private_value(
         &config.state_dir.join("agent-token"),
         &bearer_secret,
