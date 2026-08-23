@@ -108,6 +108,165 @@ async fn report_write_rechecks_host_existence_after_authentication() {
 }
 
 #[tokio::test]
+async fn inactive_invite_history_is_retained_then_reclaimed_in_bounded_batches() {
+    const STALE_CANCELLED: i64 = 257;
+    const STALE_EXPIRED: i64 = 257;
+    const CLEANUP_BATCH_SIZE: i64 = 512;
+
+    let url = common::test_database_url(
+        "inactive_invite_history_is_retained_then_reclaimed_in_bounded_batches",
+    );
+    let mut settings = Settings::default();
+    settings.database.url = url.to_string();
+    let pool = database::connect(&settings).await.expect("connect");
+    database::initialize_schema(&pool)
+        .await
+        .expect("initialize schema");
+
+    let now = Utc::now();
+    let created_at = database::to_epoch_micros(now - Duration::days(60));
+    let cancelled_at = database::to_epoch_micros(now - Duration::days(32));
+    let expired_at = database::to_epoch_micros(now - Duration::days(31));
+    let recent_terminal_at = database::to_epoch_micros(now - Duration::days(29));
+    let future_expiry = database::to_epoch_micros(now + Duration::minutes(15));
+    let mut fixtures = database::begin_write(&pool).await.expect("begin fixtures");
+
+    for index in 0..STALE_CANCELLED {
+        query(
+            r#"
+            INSERT INTO agent_instance_invites(
+                invite_id,instance_id,activation_code_hash,display_name,status,
+                expires_at,created_at,cancelled_at
+            ) VALUES(?1,?2,?3,'stale cancelled','cancelled',?4,?5,?6)
+            "#,
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(Uuid::new_v4().to_string())
+        .bind(format!("{:064x}", index + 1))
+        .bind(expired_at)
+        .bind(created_at)
+        .bind(cancelled_at)
+        .execute(fixtures.connection())
+        .await
+        .expect("insert stale cancelled invite");
+    }
+    for index in 0..STALE_EXPIRED {
+        query(
+            r#"
+            INSERT INTO agent_instance_invites(
+                invite_id,instance_id,activation_code_hash,display_name,expires_at,created_at
+            ) VALUES(?1,?2,?3,'stale expired',?4,?5)
+            "#,
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(Uuid::new_v4().to_string())
+        .bind(format!("{:064x}", STALE_CANCELLED + index + 1))
+        .bind(expired_at)
+        .bind(created_at)
+        .execute(fixtures.connection())
+        .await
+        .expect("insert stale expired invite");
+    }
+
+    let recent_cancelled_id = Uuid::new_v4().to_string();
+    query(
+        r#"
+        INSERT INTO agent_instance_invites(
+            invite_id,instance_id,activation_code_hash,display_name,status,
+            expires_at,created_at,cancelled_at
+        ) VALUES(?1,?2,?3,'recent cancelled','cancelled',?4,?5,?6)
+        "#,
+    )
+    .bind(&recent_cancelled_id)
+    .bind(Uuid::new_v4().to_string())
+    .bind("e".repeat(64))
+    .bind(future_expiry)
+    .bind(created_at)
+    .bind(recent_terminal_at)
+    .execute(fixtures.connection())
+    .await
+    .expect("insert recent cancelled invite");
+
+    let active_invite_id = Uuid::new_v4().to_string();
+    query(
+        r#"
+        INSERT INTO agent_instance_invites(
+            invite_id,instance_id,activation_code_hash,display_name,status,
+            expires_at,created_at,activated_at
+        ) VALUES(?1,?2,?3,'active invite','active',?4,?5,?6)
+        "#,
+    )
+    .bind(&active_invite_id)
+    .bind(Uuid::new_v4().to_string())
+    .bind("d".repeat(64))
+    .bind(expired_at)
+    .bind(created_at)
+    .bind(cancelled_at)
+    .execute(fixtures.connection())
+    .await
+    .expect("insert active invite");
+    fixtures.commit().await.expect("commit fixtures");
+
+    let created = unionc::monitoring::store::create_agent_instance_invite(
+        &pool,
+        &Uuid::new_v4().to_string(),
+        &Uuid::new_v4().to_string(),
+        &"f".repeat(64),
+        "new invite",
+        now + Duration::minutes(15),
+    )
+    .await
+    .expect("create invite after cleanup");
+    assert!(matches!(
+        created,
+        unionc::monitoring::store::CreateInviteResult::Created(_)
+    ));
+
+    let stale_cancelled_remaining: i64 = query(
+        "SELECT COUNT(*) AS count FROM agent_instance_invites \
+         WHERE display_name='stale cancelled'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count stale cancelled invites")
+    .try_get("count")
+    .unwrap();
+    let stale_expired_remaining: i64 = query(
+        "SELECT COUNT(*) AS count FROM agent_instance_invites \
+         WHERE display_name='stale expired'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count stale expired invites")
+    .try_get("count")
+    .unwrap();
+    assert_eq!(stale_cancelled_remaining, 0);
+    assert_eq!(
+        stale_expired_remaining,
+        STALE_CANCELLED + STALE_EXPIRED - CLEANUP_BATCH_SIZE,
+        "one invitation creation must reclaim at most {CLEANUP_BATCH_SIZE} rows"
+    );
+    let recent_remaining: i64 =
+        query("SELECT COUNT(*) AS count FROM agent_instance_invites WHERE invite_id=?1")
+            .bind(recent_cancelled_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count retained recent invite")
+            .try_get("count")
+            .unwrap();
+    assert_eq!(recent_remaining, 1, "recent terminal history was pruned");
+    let active_remaining: i64 =
+        query("SELECT COUNT(*) AS count FROM agent_instance_invites WHERE invite_id=?1")
+            .bind(active_invite_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count retained active invite")
+            .try_get("count")
+            .unwrap();
+    assert_eq!(active_remaining, 1, "active invitation was pruned");
+}
+
+#[tokio::test]
 async fn anonymous_pairing_storage_is_bounded_and_reclaims_expired_rows() {
     const CLEANUP_BATCH_SIZE: i64 = 512;
     let url =

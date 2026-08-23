@@ -1,3 +1,6 @@
+const INVITE_HISTORY_RETENTION_DAYS: i64 = 30;
+const INVITE_CLEANUP_BATCH_SIZE: i64 = 512;
+
 async fn insert_agent_credential(
     connection: &mut SqliteConnection,
     host_id: &str,
@@ -29,9 +32,42 @@ pub async fn create_agent_instance_invite(
 ) -> anyhow::Result<CreateInviteResult> {
     let invite_id = canonical_uuid(invite_id)?;
     let instance_id = canonical_uuid(instance_id)?;
-    let now_micros = database::to_epoch_micros(Utc::now());
+    let now = Utc::now();
+    let now_micros = database::to_epoch_micros(now);
+    let stale_before = database::to_epoch_micros(
+        now - chrono::Duration::days(INVITE_HISTORY_RETENTION_DAYS),
+    );
     let mut tx = database::begin_write(pool).await?;
 
+    // Cancelled and never-activated expired invitations have no owning host, so host deletion can
+    // never reclaim them. Retain their terminal result for diagnostics, then remove a bounded batch
+    // while creating the next invitation so the table cannot grow for the process lifetime.
+    query(
+        r#"
+        DELETE FROM agent_instance_invites
+        WHERE invite_id IN (
+            SELECT i.invite_id
+            FROM agent_instance_invites i
+            WHERE (
+                    (i.status='cancelled' AND i.cancelled_at <= ?1)
+                 OR (i.status='pending' AND i.expires_at <= ?1)
+                  )
+              AND NOT EXISTS (
+                  SELECT 1 FROM agent_pairing_requests p WHERE p.invite_id=i.invite_id
+              )
+            ORDER BY CASE
+                       WHEN i.status='cancelled' THEN i.cancelled_at
+                       ELSE i.expires_at
+                     END,
+                     i.invite_id
+            LIMIT ?2
+        )
+        "#,
+    )
+    .bind(stale_before)
+    .bind(INVITE_CLEANUP_BATCH_SIZE)
+    .execute(tx.connection())
+    .await?;
 
     let row = query(
         r#"
