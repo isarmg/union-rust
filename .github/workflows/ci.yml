@@ -42,6 +42,8 @@ jobs:
         run: cargo test -p unionc
       - name: validate Linux Server packaging lifecycle
         run: sh server/packaging/linux/tests/test-lifecycle.sh
+      - name: validate Linux Server package builder
+        run: sh server/packaging/linux/tests/test-build-packages.sh
 
   # ── 共享协议：Server/Agent 能编译不代表协议自身的严格反序列化合同已执行。────
   protocol:

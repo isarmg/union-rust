@@ -39,20 +39,55 @@ package_config_version=$(
 [ "$package_config_version" = "$package_version" ] ||
   die "unionc.env.example package marker does not match Cargo $package_version"
 
-server_binary=${SERVER_BINARY:-target/release/unionc}
+server_binary=target/release/unionc
 [ -x "$server_binary" ] || die "Server binary is missing or not executable: $server_binary"
-[ "$("$server_binary" --version)" = "unionc $package_version" ] ||
-  die "Server binary version does not match Cargo package version $package_version"
+package_arch=${NFPM_ARCH:-amd64}
+case "$package_arch" in
+  amd64)
+    expected_elf_machine='Advanced Micro Devices X86-64'
+    rpm_arch=x86_64
+    ;;
+  arm64)
+    expected_elf_machine=AArch64
+    rpm_arch=aarch64
+    ;;
+  *) die "unsupported Server Linux package architecture: $package_arch" ;;
+esac
+command -v readelf >/dev/null 2>&1 ||
+  die "required binary inspection command is unavailable: readelf"
+elf_machine=$(
+  LC_ALL=C readelf -h -- "$server_binary" 2>/dev/null |
+    awk -F: '
+      /^[[:space:]]*Machine:/ {
+        value = $2
+        sub(/^[[:space:]]+/, "", value)
+        sub(/[[:space:]]+$/, "", value)
+        found += 1
+        machine = value
+      }
+      END {
+        if (found != 1 || machine == "") exit 1
+        print machine
+      }
+    '
+) || die "Server package payload is not a readable ELF binary: $server_binary"
+[ "$elf_machine" = "$expected_elf_machine" ] ||
+  die "Server package payload architecture $elf_machine does not match $package_arch"
+LC_ALL=C readelf -p .unionc.version -- "$server_binary" 2>/dev/null |
+  awk -v expected="unionc $package_version" '
+    /^[[:space:]]*\[[[:space:]]*[[:xdigit:]]+\][[:space:]]+/ {
+      value = $0
+      sub(/^[[:space:]]*\[[[:space:]]*[[:xdigit:]]+\][[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      found += 1
+      if (value == expected) matched += 1
+    }
+    END { exit found == 1 && matched == 1 ? 0 : 1 }
+  ' || die "Server package payload ELF version marker does not match Cargo $package_version"
 
 nfpm_bin=${NFPM_BIN:-nfpm}
 command -v "$nfpm_bin" >/dev/null 2>&1 || [ -x "$nfpm_bin" ] ||
   die "nFPM is unavailable: $nfpm_bin"
-package_arch=${NFPM_ARCH:-amd64}
-case "$package_arch" in
-  amd64) rpm_arch=x86_64 ;;
-  arm64) rpm_arch=aarch64 ;;
-  *) rpm_arch=$package_arch ;;
-esac
 
 mkdir -p dist
 VERSION="$package_version" NFPM_ARCH="$package_arch" "$nfpm_bin" package \

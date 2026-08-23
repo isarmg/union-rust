@@ -12,6 +12,27 @@ use unionc::{http, startup};
 
 mod systemd;
 
+const SERVER_VERSION_OUTPUT: &str = concat!("unionc ", env!("CARGO_PKG_VERSION"));
+
+const fn nul_terminated<const N: usize>(value: &str) -> [u8; N] {
+    let source = value.as_bytes();
+    assert!(N == source.len() + 1);
+    let mut output = [0; N];
+    let mut index = 0;
+    while index < source.len() {
+        output[index] = source[index];
+        index += 1;
+    }
+    output
+}
+
+/// The release job may cross-build a musl payload that the packaging host
+/// cannot execute. Keep its exact version in an inspectable ELF section.
+#[used]
+#[unsafe(link_section = ".unionc.version")]
+static LINUX_PACKAGE_VERSION_MARKER: [u8; SERVER_VERSION_OUTPUT.len() + 1] =
+    nul_terminated::<{ SERVER_VERSION_OUTPUT.len() + 1 }>(SERVER_VERSION_OUTPUT);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Command {
     Serve,
@@ -113,8 +134,11 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn version_line() -> String {
-    format!("unionc {}", env!("CARGO_PKG_VERSION"))
+fn version_line() -> &'static str {
+    // Keep the command output tied to the package marker even under release LTO.
+    let marker = std::hint::black_box(&LINUX_PACKAGE_VERSION_MARKER);
+    std::str::from_utf8(&marker[..marker.len() - 1])
+        .expect("the compile-time Server version marker is valid UTF-8")
 }
 
 async fn shutdown_signal(state: unionc::state::AppState) {
@@ -145,7 +169,7 @@ async fn shutdown_signal(state: unionc::state::AppState) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, parse_command, version_line};
+    use super::{Command, LINUX_PACKAGE_VERSION_MARKER, parse_command, version_line};
 
     #[test]
     fn version_flag_is_exact_and_side_effect_free() {
@@ -154,6 +178,7 @@ mod tests {
             Command::Version
         );
         assert_eq!(version_line(), "unionc 0.3.4");
+        assert_eq!(LINUX_PACKAGE_VERSION_MARKER.last(), Some(&0));
         assert!(parse_command(["-V".to_string()]).is_err());
         assert!(parse_command(["--version".to_string(), "extra".to_string()]).is_err());
     }
