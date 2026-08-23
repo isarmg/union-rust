@@ -1396,6 +1396,20 @@ mod tests {
             fs::read_to_string(directory.join("agent-token")).unwrap(),
             bearer_secret
         );
+        let binding: ActiveBinding = serde_json::from_slice(
+            &fs::read(directory.join(ACTIVE_BINDING_FILE)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            binding,
+            ActiveBinding {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                request_id,
+                instance_id,
+                report_endpoint: config.endpoint.clone(),
+            }
+        );
         assert!(matches!(
             load_state(&config).unwrap(),
             Some(StoredPairingState::Active {

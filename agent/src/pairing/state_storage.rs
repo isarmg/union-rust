@@ -2,6 +2,19 @@ fn state_path(config: &AgentConfig) -> PathBuf {
     config.state_dir.join(PAIRING_STATE_FILE)
 }
 
+fn active_binding_path(config: &AgentConfig) -> PathBuf {
+    config.state_dir.join(ACTIVE_BINDING_FILE)
+}
+
+fn validate_active_binding(config: &AgentConfig, binding: &ActiveBinding) -> anyhow::Result<()> {
+    validate_state_version(binding.version)?;
+    if binding.generation.is_nil() || binding.request_id.is_nil() || binding.instance_id.is_nil() {
+        bail!("active binding contains a nil UUID");
+    }
+    crate::config::validate_endpoint(&binding.report_endpoint, config.allow_insecure_http)
+        .context("active binding report endpoint is unsafe")
+}
+
 fn lock_state(config: &AgentConfig) -> anyhow::Result<state_lock::CredentialStateLock> {
     state_lock::lock(&config.state_dir)
 }

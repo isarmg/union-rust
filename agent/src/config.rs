@@ -696,7 +696,7 @@ fn parse_bool(value: &str) -> anyhow::Result<bool> {
     }
 }
 
-fn validate_endpoint(endpoint: &str, allow_insecure_http: bool) -> anyhow::Result<()> {
+pub(crate) fn validate_endpoint(endpoint: &str, allow_insecure_http: bool) -> anyhow::Result<()> {
     let url = reqwest::Url::parse(endpoint)
         .with_context(|| format!("invalid telemetry endpoint {endpoint}"))?;
     if !url.username().is_empty() || url.password().is_some() {

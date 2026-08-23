@@ -139,6 +139,16 @@ fn finish_activating_unlocked(
         &instance_id.to_string(),
         "server-assigned host identity",
     )?;
+    persist_active_binding_unlocked(
+        config,
+        &ActiveBinding {
+            version: PAIRING_STATE_VERSION,
+            generation,
+            request_id,
+            instance_id,
+            report_endpoint: report_endpoint.clone(),
+        },
+    )?;
     persist_active_config_unlocked(config, &report_endpoint)?;
     persist_auth_state_unlocked(
         config,

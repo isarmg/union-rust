@@ -10,6 +10,7 @@ pub(super) struct PairingStateVersion;
 pub(super) const PAIRING_STATE_VERSION: PairingStateVersion = PairingStateVersion;
 pub(super) const PAIRING_STATE_FILE: &str = "pairing-state.json";
 pub(super) const AUTH_STATE_FILE: &str = "auth-state.json";
+pub(super) const ACTIVE_BINDING_FILE: &str = "active-binding.json";
 
 impl Serialize for PairingStateVersion {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -101,6 +102,18 @@ pub(super) enum StoredPairingState {
         report_endpoint: String,
         completed_at: DateTime<Utc>,
     },
+}
+
+/// Durable binding between the current credential generation and its report endpoint.
+/// This lives beside the token rather than in the administrator-owned base config.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ActiveBinding {
+    pub(super) version: PairingStateVersion,
+    pub(super) generation: Uuid,
+    pub(super) request_id: Uuid,
+    pub(super) instance_id: Uuid,
+    pub(super) report_endpoint: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

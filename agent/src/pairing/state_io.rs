@@ -9,6 +9,18 @@ fn persist_state_unlocked(config: &AgentConfig, state: &StoredPairingState) -> a
     persist_private_value(&state_path(config), &serialized, "browser pairing state")
 }
 
+fn persist_active_binding_unlocked(
+    config: &AgentConfig,
+    binding: &ActiveBinding,
+) -> anyhow::Result<()> {
+    validate_active_binding(config, binding)?;
+    persist_private_value(
+        &active_binding_path(config),
+        &serde_json::to_string_pretty(binding)?,
+        "active credential endpoint binding",
+    )
+}
+
 fn compare_and_persist_creating(
     config: &AgentConfig,
     generation: Uuid,
@@ -97,4 +109,3 @@ fn validate_state_version(version: PairingStateVersion) -> anyhow::Result<()> {
     }
     Ok(())
 }
-
