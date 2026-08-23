@@ -784,6 +784,9 @@ fn print_help() {
          Pairing example:\n\
            unionc-agent pair --server https://unionc.example.com\n\n\
          Common options: --config PATH [--endpoint REPORT_URL] [--output human|json]\n\
+           [--allow-insecure-http]\n\
+         --allow-insecure-http permits remote plaintext report/OTLP delivery only;\n\
+           browser pairing still requires HTTPS except on the local loopback host.\n\
          Doctor delivery opt-in: --delivery (sends one report and may drain queued reports)\n\
          Pair options: [--server URL | --endpoint REPORT_URL]\n\
            [--replace-pending-pairing]\n\

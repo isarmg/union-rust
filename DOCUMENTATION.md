@@ -1140,7 +1140,7 @@ purge；Windows x64 WiX MSI 把只读程序与可变状态分离，以原生 SCM
 | `tls_identity_pem` | `UNIONC_AGENT_TLS_IDENTITY_PEM` | — | mTLS 客户端证书（Linux，证书+私钥合并的 PEM） |
 | `tls_identity_pkcs12` | `UNIONC_AGENT_TLS_IDENTITY_PKCS12` | — | mTLS 客户端证书（Windows/macOS） |
 | `tls_identity_password` | `UNIONC_AGENT_TLS_IDENTITY_PASSWORD` | — | PKCS#12 口令 |
-| `allow_insecure_http` | `UNIONC_AGENT_ALLOW_INSECURE_HTTP` | false | 仅 report/OTLP 的非回环明文投递需显式开启；浏览器配对始终要求 HTTPS |
+| `allow_insecure_http` | `UNIONC_AGENT_ALLOW_INSECURE_HTTP` | false | 仅 report/OTLP 的非回环明文投递需显式开启；非回环浏览器配对始终要求 HTTPS |
 
 配置文件存在时必须包含表中的完整当前结构；缺字段、未知字段和不同
 `application_version` 都会在环境变量覆盖之前被拒绝。配置文件不存在时才使用编译期的
