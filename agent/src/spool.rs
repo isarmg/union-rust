@@ -1,5 +1,6 @@
 use std::{
-    fs, io,
+    fs,
+    io::{self, Read},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -8,7 +9,7 @@ use anyhow::Context;
 use uuid::Uuid;
 
 use crate::{
-    model::AgentReport,
+    model::{AGENT_REPORT_MAX_BODY_BYTES, AgentReport},
     private_fs::{self, OwnerPolicy},
     report_contract,
 };
@@ -103,7 +104,22 @@ impl Spool {
         let Some(path) = self.min_path(JSON)? else {
             return Ok(None);
         };
-        let bytes = fs::read(&path)?;
+        let bytes = read_spool_file_bounded(&path)?;
+        if bytes.len() > AGENT_REPORT_MAX_BODY_BYTES {
+            let error = anyhow::anyhow!(
+                "spool report exceeds the {} byte Agent wire limit",
+                AGENT_REPORT_MAX_BODY_BYTES
+            );
+            let quarantine = path.with_extension(format!("{}.invalid", Uuid::new_v4()));
+            fs::rename(&path, &quarantine).with_context(|| {
+                format!(
+                    "failed to quarantine oversized spool report {} as {}: {error}",
+                    path.display(),
+                    quarantine.display()
+                )
+            })?;
+            return Err(error);
+        }
         match serde_json::from_slice(&bytes) {
             Ok(report) => match report_contract::encode_report_body(&report) {
                 Ok((bounded, _)) if bounded == report => Ok(Some(PendingReport { path, report })),
@@ -328,6 +344,16 @@ fn file_size(path: &Path) -> io::Result<u64> {
     fs::metadata(path).map(|metadata| accounted_file_size(&metadata))
 }
 
+fn read_spool_file_bounded(path: &Path) -> io::Result<Vec<u8>> {
+    let file = fs::File::open(path)?;
+    let read_limit = u64::try_from(AGENT_REPORT_MAX_BODY_BYTES)
+        .expect("Agent report limit fits u64")
+        .saturating_add(1);
+    let mut bytes = Vec::new();
+    file.take(read_limit).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
@@ -525,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn a_report_requiring_current_contract_changes_is_quarantined_instead_of_rewritten() {
+    fn an_oversized_spool_report_is_bounded_and_quarantined_before_json_parsing() {
         let directory = temp_dir();
         let spool = Spool::open(&directory, 16 * 1024 * 1024).unwrap();
         let mut noncanonical = report();
@@ -555,11 +581,11 @@ mod tests {
 
         let error = spool
             .oldest()
-            .expect_err("reports requiring normalization must fail closed");
+            .expect_err("oversized reports must fail closed");
         assert!(
             error
                 .to_string()
-                .contains("requires changes to satisfy the exact current Agent wire contract")
+                .contains("exceeds the 524288 byte Agent wire limit")
         );
         assert!(!path.exists());
         assert_eq!(spool.paths(INVALID).unwrap().len(), 1);
