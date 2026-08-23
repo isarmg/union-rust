@@ -168,6 +168,16 @@ fn delivery_timing(
     }
 }
 
+fn pairing_failure_schedule(
+    now: Instant,
+    backoff: Duration,
+    jitter_percent: u8,
+) -> (Instant, Duration, Duration) {
+    let delay = jitter(backoff, jitter_percent);
+    let next_backoff = (backoff * 2).min(Duration::from_secs(300));
+    (now + delay, next_backoff, delay)
+}
+
 impl DeliveryWorker {
     async fn run(self) -> anyhow::Result<()> {
         let Self {
@@ -264,8 +274,17 @@ impl DeliveryWorker {
                                     );
                                 }
                                 Err(error) => {
-                                    pairing_retry_at = Instant::now();
-                                    warn!("pairing changed before its Reporter snapshot was loaded: {error}");
+                                    let delay;
+                                    (pairing_retry_at, pairing_backoff, delay) =
+                                        pairing_failure_schedule(
+                                            Instant::now(),
+                                            pairing_backoff,
+                                            config.jitter_percent,
+                                        );
+                                    warn!(
+                                        retry_seconds = delay.as_secs_f64(),
+                                        "pairing changed before its Reporter snapshot was loaded: {error}"
+                                    );
                                 }
                             }
                         }
@@ -291,10 +310,13 @@ impl DeliveryWorker {
                             pairing_retry_at = Instant::now() + Duration::from_secs(60);
                         }
                         Err(error) => {
-                            let delay = jitter(pairing_backoff, config.jitter_percent);
-                            pairing_retry_at = Instant::now() + delay;
-                            pairing_backoff =
-                                (pairing_backoff * 2).min(Duration::from_secs(300));
+                            let delay;
+                            (pairing_retry_at, pairing_backoff, delay) =
+                                pairing_failure_schedule(
+                                    Instant::now(),
+                                    pairing_backoff,
+                                    config.jitter_percent,
+                                );
                             warn!(
                                 retry_seconds = delay.as_secs_f64(),
                                 "browser pairing state could not be checked: {error}"

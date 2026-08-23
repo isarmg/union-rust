@@ -77,6 +77,22 @@ mod tests {
         assert_eq!(next_retry, None);
     }
 
+    #[test]
+    fn persistent_pairing_snapshot_failures_back_off_and_cap() {
+        let now = Instant::now();
+        let (retry_at, next_backoff, delay) =
+            pairing_failure_schedule(now, Duration::from_secs(1), 0);
+        assert_eq!(delay, Duration::from_secs(1));
+        assert_eq!(retry_at, now + Duration::from_secs(1));
+        assert_eq!(next_backoff, Duration::from_secs(2));
+
+        let (retry_at, next_backoff, delay) =
+            pairing_failure_schedule(now, Duration::from_secs(300), 0);
+        assert_eq!(delay, Duration::from_secs(300));
+        assert_eq!(retry_at, now + Duration::from_secs(300));
+        assert_eq!(next_backoff, Duration::from_secs(300));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn delivery_worker_shutdown_has_a_hard_upper_bound() {
         let worker = tokio::spawn(async {
