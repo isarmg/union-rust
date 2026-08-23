@@ -42,13 +42,18 @@ npm run dev
 ## 构建
 
 ```bash
-npm run build     # 等价于 tsc -b && vite build && 原子发布到 dist/
+npm run build     # 等价于 tsc -b && vite build && 可恢复地换入 dist/
 ```
 
-构建产物位于 `web/dist/`。发布步骤是原子的：先构建到 `dist.next`，再替换 `dist` 并归一化
-权限；提交点之前失败会回滚到上一版本（见 `scripts/publish-static.mjs`）。提交后清理
-`dist.previous` 失败仍会报告错误并保留待清理备份，但不会删除或回滚已经就绪的新 `dist`，
-因此可以直接把 `dist` 作为线上目录而不会出现"构建到一半的站点"。
+构建产物位于 `web/dist/`。脚本先在 `dist.next` 上完成结构校验、符号链接拒绝和权限归一化，
+再通过两个同文件系统目录 rename 换入新版本。第二次 rename 的普通失败会恢复上一版本；若进程
+恰好在两次 rename 之间崩溃，下次执行会先从 `dist.previous` 恢复。新版本换入后，旧备份清理
+失败只告警并留待下次清理，不会把已经成功的发布误报为失败。
+
+两个目录 rename **不是**单次 crash-atomic 交换：极短窗口内固定 `dist` 路径会缺失，掉电或
+`SIGKILL` 后要靠上述下次执行恢复。脚本假定同一时间只有一个发布者，且三个目录位于同一文件
+系统。要求严格零缺口的部署应使用不可变版本目录与由部署系统原子替换的 `current` 符号链接，
+而不是把此脚本描述为原子发布。
 
 ## 部署
 

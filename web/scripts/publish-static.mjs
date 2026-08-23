@@ -1,50 +1,99 @@
-import { chmodSync, existsSync, lstatSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, opendirSync, renameSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const defaultAppRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const MAX_STATIC_TREE_ENTRIES = 10_000;
 
-function makeStaticTreeReadable(path) {
-  const stat = lstatSync(path);
-  if (stat.isSymbolicLink()) return;
-  if (stat.isDirectory()) {
-    chmodSync(path, 0o755);
-    for (const entry of readdirSync(path)) {
-      makeStaticTreeReadable(resolve(path, entry));
+function makeStaticTreeReadable(root) {
+  let visited = 0;
+  const pending = [root];
+  while (pending.length > 0) {
+    const path = pending.pop();
+    visited += 1;
+    if (visited > MAX_STATIC_TREE_ENTRIES) {
+      throw new Error(`static tree exceeds ${MAX_STATIC_TREE_ENTRIES} entries`);
     }
-    return;
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink()) throw new Error(`static tree contains a symbolic link: ${path}`);
+    if (stat.isDirectory()) {
+      chmodSync(path, 0o755);
+      const directory = opendirSync(path);
+      try {
+        let entry;
+        while ((entry = directory.readSync()) !== null) pending.push(resolve(path, entry.name));
+      } finally {
+        directory.closeSync();
+      }
+      continue;
+    }
+    if (stat.isFile()) {
+      chmodSync(path, 0o644);
+      continue;
+    }
+    throw new Error(`static tree contains an unsupported entry: ${path}`);
   }
-  if (stat.isFile()) chmodSync(path, 0o644);
+
+  const index = resolve(root, "index.html");
+  if (!existsSync(index) || !lstatSync(index).isFile()) {
+    throw new Error("dist.next must contain a regular index.html file");
+  }
+}
+
+function reportCleanupFailure(error, path) {
+  process.emitWarning(`static publish committed but could not remove ${path}: ${error}`, {
+    code: "UNIONC_STATIC_CLEANUP",
+  });
 }
 
 export function publishStatic(
   appRoot = defaultAppRoot,
   makeReadable = makeStaticTreeReadable,
   removeCommittedPrevious = (path) => rmSync(path, { recursive: true, force: true }),
+  rename = renameSync,
+  warnCleanupFailure = reportCleanupFailure,
 ) {
   const next = resolve(appRoot, "dist.next");
   const current = resolve(appRoot, "dist");
   const previous = resolve(appRoot, "dist.previous");
 
+  // A previous process may have stopped between the two directory renames. Restore service
+  // before validating the next candidate; this is crash recovery, not a crash-atomic swap.
+  if (!existsSync(current) && existsSync(previous)) rename(previous, current);
   if (!existsSync(next)) throw new Error("dist.next does not exist");
+
+  // Permissions and shape must be ready before the live directory is moved away.
+  makeReadable(next);
   rmSync(previous, { recursive: true, force: true });
-  if (existsSync(current)) renameSync(current, previous);
+  const hadCurrent = existsSync(current);
+  if (hadCurrent) rename(current, previous);
   try {
-    renameSync(next, current);
-    makeReadable(current);
+    rename(next, current);
   } catch (error) {
-    // rename 已成功而 chmod 失败时，current 是一棵不完整的新版本。先删除它才能
-    // 把 previous 原子恢复回来；仅在 current 不存在时回滚会把坏版本留在线上。
-    if (existsSync(previous)) {
-      rmSync(current, { recursive: true, force: true });
-      renameSync(previous, current);
+    if (hadCurrent && existsSync(previous)) {
+      try {
+        rmSync(current, { recursive: true, force: true });
+        rename(previous, current);
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          "static publish failed and the previous tree could not be restored",
+          { cause: rollbackError },
+        );
+      }
     }
     throw error;
   }
 
-  // 新目录已经换入且权限已归一化，至此发布已经提交。旧备份的清理即使失败，
-  // 也只能报告错误并留给后续清理，绝不能删除已提交的新版本再恢复残缺备份。
-  if (existsSync(previous)) removeCommittedPrevious(previous);
+  // The new tree is committed. Backup cleanup is best-effort: failing the build now would invite
+  // an unsafe retry even though the live version already changed.
+  if (existsSync(previous)) {
+    try {
+      removeCommittedPrevious(previous);
+    } catch (error) {
+      warnCleanupFailure(error, previous);
+    }
+  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

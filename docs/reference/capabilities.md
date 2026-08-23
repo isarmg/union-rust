@@ -850,10 +850,10 @@ Windows release 制品包含 NVIDIA 支持而不含 OTLP；当前 macOS release 
 | `npm test` | 12 个文件、52 项通过 | Web API 当前状态码/媒体类型、SSE、激活、跨会话缓存隔离、配对密钥生命周期、日志截断、Sunshine mutation 竞态等 |
 | `npm run lint` | 通过 | ESLint 无错误 |
 | `npm run typecheck` | 通过 | TypeScript build graph 类型检查通过 |
-| `npm run build` | 通过 | Vite 先构建到 `dist.next`，再由发布脚本原子换入本地 `web/dist` |
+| `npm run build` | 通过 | Vite 先构建到 `dist.next`，再由发布脚本校验权限并以可恢复目录切换换入本地 `web/dist` |
 | `git diff --check` | 通过 | 文档与现有工作树无空白错误 |
 
-本轮生产构建已通过原子发布脚本更新本地 `web/dist`；没有在本机重做 DEB/RPM/MSI/pkg
+本轮生产构建已通过带失败恢复的发布脚本更新本地 `web/dist`；没有在本机重做 DEB/RPM/MSI/pkg
 安装/同版本重装、平台签名、公证或真实 OTLP Collector 验证；这些路径由 CI/release workflow 和平台
 生命周期脚本覆盖。测试通过证明的是当前代码契约，不等于对目标机器、反代、证书、磁盘容量、
 Sunshine 版本和长期负载的生产验收。
