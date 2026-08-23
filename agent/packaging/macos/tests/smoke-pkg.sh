@@ -234,6 +234,15 @@ assert_ownership_proof() {
   assert_trusted_regular_file 0:0:0:600 /var/db/unionc-agent/account-ownership
 }
 
+install_package() {
+  if sudo installer -pkg "$package" -target /; then
+    return 0
+  fi
+  echo 'macOS Installer failed; recent install log follows:' >&2
+  sudo tail -n 240 /var/log/install.log >&2 || true
+  return 1
+}
+
 # GitHub's hosted macOS image deliberately makes parts of /usr/local runner-owned
 # and writable. First prove that preinstall rejects that state before extraction,
 # then harden only the path components used by this destructive package smoke.
@@ -294,14 +303,14 @@ grep -E '(^|/)usr/local/share/unionc-agent/config\.example\.json$' \
   exit 1
 }
 
-sudo installer -pkg "$package" -target /
+install_package
 sudo launchctl print system/com.unionc.agent >/dev/null
 assert_install_trust
 assert_runtime_state_trust
 assert_ownership_proof
 sudo touch '/Library/Application Support/UnionC Agent/release-lifecycle-marker'
 
-sudo installer -pkg "$package" -target /
+install_package
 sudo launchctl print system/com.unionc.agent >/dev/null
 assert_install_trust
 assert_runtime_state_trust
@@ -314,7 +323,7 @@ assert_preserved_uninstall_trust
 assert_runtime_state_trust 0
 assert_ownership_proof
 
-sudo installer -pkg "$package" -target /
+install_package
 assert_install_trust
 assert_runtime_state_trust
 assert_ownership_proof

@@ -169,7 +169,11 @@ function Assert-StateAcl {
                 $rule.PropagationFlags -ne `
                     [System.Security.AccessControl.PropagationFlags]::None -or
                 $rule.IsInherited) {
-                throw "$protectedPath has an unexpected managed-state ACE for $sid."
+                throw ("$protectedPath has an unexpected managed-state ACE for $sid " +
+                    "(rights=$([int]$rule.FileSystemRights), " +
+                    "inheritance=$($rule.InheritanceFlags), " +
+                    "propagation=$($rule.PropagationFlags), " +
+                    "inherited=$($rule.IsInherited)).")
             }
             $expectedRights.Remove($sid) | Out-Null
         }
@@ -326,7 +330,11 @@ function Assert-PreservedStateAcl([string]$RetiredServiceSid) {
                 $rule.PropagationFlags -ne `
                     [System.Security.AccessControl.PropagationFlags]::None -or
                 $rule.IsInherited) {
-                throw "$protectedPath has an unexpected preserved-state ACE for $sid."
+                throw ("$protectedPath has an unexpected preserved-state ACE for $sid " +
+                    "(rights=$([int]$rule.FileSystemRights), " +
+                    "inheritance=$($rule.InheritanceFlags), " +
+                    "propagation=$($rule.PropagationFlags), " +
+                    "inherited=$($rule.IsInherited)).")
             }
             $expectedRights.Remove($sid) | Out-Null
         }
