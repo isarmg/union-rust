@@ -85,6 +85,12 @@ fn prepare_start(config: &AgentConfig, host: &HostIdentity) -> anyhow::Result<Pa
             // converged, so this explicitly confirmed request may safely
             // create its own generation below.
         }
+        Some(state @ StoredPairingState::Active { .. }) => {
+            // Preserve the old credential's endpoint before a new Creating state replaces the
+            // only journal that carried it. Existing installations migrate lazily here.
+            let expected = binding_from_active_state(&state)?;
+            load_or_migrate_active_binding_unlocked(config, &expected)?;
+        }
         _ => {}
     }
 

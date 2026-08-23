@@ -149,7 +149,6 @@ fn finish_activating_unlocked(
             report_endpoint: report_endpoint.clone(),
         },
     )?;
-    persist_active_config_unlocked(config, &report_endpoint)?;
     persist_auth_state_unlocked(
         config,
         &LocalAuthState {

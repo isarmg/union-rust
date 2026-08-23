@@ -1014,7 +1014,10 @@ mod tests {
                 Uuid::new_v4()
             ));
             fs::create_dir_all(&directory).unwrap();
-            let config_path = directory.join("config.json");
+            // Model an administrator-owned system config that the service cannot replace. A
+            // directory is deterministic even when this test happens to run as root.
+            let config_path = directory.join("operator-config");
+            fs::create_dir(&config_path).unwrap();
             let mut config = AgentConfig {
                 endpoint: "https://old.example/api/agent/v1/report".into(),
                 state_dir: directory.clone(),
@@ -1024,7 +1027,6 @@ mod tests {
             if preexisting {
                 fs::write(directory.join("agent-token"), "old-token").unwrap();
                 fs::write(directory.join("host-id"), Uuid::new_v4().to_string()).unwrap();
-                fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
             }
             let generation = Uuid::new_v4();
             let request_id = Uuid::new_v4();
@@ -1067,9 +1069,17 @@ mod tests {
                 fs::read_to_string(directory.join("host-id")).unwrap(),
                 instance_id.to_string()
             );
-            let durable: AgentConfig =
-                serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
-            assert_eq!(durable.endpoint, "https://new.example/api/agent/v1/report");
+            assert_eq!(
+                load_active_binding(&config).unwrap(),
+                Some(ActiveBinding {
+                    version: PAIRING_STATE_VERSION,
+                    generation,
+                    request_id,
+                    instance_id,
+                    report_endpoint: "https://new.example/api/agent/v1/report".into(),
+                })
+            );
+            assert!(config_path.is_dir());
             assert!(matches!(
                 load_state(&config).unwrap(),
                 Some(StoredPairingState::Active {
@@ -1087,14 +1097,177 @@ mod tests {
                 "https://new.example/api/agent/v1/report",
             )
             .unwrap();
-            let durable_after_snapshot: AgentConfig =
-                serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
             assert_eq!(
-                durable_after_snapshot.endpoint,
+                config.endpoint,
                 "https://new.example/api/agent/v1/report"
             );
+            assert!(config_path.is_dir());
+            assert!(matches!(
+                poll_existing(&config).await.unwrap(),
+                Some(PairingProgress::Active {
+                    generation: saved_generation,
+                    ..
+                }) if saved_generation == generation
+            ));
             fs::remove_dir_all(directory).unwrap();
         }
+    }
+
+    #[test]
+    fn old_active_state_lazily_migrates_its_endpoint_binding() {
+        let directory =
+            std::env::temp_dir().join(format!("unionc-binding-migration-{}", Uuid::new_v4()));
+        let config = test_config(directory.clone());
+        fs::create_dir_all(&directory).unwrap();
+        let generation = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let instance_id = Uuid::new_v4();
+        fs::write(directory.join("agent-token"), "current-token").unwrap();
+        fs::write(directory.join("host-id"), instance_id.to_string()).unwrap();
+        persist_auth_state(
+            &config,
+            &LocalAuthState {
+                version: PAIRING_STATE_VERSION,
+                status: "authorized".into(),
+                reason: "existing installation".into(),
+                changed_at: Utc::now(),
+            },
+        )
+        .unwrap();
+        persist_state(
+            &config,
+            &StoredPairingState::Active {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                request_id,
+                activation_url: "https://unionc.example/agent/activate/test".into(),
+                instance_id,
+                report_endpoint: config.endpoint.clone(),
+                completed_at: Utc::now(),
+            },
+        )
+        .unwrap();
+
+        assert!(!active_binding_path(&config).exists());
+        assert!(reporter_for_current_active_state(&config).unwrap().is_some());
+        assert_eq!(
+            load_active_binding(&config).unwrap(),
+            Some(ActiveBinding {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                request_id,
+                instance_id,
+                report_endpoint: config.endpoint.clone(),
+            })
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn mismatched_active_binding_is_never_silently_replaced() {
+        let directory =
+            std::env::temp_dir().join(format!("unionc-binding-mismatch-{}", Uuid::new_v4()));
+        let mut config = test_config(directory.clone());
+        fs::create_dir_all(&directory).unwrap();
+        let generation = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let instance_id = Uuid::new_v4();
+        fs::write(directory.join("agent-token"), "current-token").unwrap();
+        fs::write(directory.join("host-id"), instance_id.to_string()).unwrap();
+        persist_auth_state(
+            &config,
+            &LocalAuthState {
+                version: PAIRING_STATE_VERSION,
+                status: "authorized".into(),
+                reason: "test".into(),
+                changed_at: Utc::now(),
+            },
+        )
+        .unwrap();
+        persist_state(
+            &config,
+            &StoredPairingState::Active {
+                version: PAIRING_STATE_VERSION,
+                generation,
+                request_id,
+                activation_url: "https://unionc.example/agent/activate/test".into(),
+                instance_id,
+                report_endpoint: config.endpoint.clone(),
+                completed_at: Utc::now(),
+            },
+        )
+        .unwrap();
+        let mismatched = ActiveBinding {
+            version: PAIRING_STATE_VERSION,
+            generation: Uuid::new_v4(),
+            request_id,
+            instance_id,
+            report_endpoint: config.endpoint.clone(),
+        };
+        persist_active_binding_unlocked(&config, &mismatched).unwrap();
+
+        let reporter_error = match reporter_for_current_active_state(&config) {
+            Ok(_) => panic!("a mismatched binding must fail closed"),
+            Err(error) => error,
+        };
+        assert!(reporter_error.to_string().contains("does not match"));
+        let config_error = commit_active_configuration(
+            &mut config,
+            generation,
+            request_id,
+            instance_id,
+            "https://unionc.example/api/agent/v1/report",
+        )
+        .expect_err("config synchronization must not replace a mismatched binding");
+        assert!(config_error.to_string().contains("does not match"));
+        assert_eq!(load_active_binding(&config).unwrap(), Some(mismatched));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn replacing_old_active_state_preserves_its_endpoint_binding() {
+        let directory =
+            std::env::temp_dir().join(format!("unionc-binding-before-create-{}", Uuid::new_v4()));
+        let mut config = test_config(directory.clone());
+        let old_generation = Uuid::new_v4();
+        let old_request_id = Uuid::new_v4();
+        let old_instance_id = Uuid::new_v4();
+        let old_endpoint = config.endpoint.clone();
+        persist_state(
+            &config,
+            &StoredPairingState::Active {
+                version: PAIRING_STATE_VERSION,
+                generation: old_generation,
+                request_id: old_request_id,
+                activation_url: "https://unionc.example/agent/activate/old".into(),
+                instance_id: old_instance_id,
+                report_endpoint: old_endpoint.clone(),
+                completed_at: Utc::now(),
+            },
+        )
+        .unwrap();
+        config.endpoint = "https://new.example/api/agent/v1/report".into();
+        config.pairing_endpoint = Some("https://new.example/api/agent/v2/pairing-requests".into());
+
+        let PairingStart::Create(creating) = prepare_start(&config, &test_host()).unwrap() else {
+            panic!("an Active state must allow a new explicitly requested pairing generation");
+        };
+        assert!(matches!(
+            *creating,
+            StoredPairingState::Creating { ref report_endpoint, .. }
+                if report_endpoint == "https://new.example/api/agent/v1/report"
+        ));
+        assert_eq!(
+            load_active_binding(&config).unwrap(),
+            Some(ActiveBinding {
+                version: PAIRING_STATE_VERSION,
+                generation: old_generation,
+                request_id: old_request_id,
+                instance_id: old_instance_id,
+                report_endpoint: old_endpoint,
+            })
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -1351,6 +1524,7 @@ mod tests {
         assert!(!directory.join("agent-token").exists());
         assert!(!directory.join("host-id").exists());
         assert!(!directory.join("auth-state.json").exists());
+        assert!(!active_binding_path(&config).exists());
 
         fs::remove_dir_all(directory).unwrap();
     }

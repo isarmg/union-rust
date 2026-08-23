@@ -63,7 +63,7 @@ pub(super) enum StoredPairingState {
         polling_secret: String,
     },
     /// Durable local commit journal. Once this phase exists, no network I/O is
-    /// allowed; startup idempotently completes the token/identity/config
+    /// allowed; startup idempotently completes the token/identity/endpoint binding
     /// transition before writing Active last.
     Activating {
         version: PairingStateVersion,

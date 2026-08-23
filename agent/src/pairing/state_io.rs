@@ -21,6 +21,20 @@ fn persist_active_binding_unlocked(
     )
 }
 
+fn load_or_migrate_active_binding_unlocked(
+    config: &AgentConfig,
+    expected: &ActiveBinding,
+) -> anyhow::Result<ActiveBinding> {
+    match load_active_binding(config)? {
+        Some(binding) if binding == *expected => Ok(binding),
+        Some(_) => bail!("active binding does not match the current Active pairing state"),
+        None => {
+            persist_active_binding_unlocked(config, expected)?;
+            Ok(expected.clone())
+        }
+    }
+}
+
 fn compare_and_persist_creating(
     config: &AgentConfig,
     generation: Uuid,
