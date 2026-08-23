@@ -83,6 +83,29 @@ pub fn init(mode: crate::config::RuntimeMode) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Initialize the process-global keyring from explicit test-only key material.
+///
+/// Integration tests are separate crates, so they cannot access private helpers and the
+/// library itself is not compiled with `cfg(test)`. Keeping this narrow hook avoids mutating
+/// process environment variables after the Rust test harness has started threads, and avoids
+/// creating a development key in the repository's real data directory.
+///
+/// This is deliberately hidden from generated API documentation and must not be used by
+/// application startup; production key configuration always goes through [`init`].
+#[doc(hidden)]
+pub fn init_with_test_key(key_id: &str, key: [u8; 32]) -> anyhow::Result<()> {
+    if KEYRING.get().is_some() {
+        return Ok(());
+    }
+    let current_id = validate_key_id(key_id)?;
+    let _ = KEYRING.set(Keyring {
+        current_id,
+        current: key,
+        previous: Vec::new(),
+    });
+    Ok(())
+}
+
 fn keyring() -> anyhow::Result<&'static Keyring> {
     KEYRING.get().context(
         "secret keyring was not initialized; startup must pass the validated RuntimeMode to secrets::init",

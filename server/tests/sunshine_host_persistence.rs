@@ -21,8 +21,7 @@ use unionc::{
 mod common;
 
 async fn fresh_settings(url: String) -> (Settings, database::DbPool) {
-    unionc::infra::secrets::init(unionc::config::RuntimeMode::Development)
-        .expect("initialize test keyring");
+    common::init_test_keyring();
     let mut settings = Settings::default();
     settings.database.url = url;
     let pool = database::connect(&settings).await.expect("connect");

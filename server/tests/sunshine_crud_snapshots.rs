@@ -51,8 +51,7 @@ fn console_request(method: &str, path: &str, body: Body) -> Request<Body> {
 
 #[tokio::test]
 async fn crud_returns_pending_snapshots_without_waiting_for_health_probe() {
-    unionc::infra::secrets::init(unionc::config::RuntimeMode::Development)
-        .expect("initialize test keyring");
+    common::init_test_keyring();
     let base_url = common::test_database_url(
         "crud_returns_pending_snapshots_without_waiting_for_health_probe",
     );

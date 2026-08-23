@@ -1,5 +1,15 @@
 //! 集成测试共享辅助。
 
+/// 使用只存在于当前测试进程内的固定密钥初始化密钥环。
+///
+/// 不走开发环境的磁盘密钥回退：它依赖启动流程先认领数据目录，也会让测试结果受到
+/// 仓库里是否残留 `unionc/data` 的影响。
+#[allow(dead_code)]
+pub fn init_test_keyring() {
+    unionc::infra::secrets::init_with_test_key("integration-test", [0x42; 32])
+        .expect("initialize in-memory test keyring");
+}
+
 /// An isolated SQLite URL whose containing directory is removed when the test
 /// finishes. Keeping the guard alive also covers WAL/SHM files and any sibling
 /// database derived from this URL by a test.
