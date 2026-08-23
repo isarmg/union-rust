@@ -13,11 +13,12 @@ pub async fn list_monitored_hosts(
     limit: i64,
     offset: i64,
 ) -> anyhow::Result<(Vec<StoredHost>, i64)> {
-    // `host_id` 作为最终决胜键：`last_seen_at` 会随上报持续变化、`name` 可能重复，
-    // 只有再补一个唯一列才能保证同一查询的分页顺序是确定的（相邻两页不重不漏）。
+    // Offset 分页的排序键不能随心跳变化，否则两次翻页请求之间的一次正常上报就会
+    // 把行移动到 offset 的另一侧，造成重复或漏项。注册时间在实例生命周期内不变；
+    // 升序还会让后来注册的实例追加在末尾，`host_id` 负责处理同一微秒注册的并列值。
     let rows = query(&host_select(
         false,
-        "ORDER BY h.last_seen_at DESC, h.name, h.host_id LIMIT ?1 OFFSET ?2",
+        "ORDER BY h.registered_at ASC, h.host_id LIMIT ?1 OFFSET ?2",
     ))
     .bind(limit)
     .bind(offset.max(0))
