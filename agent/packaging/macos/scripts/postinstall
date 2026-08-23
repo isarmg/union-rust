@@ -1087,6 +1087,9 @@ else
   if ! existing_user_matches_marker "$existing_uid" "$existing_gid" \
     "$existing_shell" "$existing_home" "$existing_hidden" "$gid"; then
     echo "Existing $user account does not match the installer ownership binding" >&2
+    printf '%s\n' \
+      "actual uid=$existing_uid primary_gid=$existing_gid shell=$existing_shell home=$existing_home hidden=$existing_hidden" \
+      "expected uid=$created_user_uid primary_gid=$created_user_primary_gid group_gid=$gid shell=/usr/bin/false home=/var/empty hidden=1" >&2
     exit 1
   fi
   uid="$existing_uid"
