@@ -443,14 +443,9 @@ pub async fn cover_get(host: &SunshineHostConfig, index: u32) -> AppResult<(Stri
         .basic_auth(&host.username, Some(&host.password))
         .send()
         .await
-        .map_err(|e| AppError::Process(format!("Sunshine cover GET failed: {e}")))?;
+        .map_err(|e| AppError::Upstream(format!("Sunshine cover GET failed: {e}")))?;
 
-    if !resp.status().is_success() {
-        return Err(AppError::Process(format!(
-            "Sunshine cover endpoint returned HTTP {}",
-            resp.status()
-        )));
-    }
+    ensure_cover_status(resp.status())?;
 
     // 从响应头中提取 Content-Type（如 "image/jpeg" 或 "image/png"）
     // 如果响应头不存在或不是有效字符串，默认使用 "image/jpeg"
@@ -467,6 +462,14 @@ pub async fn cover_get(host: &SunshineHostConfig, index: u32) -> AppResult<(Stri
     Ok((content_type, bytes))
 }
 
+fn ensure_cover_status(status: reqwest::StatusCode) -> AppResult<()> {
+    if status.is_success() {
+        Ok(())
+    } else {
+        Err(sunshine_status_error(status, "cover request failed"))
+    }
+}
+
 /// 上传游戏封面图片（通过 URL 方式，让 Sunshine 自己去下载图片）。
 pub async fn cover_upload(host: &SunshineHostConfig, key: &str, url: &str) -> AppResult<Value> {
     sunshine_post_json(
@@ -480,8 +483,8 @@ pub async fn cover_upload(host: &SunshineHostConfig, key: &str, url: &str) -> Ap
 #[cfg(test)]
 mod tests {
     use super::{
-        logs_payload, normalize_apps_response, normalize_clients_response, parse_json_success,
-        sunshine_status_error,
+        ensure_cover_status, logs_payload, normalize_apps_response, normalize_clients_response,
+        parse_json_success, sunshine_status_error,
     };
     use crate::error::AppError;
 
@@ -542,5 +545,27 @@ mod tests {
         assert!(detail.ends_with('…'));
         assert!(!detail.chars().any(char::is_control));
         assert!(detail.starts_with("first line "));
+    }
+
+    #[test]
+    fn cover_status_uses_the_common_upstream_authentication_mapping() {
+        assert!(ensure_cover_status(reqwest::StatusCode::OK).is_ok());
+        assert!(matches!(
+            ensure_cover_status(reqwest::StatusCode::UNAUTHORIZED),
+            Err(AppError::Forbidden(_))
+        ));
+        assert!(matches!(
+            ensure_cover_status(reqwest::StatusCode::FORBIDDEN),
+            Err(AppError::Forbidden(_))
+        ));
+        for status in [
+            reqwest::StatusCode::NOT_FOUND,
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        ] {
+            assert!(matches!(
+                ensure_cover_status(status),
+                Err(AppError::Upstream(_))
+            ));
+        }
     }
 }
