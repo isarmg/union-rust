@@ -102,7 +102,9 @@ pub async fn list_audit_logs(
     let rows = if let Some(before_id) = before_id {
         query(
             r#"
-            SELECT id,action,target,detail,actor,request_id,created_at
+            -- Read one extra character so legacy oversized rows can still be
+            -- marked with an ellipsis without ever materializing the full value.
+            SELECT id,action,target,substr(detail,1,513) AS detail,actor,request_id,created_at
             FROM audit_logs
             WHERE id < ?1
             ORDER BY id DESC
@@ -116,7 +118,7 @@ pub async fn list_audit_logs(
     } else {
         query(
             r#"
-            SELECT id,action,target,detail,actor,request_id,created_at
+            SELECT id,action,target,substr(detail,1,513) AS detail,actor,request_id,created_at
             FROM audit_logs
             ORDER BY id DESC
             LIMIT ?1
@@ -131,11 +133,14 @@ pub async fn list_audit_logs(
         .into_iter()
         .take(limit as usize)
         .map(|row| {
+            let detail = row
+                .try_get::<Option<String>, _>("detail")?
+                .map(|detail| bounded_audit_detail(&detail));
             Ok(AuditLogEntry {
                 id: row.try_get("id")?,
                 action: row.try_get("action")?,
                 target: row.try_get("target")?,
-                detail: row.try_get("detail")?,
+                detail,
                 actor: row.try_get("actor")?,
                 request_id: row.try_get("request_id")?,
                 created_at: super::super::from_epoch_micros(row.try_get("created_at")?)?,
