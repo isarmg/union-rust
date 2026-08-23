@@ -253,11 +253,39 @@ if [ "$purge" -eq 1 ]; then
   load_ownership_marker
 fi
 
+inspect_launchd_job() {
+  inspected_job_target="$1"
+  if launchd_inspection_output="$(LC_ALL=C launchctl print "$inspected_job_target" 2>&1)"; then
+    launchd_inspection_status=0
+  else
+    launchd_inspection_status=$?
+  fi
+  case "$launchd_inspection_status" in
+    0) return 0 ;;
+    3|113)
+      case "$launchd_inspection_output" in
+        *'Could not find service "'*' in domain for '*|*'Could not find specified service'*)
+          return 1
+          ;;
+      esac
+      ;;
+  esac
+  echo "Could not inspect $inspected_job_target (launchctl status $launchd_inspection_status)" >&2
+  return 2
+}
+
 stop_job() {
   service_target="$1"
-  if launchctl print "$service_target" >/dev/null 2>&1; then
-    launchctl bootout "$service_target"
+  if inspect_launchd_job "$service_target"; then
+    service_state=0
+  else
+    service_state=$?
   fi
+  case "$service_state" in
+    0) launchctl bootout "$service_target" ;;
+    1) ;;
+    *) die "refusing to remove files while the launchd job state is unknown" ;;
+  esac
 }
 
 # Stop the rotation helper first: if it is between bootout and bootstrap of the Agent, its

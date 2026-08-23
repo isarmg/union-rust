@@ -80,7 +80,15 @@ EOF
 #!/bin/sh
 printf '%s\n' "$*" >>"$CASE_ROOT/launchctl-calls"
 case "${1:-}" in
-  print) exit 1 ;;
+  print)
+    if [ "${FAIL_LAUNCHCTL_PRINT:-0}" -eq 1 ]; then
+      printf 'launchd RPC inspection failed\n' >&2
+      exit 79
+    fi
+    printf 'Could not find service "%s" in domain for system\n' \
+      "${2#system/}" >&2
+    exit 113
+    ;;
   *) exit 0 ;;
 esac
 EOF
@@ -262,6 +270,45 @@ assert_incomplete() {
     fail "incomplete purge forgot its package receipt: $incomplete_root"
   fi
 }
+
+case_root="$test_root/launchd-inspection-failure"
+make_case "$case_root"
+write_marker "$case_root" 1 1
+for package_path in \
+  "$case_root/Library/LaunchDaemons/com.unionc.agent.logrotate.plist" \
+  "$case_root/Library/LaunchDaemons/com.unionc.agent.plist" \
+  "$case_root/usr/local/libexec/unionc-agent-logrotate" \
+  "$case_root/usr/local/libexec/unionc-agent" \
+  "$case_root/usr/local/share/unionc-agent/newsyslog.conf" \
+  "$case_root/usr/local/share/unionc-agent/config.example.json"
+do
+  : >"$package_path"
+done
+run_case "$case_root" FAIL_LAUNCHCTL_PRINT=1
+[ "$run_status" -eq 1 ] ||
+  fail "launchd inspection failure returned $run_status instead of 1"
+for preserved_path in \
+  "$case_root/Library/LaunchDaemons/com.unionc.agent.logrotate.plist" \
+  "$case_root/Library/LaunchDaemons/com.unionc.agent.plist" \
+  "$case_root/usr/local/libexec/unionc-agent-logrotate" \
+  "$case_root/usr/local/libexec/unionc-agent" \
+  "$case_root/Library/Application Support/UnionC Agent/state-sentinel" \
+  "$case_root/usr/local/share/unionc-agent/uninstall.sh"
+do
+  [ -e "$preserved_path" ] ||
+    fail "launchd inspection failure removed $preserved_path"
+done
+if grep -F 'bootout ' "$case_root/launchctl-calls" >/dev/null 2>&1; then
+  fail 'launchd inspection failure attempted to boot out an unknown job state'
+fi
+[ ! -e "$case_root/dscl-deletes" ] ||
+  fail 'launchd inspection failure deleted the dedicated account'
+if grep -Fx -- '--forget com.unionc.agent' "$case_root/pkgutil-calls" >/dev/null 2>&1; then
+  fail 'launchd inspection failure forgot the package receipt'
+fi
+grep -F 'Could not inspect system/com.unionc.agent.logrotate (launchctl status 79)' \
+  "$case_root/output.log" >/dev/null ||
+  fail 'launchd inspection failure was not diagnosed'
 
 case_root="$test_root/valid-owned"
 make_case "$case_root"
