@@ -46,6 +46,10 @@ mkdir -p \
 cp "$packaging_dir/build-packages.sh" \
   "$fixture_root/agent/packaging/linux/build-packages.sh"
 cp "$packaging_dir/../nfpm.yaml" "$fixture_root/agent/packaging/nfpm.yaml"
+for lifecycle_script in postinstall.sh preremove.sh postremove.sh purge-local-state.sh; do
+  printf 'package_version=%s\n' "$package_version" \
+    >"$fixture_root/agent/packaging/linux/$lifecycle_script"
+done
 cat >"$fixture_root/agent/config.example.json" <<EOF
 {
   "application_version": "$package_version",
@@ -188,5 +192,21 @@ if run_builder riscv64; then
 fi
 assert_output_contains 'unsupported Agent Linux package architecture: riscv64'
 [ ! -s "$nfpm_log" ] || fail 'unsupported architecture reached nFPM'
+
+for stale_lifecycle_script in \
+  postinstall.sh preremove.sh postremove.sh purge-local-state.sh
+do
+  reset_case
+  printf 'package_version=0.3.3\n' \
+    >"$fixture_root/agent/packaging/linux/$stale_lifecycle_script"
+  if run_builder amd64; then
+    fail "builder accepted stale $stale_lifecycle_script package_version"
+  fi
+  assert_output_contains \
+    "agent/packaging/linux/$stale_lifecycle_script package_version does not match Cargo"
+  [ ! -s "$nfpm_log" ] || fail "stale $stale_lifecycle_script reached nFPM"
+  printf 'package_version=%s\n' "$package_version" \
+    >"$fixture_root/agent/packaging/linux/$stale_lifecycle_script"
+done
 
 echo 'Agent Linux package builder tests passed'

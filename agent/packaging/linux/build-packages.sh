@@ -21,6 +21,20 @@ esac
 [ "$(printf '%s' "$package_version" | awk -F. 'NF == 3 && $1 != "" && $2 != "" && $3 != "" { print "yes" }')" = yes ] ||
   die "Agent version is not strict MAJOR.MINOR.PATCH: $package_version"
 
+# Every lifecycle helper rejects state owned by another package version. Bind
+# those literals to Cargo here so the documented direct builder cannot emit a
+# package that only discovers the mismatch during install or removal.
+for lifecycle_script in \
+  agent/packaging/linux/postinstall.sh \
+  agent/packaging/linux/preremove.sh \
+  agent/packaging/linux/postremove.sh \
+  agent/packaging/linux/purge-local-state.sh
+do
+  lifecycle_version=$(sed -n 's/^package_version=\([0-9][0-9.]*\)$/\1/p' "$lifecycle_script")
+  [ "$lifecycle_version" = "$package_version" ] ||
+    die "$lifecycle_script package_version does not match Cargo $package_version"
+done
+
 agent_binary=target/release/unionc-agent
 [ -x "$agent_binary" ] || die "Agent binary is missing or not executable: $agent_binary"
 package_arch=${NFPM_ARCH:-amd64}
