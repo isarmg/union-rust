@@ -20,6 +20,32 @@ fn rollback_path_exists(path: &std::path::Path, label: &str) -> anyhow::Result<b
     checked_rollback_path_status(path, label, path.try_exists())
 }
 
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug)]
+struct AclHandleTargetFacts {
+    expected_directory: bool,
+    actual_directory: bool,
+    is_reparse_point: bool,
+    hard_link_count: u32,
+}
+
+#[cfg(any(windows, test))]
+fn validate_acl_handle_target_facts(facts: AclHandleTargetFacts) -> anyhow::Result<()> {
+    ensure!(
+        !facts.is_reparse_point,
+        "ACL target handle refers to a reparse point"
+    );
+    ensure!(
+        facts.actual_directory == facts.expected_directory,
+        "ACL target changed type while it was being opened"
+    );
+    ensure!(
+        facts.actual_directory || facts.hard_link_count == 1,
+        "ACL target handle refers to a multiply linked file"
+    );
+    Ok(())
+}
+
 /// State can legitimately contain the bounded report spool plus package files,
 /// but maintenance must never materialize an attacker-sized tree in memory.
 #[cfg(any(windows, test))]
@@ -452,12 +478,13 @@ pub(crate) fn entry() {
 #[cfg(windows)]
 mod windows_maintenance {
     use super::{
-        AclCurrentPathFact, AclSnapshotPathFact, MAX_ACL_SNAPSHOT_BYTES, MAX_ACL_SNAPSHOT_ENTRIES,
-        MAX_MAINTENANCE_PATH_BYTES, MAX_MAINTENANCE_TREE_NODES, enqueue_bounded_tree_path,
-        managed_state_security_descriptor, parse_program_dacl, program_security_descriptor,
-        protected_directory_security_descriptor, read_file_bounded, record_bounded_tree_node,
-        rollback_path_exists, run_validated_acl_restore_plan, try_push_bounded_acl_snapshot_entry,
-        try_push_bounded_path, try_reserve_bounded,
+        AclCurrentPathFact, AclHandleTargetFacts, AclSnapshotPathFact, MAX_ACL_SNAPSHOT_BYTES,
+        MAX_ACL_SNAPSHOT_ENTRIES, MAX_MAINTENANCE_PATH_BYTES, MAX_MAINTENANCE_TREE_NODES,
+        enqueue_bounded_tree_path, managed_state_security_descriptor, parse_program_dacl,
+        program_security_descriptor, protected_directory_security_descriptor, read_file_bounded,
+        record_bounded_tree_node, rollback_path_exists, run_validated_acl_restore_plan,
+        try_push_bounded_acl_snapshot_entry, try_push_bounded_path, try_reserve_bounded,
+        validate_acl_handle_target_facts,
     };
     use std::{
         ffi::{OsStr, OsString, c_void},
@@ -483,17 +510,24 @@ mod windows_maintenance {
                 GetLastError, HANDLE, HLOCAL, LocalFree, SetLastError,
             },
             Security::{
-                AdjustTokenPrivileges,
+                ACL, AdjustTokenPrivileges,
                 Authorization::{
-                    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+                    ConvertSecurityDescriptorToStringSecurityDescriptorW,
+                    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
+                    SDDL_REVISION_1, SE_FILE_OBJECT, SetSecurityInfo,
                 },
-                LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, PSECURITY_DESCRIPTOR,
+                DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
+                LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, OWNER_SECURITY_INFORMATION,
+                PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
                 SE_PRIVILEGE_ENABLED, SE_RESTORE_NAME, SE_TAKE_OWNERSHIP_NAME, SECURITY_ATTRIBUTES,
                 TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+                UNPROTECTED_DACL_SECURITY_INFORMATION,
             },
             Storage::FileSystem::{
-                BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, FILE_ATTRIBUTE_REPARSE_POINT,
-                FILE_FLAG_OPEN_REPARSE_POINT, GetFileInformationByHandle,
+                BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, CreateFileW,
+                FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+                FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+                GetFileInformationByHandle, OPEN_EXISTING, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
             },
             System::{
                 Com::CoTaskMemFree,
@@ -515,7 +549,7 @@ mod windows_maintenance {
                 FOLDERID_ProgramData, FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
             },
         },
-        core::PCWSTR,
+        core::{PCWSTR, PWSTR},
     };
 
     const DIRECTORY_NAME: &str = "UnionC Agent";
@@ -805,6 +839,63 @@ mod rollback_path_tests {
         let message = format!("{error:#}");
         assert!(message.contains("failed to inspect install journal"));
         assert!(message.contains("simulated metadata denial"));
+    }
+}
+
+#[cfg(test)]
+mod acl_handle_target_tests {
+    use super::*;
+
+    #[test]
+    fn opened_acl_target_must_keep_its_safe_file_identity() {
+        validate_acl_handle_target_facts(AclHandleTargetFacts {
+            expected_directory: false,
+            actual_directory: false,
+            is_reparse_point: false,
+            hard_link_count: 1,
+        })
+        .unwrap();
+        validate_acl_handle_target_facts(AclHandleTargetFacts {
+            expected_directory: true,
+            actual_directory: true,
+            is_reparse_point: false,
+            hard_link_count: 3,
+        })
+        .unwrap();
+
+        let reparse = validate_acl_handle_target_facts(AclHandleTargetFacts {
+            expected_directory: false,
+            actual_directory: false,
+            is_reparse_point: true,
+            hard_link_count: 1,
+        })
+        .unwrap_err();
+        assert!(format!("{reparse:#}").contains("reparse point"));
+
+        let hard_link = validate_acl_handle_target_facts(AclHandleTargetFacts {
+            expected_directory: false,
+            actual_directory: false,
+            is_reparse_point: false,
+            hard_link_count: 2,
+        })
+        .unwrap_err();
+        assert!(format!("{hard_link:#}").contains("multiply linked file"));
+
+        let changed_type = validate_acl_handle_target_facts(AclHandleTargetFacts {
+            expected_directory: true,
+            actual_directory: false,
+            is_reparse_point: false,
+            hard_link_count: 1,
+        })
+        .unwrap_err();
+        assert!(format!("{changed_type:#}").contains("changed type"));
+
+        let source = include_str!("acl.rs");
+        assert!(source.contains("GetSecurityInfo("));
+        assert!(source.contains("SetSecurityInfo("));
+        assert!(source.contains("FILE_SHARE_READ | FILE_SHARE_WRITE"));
+        assert!(!source.contains("GetNamedSecurityInfoW("));
+        assert!(!source.contains("SetFileSecurityW("));
     }
 }
 

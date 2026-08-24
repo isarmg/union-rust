@@ -503,57 +503,158 @@ fn validate_managed_dacl(path: &Path, require_service_access: bool) -> anyhow::R
     Ok(())
 }
 
+struct AclTargetHandle(HANDLE);
+
+impl Drop for AclTargetHandle {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            let _ = unsafe { CloseHandle(self.0) };
+        }
+    }
+}
+
+struct LocalWideString(PWSTR);
+
+impl Drop for LocalWideString {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            let _ = unsafe { LocalFree(Some(HLOCAL(self.0.0.cast()))) };
+        }
+    }
+}
+
+fn open_acl_target(
+    path: &Path,
+    desired_access: u32,
+    operation: &str,
+) -> anyhow::Result<AclTargetHandle> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect ACL target {}", path.display()))?;
+    let attributes = metadata.file_attributes();
+    let expected_directory = attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0;
+    ensure!(
+        expected_directory
+            || metadata.is_file()
+            || attributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0,
+        "ACL target is neither a directory nor a regular file: {}",
+        path.display()
+    );
+
+    let mut flags = FILE_FLAG_OPEN_REPARSE_POINT;
+    if expected_directory {
+        flags |= FILE_FLAG_BACKUP_SEMANTICS;
+    }
+    let wide_path = wide_null(path.as_os_str());
+    // Deliberately omit FILE_SHARE_DELETE so this handle prevents a delete or
+    // rename from replacing the checked object before the ACL operation.
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR(wide_path.as_ptr()),
+            desired_access,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            flags,
+            None,
+        )
+    }
+    .with_context(|| format!("failed to open {} for {operation}", path.display()))?;
+    let handle = AclTargetHandle(handle);
+
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    unsafe { GetFileInformationByHandle(handle.0, &mut information) }
+        .with_context(|| format!("failed to inspect opened ACL target {}", path.display()))?;
+    validate_acl_handle_target_facts(AclHandleTargetFacts {
+        expected_directory,
+        actual_directory: information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0,
+        is_reparse_point: information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0,
+        hard_link_count: information.nNumberOfLinks,
+    })
+    .with_context(|| format!("refusing ACL access to {}", path.display()))?;
+    Ok(handle)
+}
+
+fn open_acl_target_for_read(path: &Path) -> anyhow::Result<AclTargetHandle> {
+    open_acl_target(path, READ_CONTROL.0, "security descriptor read")
+}
+
+fn open_acl_target_for_write(path: &Path) -> anyhow::Result<AclTargetHandle> {
+    open_acl_target(
+        path,
+        WRITE_DAC.0 | WRITE_OWNER.0,
+        "security descriptor update",
+    )
+}
+
+fn check_security_status(
+    status: windows::Win32::Foundation::WIN32_ERROR,
+    operation: &str,
+    path: &Path,
+) -> anyhow::Result<()> {
+    if status == ERROR_SUCCESS {
+        return Ok(());
+    }
+    Err(std::io::Error::from_raw_os_error(status.0 as i32))
+        .with_context(|| format!("{operation} failed for {}", path.display()))
+}
+
 fn security_descriptor_sddl(path: &Path) -> anyhow::Result<String> {
-    use windows_sys::Win32::{
-        Foundation::LocalFree,
-        Security::{
-            Authorization::{
-                ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
-                SDDL_REVISION_1, SE_FILE_OBJECT,
-            },
-            DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-        },
-    };
-    let wide = wide_null(path.as_os_str());
-    let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
-    let result = unsafe {
-        GetNamedSecurityInfoW(
-            wide.as_ptr(),
+    let handle = open_acl_target_for_read(path)?;
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    let status = unsafe {
+        GetSecurityInfo(
+            handle.0,
             SE_FILE_OBJECT,
             OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            &mut descriptor,
+            None,
+            None,
+            None,
+            None,
+            Some(&mut descriptor),
         )
     };
-    ensure!(result == 0, "GetNamedSecurityInfoW failed with {result}");
-    let mut text = ptr::null_mut();
+    let descriptor = LocalSecurityDescriptor(descriptor);
+    check_security_status(status, "GetSecurityInfo", path)?;
+    ensure!(
+        !descriptor.0.is_invalid(),
+        "GetSecurityInfo returned no security descriptor for {}",
+        path.display()
+    );
+
+    let mut text = PWSTR::null();
     let mut length = 0;
-    let converted = unsafe {
+    let conversion = unsafe {
         ConvertSecurityDescriptorToStringSecurityDescriptorW(
-            descriptor,
+            descriptor.0,
             SDDL_REVISION_1,
             OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             &mut text,
-            &mut length,
+            Some(&mut length),
         )
     };
-    unsafe { LocalFree(descriptor.cast()) };
+    let text = LocalWideString(text);
+    conversion.with_context(|| {
+        format!(
+            "failed to convert the security descriptor for {} to SDDL",
+            path.display()
+        )
+    })?;
     ensure!(
-        converted != 0,
-        "failed to convert state security descriptor to SDDL"
+        !text.0.is_null(),
+        "security descriptor conversion returned no text for {}",
+        path.display()
     );
-    let utf16 = unsafe { std::slice::from_raw_parts(text, length as usize) };
+    let utf16 = unsafe { std::slice::from_raw_parts(text.0.as_ptr(), length as usize) };
     let content_length = utf16
         .iter()
         .position(|code_unit| *code_unit == 0)
         .unwrap_or(utf16.len());
-    let result = String::from_utf16(&utf16[..content_length])
-        .context("state security descriptor is not valid UTF-16");
-    unsafe { LocalFree(text.cast()) };
-    result
+    String::from_utf16(&utf16[..content_length]).with_context(|| {
+        format!(
+            "security descriptor for {} is not valid UTF-16",
+            path.display()
+        )
+    })
 }
 
 fn set_managed_security_descriptor(path: &Path, sddl: &str) -> anyhow::Result<()> {
@@ -604,35 +705,50 @@ fn restore_security_descriptor(path: &Path, sddl: &str) -> anyhow::Result<()> {
 }
 
 fn set_security_descriptor(path: &Path, sddl: &str, protected: bool) -> anyhow::Result<()> {
-    use windows_sys::Win32::{
-        Foundation::LocalFree,
-        Security::{
-            Authorization::{
-                ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-            },
-            DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
-            PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SetFileSecurityW,
-            UNPROTECTED_DACL_SECURITY_INFORMATION,
-        },
-    };
     let wide_sddl = wide_null(OsStr::new(sddl));
-    let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
-    let converted = unsafe {
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    let conversion = unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            wide_sddl.as_ptr(),
+            PCWSTR(wide_sddl.as_ptr()),
             SDDL_REVISION_1,
             &mut descriptor,
-            ptr::null_mut(),
+            None,
         )
     };
+    let descriptor = LocalSecurityDescriptor(descriptor);
+    conversion.context("failed to build the exact Agent security descriptor")?;
+
+    let mut owner = PSID::default();
+    let mut owner_defaulted = windows::core::BOOL::default();
+    unsafe { GetSecurityDescriptorOwner(descriptor.0, &mut owner, &mut owner_defaulted) }
+        .context("failed to read the owner from the exact Agent security descriptor")?;
     ensure!(
-        converted != 0,
-        "failed to build the exact Agent security descriptor"
+        !owner.is_invalid(),
+        "exact Agent security descriptor has no owner"
     );
-    let wide_path = wide_null(path.as_os_str());
-    let applied = unsafe {
-        SetFileSecurityW(
-            wide_path.as_ptr(),
+
+    let mut dacl_present = windows::core::BOOL::default();
+    let mut dacl = ptr::null_mut::<ACL>();
+    let mut dacl_defaulted = windows::core::BOOL::default();
+    unsafe {
+        GetSecurityDescriptorDacl(
+            descriptor.0,
+            &mut dacl_present,
+            &mut dacl,
+            &mut dacl_defaulted,
+        )
+    }
+    .context("failed to read the DACL from the exact Agent security descriptor")?;
+    ensure!(
+        dacl_present.as_bool() && !dacl.is_null(),
+        "exact Agent security descriptor has no DACL"
+    );
+
+    let handle = open_acl_target_for_write(path)?;
+    let status = unsafe {
+        SetSecurityInfo(
+            handle.0,
+            SE_FILE_OBJECT,
             OWNER_SECURITY_INFORMATION
                 | DACL_SECURITY_INFORMATION
                 | if protected {
@@ -640,14 +756,11 @@ fn set_security_descriptor(path: &Path, sddl: &str, protected: bool) -> anyhow::
                 } else {
                     UNPROTECTED_DACL_SECURITY_INFORMATION
                 },
-            descriptor,
+            Some(owner),
+            None,
+            Some(dacl as *const ACL),
+            None,
         )
     };
-    unsafe { LocalFree(descriptor.cast()) };
-    ensure!(
-        applied != 0,
-        "failed to apply the exact security descriptor to {}",
-        path.display()
-    );
-    Ok(())
+    check_security_status(status, "SetSecurityInfo", path)
 }
