@@ -343,6 +343,22 @@ Assert-Equal $closeTray.GetAttribute("TerminateProcess") "" `
 
 $purgeProperty = Select-One "//w:Property[@Id='PURGE']"
 Assert-Equal $purgeProperty.Secure "yes" "PURGE must survive the client/server MSI boundary."
+$diagnosticsProperty = Select-One "//w:Property[@Id='UNIONC_MAINTENANCE_DIAGNOSTICS']"
+Assert-Equal $diagnosticsProperty.Secure "yes" `
+    "The maintenance diagnostics switch must survive the client/server MSI boundary."
+Assert-Equal $diagnosticsProperty.GetAttribute("Value") "" `
+    "Maintenance diagnostics must remain disabled unless the operator explicitly requests them."
+$diagnosticsLaunches = @($package.SelectNodes(
+    "//w:Launch[contains(@Condition, 'UNIONC_MAINTENANCE_DIAGNOSTICS')]",
+    $namespace
+))
+if ($diagnosticsLaunches.Count -ne 1) {
+    throw "Expected exactly one maintenance diagnostics value gate; found $($diagnosticsLaunches.Count)."
+}
+$diagnosticsLaunch = Select-One `
+    '//w:Launch[@Condition=''NOT UNIONC_MAINTENANCE_DIAGNOSTICS OR UNIONC_MAINTENANCE_DIAGNOSTICS = "1"'']'
+Assert-Contains $diagnosticsLaunch.Message "accepts only the value 1" `
+    "The diagnostics gate must explain that only an exact value of 1 is accepted."
 
 $testOnlyProperties = @($package.SelectNodes(
     "//w:Property[starts-with(@Id, 'UNIONC_TEST_')]",
@@ -358,18 +374,18 @@ if (@($package.SelectNodes("//w:DirectoryRef[@Id='STATEDIRECTORY']/w:Component/w
 
 $actions = @($package.SelectNodes("//w:CustomAction", $namespace))
 $expectedActions = [ordered]@{
-    "RollbackAgentInstall" = @("rollback-install", "rollback", "check")
-    "PrepareAgentInstall" = @("prepare-install", "deferred", "check")
-    "ApplyAgentInstall" = @("apply-install", "deferred", "check")
-    "CommitAgentInstall" = @("commit-install", "commit", "ignore")
-    "RollbackUninstallPreflight" = @("rollback-uninstall-preflight", "rollback", "check")
-    "PreflightAgentUninstall" = @("preflight-uninstall", "deferred", "check")
-    "RollbackPreservedState" = @("rollback-uninstall", "rollback", "check")
-    "PreserveAgentState" = @("preserve-state", "deferred", "check")
-    "CommitPreservedState" = @("commit-uninstall", "commit", "ignore")
-    "RollbackPurgedState" = @("rollback-purge", "rollback", "check")
-    "PreparePurgedState" = @("prepare-purge", "deferred", "check")
-    "CommitPurgedState" = @("commit-purge", "commit", "ignore")
+    "RollbackAgentInstall" = @("rollback-install [UNIONC_MAINTENANCE_DIAGNOSTICS]", "rollback", "check")
+    "PrepareAgentInstall" = @("prepare-install [UNIONC_MAINTENANCE_DIAGNOSTICS]", "deferred", "check")
+    "ApplyAgentInstall" = @("apply-install [UNIONC_MAINTENANCE_DIAGNOSTICS]", "deferred", "check")
+    "CommitAgentInstall" = @("commit-install [UNIONC_MAINTENANCE_DIAGNOSTICS]", "commit", "ignore")
+    "RollbackUninstallPreflight" = @("rollback-uninstall-preflight [UNIONC_MAINTENANCE_DIAGNOSTICS]", "rollback", "check")
+    "PreflightAgentUninstall" = @("preflight-uninstall [UNIONC_MAINTENANCE_DIAGNOSTICS]", "deferred", "check")
+    "RollbackPreservedState" = @("rollback-uninstall [UNIONC_MAINTENANCE_DIAGNOSTICS]", "rollback", "check")
+    "PreserveAgentState" = @("preserve-state [UNIONC_MAINTENANCE_DIAGNOSTICS]", "deferred", "check")
+    "CommitPreservedState" = @("commit-uninstall [UNIONC_MAINTENANCE_DIAGNOSTICS]", "commit", "ignore")
+    "RollbackPurgedState" = @("rollback-purge [UNIONC_MAINTENANCE_DIAGNOSTICS]", "rollback", "check")
+    "PreparePurgedState" = @("prepare-purge [UNIONC_MAINTENANCE_DIAGNOSTICS]", "deferred", "check")
+    "CommitPurgedState" = @("commit-purge [UNIONC_MAINTENANCE_DIAGNOSTICS]", "commit", "ignore")
 }
 $nativeActions = @($actions | Where-Object {
     $_.GetAttribute("BinaryRef") -eq "UnionCAgentMaintenance.exe"
@@ -430,7 +446,7 @@ $helperCommandMatches = [regex]::Matches(
 $helperCommands = @($helperCommandMatches | ForEach-Object { $_.Groups["command"].Value } | Sort-Object -Unique)
 $authoredCommands = @(
     $expectedActions.GetEnumerator() |
-        ForEach-Object { $_.Value[0] } |
+        ForEach-Object { ($_.Value[0] -split ' ', 2)[0] } |
         Sort-Object -Unique
 )
 $commandDifference = @(Compare-Object -ReferenceObject $authoredCommands -DifferenceObject $helperCommands)

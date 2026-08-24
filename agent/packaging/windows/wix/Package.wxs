@@ -49,12 +49,16 @@
     <Launch
       Condition="NOT PURGE OR PURGE = &quot;1&quot;"
       Message="PURGE accepts only the value 1. Omit it for a state-preserving uninstall." />
+    <Launch
+      Condition="NOT UNIONC_MAINTENANCE_DIAGNOSTICS OR UNIONC_MAINTENANCE_DIAGNOSTICS = &quot;1&quot;"
+      Message="UNIONC_MAINTENANCE_DIAGNOSTICS accepts only the value 1. Omit it to disable maintenance diagnostics." />
 
     <Property Id="ARPCONTACT" Value="UnionC maintainers" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/isarmg/union-rust" />
     <Property Id="ARPNOMODIFY" Value="1" />
     <Property Id="ARPNOREPAIR" Value="1" />
     <Property Id="PURGE" Secure="yes" />
+    <Property Id="UNIONC_MAINTENANCE_DIAGNOSTICS" Secure="yes" />
     <!-- Formatted only after costing; the WiX helper launches it with Explorer's normal token. -->
     <Property Id="WixUnelevatedShellExecTarget" Value="[#TrayExecutable]" />
     <StandardDirectory Id="ProgramFiles64Folder">
@@ -194,28 +198,28 @@
     <CustomAction
       Id="RollbackAgentInstall"
       BinaryRef="UnionCAgentMaintenance.exe"
-      ExeCommand="rollback-install"
+      ExeCommand="rollback-install [UNIONC_MAINTENANCE_DIAGNOSTICS]"
       Execute="rollback"
       Impersonate="no"
       Return="check" />
     <CustomAction
       Id="PrepareAgentInstall"
       BinaryRef="UnionCAgentMaintenance.exe"
-      ExeCommand="prepare-install"
+      ExeCommand="prepare-install [UNIONC_MAINTENANCE_DIAGNOSTICS]"
       Execute="deferred"
       Impersonate="no"
       Return="check" />
     <CustomAction
       Id="ApplyAgentInstall"
       BinaryRef="UnionCAgentMaintenance.exe"
-      ExeCommand="apply-install"
+      ExeCommand="apply-install [UNIONC_MAINTENANCE_DIAGNOSTICS]"
       Execute="deferred"
       Impersonate="no"
       Return="check" />
     <CustomAction
       Id="CommitAgentInstall"
       BinaryRef="UnionCAgentMaintenance.exe"
-      ExeCommand="commit-install"
+      ExeCommand="commit-install [UNIONC_MAINTENANCE_DIAGNOSTICS]"
       Execute="commit"
       Impersonate="no"
       Return="ignore" />
@@ -223,56 +227,56 @@
     <CustomAction
       Id="RollbackUninstallPreflight"
       BinaryRef="UnionCAgentMaintenance.exe"
-      ExeCommand="rollback-uninstall-preflight"
+      ExeCommand="rollback-uninstall-preflight [UNIONC_MAINTENANCE_DIAGNOSTICS]"
       Execute="rollback"
       Impersonate="no"
       Return="check" />
     <CustomAction
       Id="PreflightAgentUninstall"
       BinaryRef="UnionCAgentMaintenance.exe"
-      ExeCommand="preflight-uninstall"
+      ExeCommand="preflight-uninstall [UNIONC_MAINTENANCE_DIAGNOSTICS]"
       Execute="deferred"
       Impersonate="no"
       Return="check" />
     <CustomAction
       Id="RollbackPreservedState"
       BinaryRef="UnionCAgentMaintenance.exe"
-      ExeCommand="rollback-uninstall"
+      ExeCommand="rollback-uninstall [UNIONC_MAINTENANCE_DIAGNOSTICS]"
       Execute="rollback"
       Impersonate="no"
       Return="check" />
     <CustomAction
       Id="PreserveAgentState"
       BinaryRef="UnionCAgentMaintenance.exe"
-      ExeCommand="preserve-state"
+      ExeCommand="preserve-state [UNIONC_MAINTENANCE_DIAGNOSTICS]"
       Execute="deferred"
       Impersonate="no"
       Return="check" />
     <CustomAction
       Id="CommitPreservedState"
       BinaryRef="UnionCAgentMaintenance.exe"
-      ExeCommand="commit-uninstall"
+      ExeCommand="commit-uninstall [UNIONC_MAINTENANCE_DIAGNOSTICS]"
       Execute="commit"
       Impersonate="no"
       Return="ignore" />
     <CustomAction
       Id="RollbackPurgedState"
       BinaryRef="UnionCAgentMaintenance.exe"
-      ExeCommand="rollback-purge"
+      ExeCommand="rollback-purge [UNIONC_MAINTENANCE_DIAGNOSTICS]"
       Execute="rollback"
       Impersonate="no"
       Return="check" />
     <CustomAction
       Id="PreparePurgedState"
       BinaryRef="UnionCAgentMaintenance.exe"
-      ExeCommand="prepare-purge"
+      ExeCommand="prepare-purge [UNIONC_MAINTENANCE_DIAGNOSTICS]"
       Execute="deferred"
       Impersonate="no"
       Return="check" />
     <CustomAction
       Id="CommitPurgedState"
       BinaryRef="UnionCAgentMaintenance.exe"
-      ExeCommand="commit-purge"
+      ExeCommand="commit-purge [UNIONC_MAINTENANCE_DIAGNOSTICS]"
       Execute="commit"
       Impersonate="no"
       Return="ignore" />

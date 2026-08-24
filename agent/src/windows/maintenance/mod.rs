@@ -2,6 +2,140 @@
 use anyhow::{Context, bail, ensure};
 
 #[cfg(any(windows, test))]
+const MAINTENANCE_DIAGNOSTIC_MAX_BYTES: usize = 64 * 1024;
+#[cfg(any(windows, test))]
+const MAINTENANCE_DIAGNOSTIC_FORMAT: &str = "unionc-agent-maintenance-diagnostic-v1";
+#[cfg(any(windows, test))]
+const MAINTENANCE_DIAGNOSTIC_SDDL: &str = "O:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)";
+
+#[cfg(any(windows, test))]
+#[derive(Debug, PartialEq, Eq)]
+struct MaintenanceInvocation {
+    command: String,
+    diagnostics: bool,
+}
+
+#[cfg(any(windows, test))]
+fn is_maintenance_command(command: &str) -> bool {
+    matches!(
+        command,
+        "prepare-install"
+            | "apply-install"
+            | "rollback-install"
+            | "commit-install"
+            | "preflight-uninstall"
+            | "rollback-uninstall-preflight"
+            | "preserve-state"
+            | "rollback-uninstall"
+            | "commit-uninstall"
+            | "prepare-purge"
+            | "rollback-purge"
+            | "commit-purge"
+    )
+}
+
+#[cfg(any(windows, test))]
+fn parse_maintenance_arguments(
+    arguments: impl IntoIterator<Item = std::ffi::OsString>,
+) -> anyhow::Result<MaintenanceInvocation> {
+    let mut arguments = arguments.into_iter();
+    let command = arguments
+        .next()
+        .context("expected one maintenance command")?;
+    let command = command
+        .to_str()
+        .context("maintenance command must be valid Unicode")?
+        .to_owned();
+    ensure!(
+        is_maintenance_command(&command),
+        "unknown maintenance command"
+    );
+    let diagnostics = match arguments.next() {
+        None => false,
+        Some(value) => {
+            ensure!(
+                value.to_str() == Some("1"),
+                "maintenance diagnostics flag must be the exact Unicode value 1"
+            );
+            true
+        }
+    };
+    ensure!(
+        arguments.next().is_none(),
+        "maintenance commands accept only the command and optional diagnostics flag"
+    );
+    Ok(MaintenanceInvocation {
+        command,
+        diagnostics,
+    })
+}
+
+#[cfg(any(windows, test))]
+struct BoundedDiagnosticPayload {
+    bytes: Vec<u8>,
+    max_bytes: usize,
+    truncated: bool,
+}
+
+#[cfg(any(windows, test))]
+impl BoundedDiagnosticPayload {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            max_bytes,
+            truncated: false,
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
+impl std::fmt::Write for BoundedDiagnosticPayload {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        let remaining = self.max_bytes.saturating_sub(self.bytes.len());
+        if remaining == 0 {
+            self.truncated |= !value.is_empty();
+            return Ok(());
+        }
+        let mut accepted = value.len().min(remaining);
+        while !value.is_char_boundary(accepted) {
+            accepted -= 1;
+        }
+        self.bytes.extend_from_slice(&value.as_bytes()[..accepted]);
+        self.truncated |= accepted != value.len();
+        Ok(())
+    }
+}
+
+#[cfg(any(windows, test))]
+fn maintenance_diagnostic_payload(command: &str, error: &anyhow::Error) -> Vec<u8> {
+    use std::fmt::Write;
+
+    let mut payload = BoundedDiagnosticPayload::new(MAINTENANCE_DIAGNOSTIC_MAX_BYTES);
+    let _ = write!(
+        payload,
+        "format={MAINTENANCE_DIAGNOSTIC_FORMAT}\nversion={}\ncommand={command}\nerror-chain={error:#}\n",
+        env!("CARGO_PKG_VERSION")
+    );
+    if !payload.truncated {
+        return payload.bytes;
+    }
+
+    // Preserve the innermost cause when an unusually large outer context does
+    // not fit. The explicit marker keeps a bounded payload from masquerading
+    // as a complete anyhow chain. Reserve one byte for a final newline so a
+    // truncated UTF-8 value still produces a complete text record.
+    let mut payload = BoundedDiagnosticPayload::new(MAINTENANCE_DIAGNOSTIC_MAX_BYTES - 1);
+    let _ = write!(
+        payload,
+        "format={MAINTENANCE_DIAGNOSTIC_FORMAT}\nversion={}\ncommand={command}\nerror-chain=[truncated]\ntruncated=true\nleaf-cause={}\nouter-context={error}",
+        env!("CARGO_PKG_VERSION"),
+        error.root_cause()
+    );
+    payload.bytes.push(b'\n');
+    payload.bytes
+}
+
+#[cfg(any(windows, test))]
 fn checked_rollback_path_status(
     path: &std::path::Path,
     label: &str,
@@ -698,14 +832,16 @@ pub(crate) fn entry() {
 #[cfg(windows)]
 mod windows_maintenance {
     use super::{
-        AclCurrentPathFact, AclSnapshotPathFact, MAX_ACL_SNAPSHOT_BYTES, MAX_ACL_SNAPSHOT_ENTRIES,
+        AclCurrentPathFact, AclSnapshotPathFact, MAINTENANCE_DIAGNOSTIC_MAX_BYTES,
+        MAINTENANCE_DIAGNOSTIC_SDDL, MAX_ACL_SNAPSHOT_BYTES, MAX_ACL_SNAPSHOT_ENTRIES,
         MAX_MAINTENANCE_PATH_BYTES, MAX_MAINTENANCE_TREE_NODES, MAX_OPEN_MUTATION_DIRECTORIES,
         OpenedManagedTargetFacts, checked_child_directory_depth, checked_rename_buffer_plan,
-        checked_rename_storage_bytes, enqueue_bounded_tree_path, managed_state_security_descriptor,
-        parse_managed_dacl, parse_program_dacl, program_security_descriptor,
-        protected_directory_security_descriptor, read_file_bounded, record_bounded_tree_node,
-        rollback_path_exists, run_validated_acl_restore_plan, try_push_bounded_acl_snapshot_entry,
-        try_push_bounded_path, try_reserve_bounded, validate_opened_managed_target_facts,
+        checked_rename_storage_bytes, enqueue_bounded_tree_path, maintenance_diagnostic_payload,
+        managed_state_security_descriptor, parse_maintenance_arguments, parse_managed_dacl,
+        parse_program_dacl, program_security_descriptor, protected_directory_security_descriptor,
+        read_file_bounded, record_bounded_tree_node, rollback_path_exists,
+        run_validated_acl_restore_plan, try_push_bounded_acl_snapshot_entry, try_push_bounded_path,
+        try_reserve_bounded, validate_opened_managed_target_facts,
     };
     use std::{
         ffi::{OsStr, OsString, c_void},
@@ -728,7 +864,7 @@ mod windows_maintenance {
         Win32::{
             Foundation::{
                 CloseHandle, ERROR_NOT_ALL_ASSIGNED, ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SUCCESS,
-                GetLastError, HANDLE, HLOCAL, LocalFree, SetLastError,
+                GENERIC_WRITE, GetLastError, HANDLE, HLOCAL, LocalFree, SetLastError,
             },
             Security::{
                 ACL, AdjustTokenPrivileges,
@@ -745,12 +881,13 @@ mod windows_maintenance {
                 UNPROTECTED_DACL_SECURITY_INFORMATION,
             },
             Storage::FileSystem::{
-                BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, CreateFileW, DELETE,
-                FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO,
-                FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
-                FILE_RENAME_INFO, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo,
-                FileRenameInfo, GetFileInformationByHandle, OPEN_EXISTING, READ_CONTROL,
-                SetFileInformationByHandle, WRITE_DAC, WRITE_OWNER,
+                BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW, DELETE,
+                FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
+                FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+                FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_SHARE_MODE, FILE_SHARE_READ,
+                FILE_SHARE_WRITE, FileDispositionInfo, FileRenameInfo, FlushFileBuffers,
+                GetFileInformationByHandle, OPEN_EXISTING, READ_CONTROL,
+                SetFileInformationByHandle, WRITE_DAC, WRITE_OWNER, WriteFile,
             },
             System::{
                 Com::CoTaskMemFree,
@@ -784,6 +921,11 @@ mod windows_maintenance {
         concat!("UnionC Agent.uninstall-journal-", env!("CARGO_PKG_VERSION"));
     const PURGE_DIRECTORY: &str =
         concat!("UnionC Agent.purge-quarantine-", env!("CARGO_PKG_VERSION"));
+    const DIAGNOSTIC_FILE: &str = concat!(
+        "UnionC Agent.maintenance-diagnostic-",
+        env!("CARGO_PKG_VERSION"),
+        ".txt"
+    );
     const SNAPSHOT_FORMAT: u32 = 2;
     const STATE_MARKER: &str = concat!(".unionc-agent-managed-", env!("CARGO_PKG_VERSION"));
     const STATE_MARKER_CONTENT: &str = concat!(
@@ -809,6 +951,7 @@ mod windows_maintenance {
         journal_root: PathBuf,
         uninstall_journal_root: PathBuf,
         quarantine_root: PathBuf,
+        diagnostic_file: PathBuf,
         program_exe: PathBuf,
         config: PathBuf,
     }
@@ -852,39 +995,41 @@ mod windows_maintenance {
     }
 
     pub fn run() -> anyhow::Result<()> {
-        let mut arguments = std::env::args_os().skip(1);
-        let command = arguments
-            .next()
-            .context("expected one maintenance command")?;
-        ensure!(
-            arguments.next().is_none(),
-            "maintenance commands take no arguments"
-        );
-        let command = command
-            .to_str()
-            .context("maintenance command must be valid Unicode")?;
-        enable_restore_privileges()?;
+        let invocation = parse_maintenance_arguments(std::env::args_os().skip(1))?;
         let paths = FixedPaths::discover()?;
-        match command {
-            "prepare-install" => prepare_install(&paths),
-            "apply-install" => apply_install(&paths),
-            "rollback-install" => rollback_install(&paths),
-            "commit-install" => commit_install(&paths),
-            "preflight-uninstall" => preflight_uninstall(&paths),
-            "rollback-uninstall-preflight" => rollback_uninstall_preflight(&paths),
-            "preserve-state" => preserve_state(&paths),
-            "rollback-uninstall" => rollback_uninstall(&paths),
-            "commit-uninstall" => commit_uninstall(&paths),
-            "prepare-purge" => prepare_purge(&paths),
-            "rollback-purge" => rollback_purge(&paths),
-            "commit-purge" => commit_purge(&paths),
-            _ => bail!(
-                "unknown maintenance command; expected prepare-install, apply-install, \
+        let result = (|| {
+            enable_restore_privileges()?;
+            match invocation.command.as_str() {
+                "prepare-install" => prepare_install(&paths),
+                "apply-install" => apply_install(&paths),
+                "rollback-install" => rollback_install(&paths),
+                "commit-install" => commit_install(&paths),
+                "preflight-uninstall" => preflight_uninstall(&paths),
+                "rollback-uninstall-preflight" => rollback_uninstall_preflight(&paths),
+                "preserve-state" => preserve_state(&paths),
+                "rollback-uninstall" => rollback_uninstall(&paths),
+                "commit-uninstall" => commit_uninstall(&paths),
+                "prepare-purge" => prepare_purge(&paths),
+                "rollback-purge" => rollback_purge(&paths),
+                "commit-purge" => commit_purge(&paths),
+                _ => bail!(
+                    "unknown maintenance command; expected prepare-install, apply-install, \
                  rollback-install, commit-install, preflight-uninstall, preserve-state, \
                  rollback-uninstall-preflight, rollback-uninstall, commit-uninstall, \
                  prepare-purge, rollback-purge, or commit-purge"
-            ),
+                ),
+            }
+        })();
+        if invocation.diagnostics
+            && let Err(error) = &result
+        {
+            let _ = write_first_maintenance_diagnostic(
+                &paths.diagnostic_file,
+                &invocation.command,
+                error,
+            );
         }
+        result
     }
 
     fn enable_restore_privileges() -> anyhow::Result<()> {
@@ -940,6 +1085,7 @@ mod windows_maintenance {
                 journal_root: program_data.join(JOURNAL_DIRECTORY),
                 uninstall_journal_root: program_data.join(UNINSTALL_JOURNAL_DIRECTORY),
                 quarantine_root: program_data.join(PURGE_DIRECTORY),
+                diagnostic_file: program_data.join(DIAGNOSTIC_FILE),
                 program_root,
                 state_root,
             })
@@ -1421,5 +1567,104 @@ mod maintenance_resource_limit_tests {
         std::fs::remove_file(path).unwrap();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("64-byte hard limit"));
+    }
+}
+
+#[cfg(test)]
+mod maintenance_diagnostic_tests {
+    use super::*;
+
+    fn arguments(values: &[&str]) -> Vec<std::ffi::OsString> {
+        values.iter().map(std::ffi::OsString::from).collect()
+    }
+
+    #[test]
+    fn diagnostics_flag_is_optional_and_exact() {
+        assert_eq!(
+            parse_maintenance_arguments(arguments(&["apply-install"])).unwrap(),
+            MaintenanceInvocation {
+                command: "apply-install".to_owned(),
+                diagnostics: false,
+            }
+        );
+        assert_eq!(
+            parse_maintenance_arguments(arguments(&["apply-install", "1"])).unwrap(),
+            MaintenanceInvocation {
+                command: "apply-install".to_owned(),
+                diagnostics: true,
+            }
+        );
+        for invalid in ["", "0", "01", "true", "１"] {
+            assert!(parse_maintenance_arguments(arguments(&["apply-install", invalid])).is_err());
+        }
+        assert!(parse_maintenance_arguments(arguments(&["apply-install", "1", "extra"])).is_err());
+        assert!(parse_maintenance_arguments(arguments(&["not-a-command", "1"])).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_and_diagnostics_flag_must_be_unicode() {
+        use std::os::unix::ffi::OsStringExt;
+
+        assert!(
+            parse_maintenance_arguments(vec![std::ffi::OsString::from_vec(vec![0xff])]).is_err()
+        );
+        assert!(
+            parse_maintenance_arguments(vec![
+                std::ffi::OsString::from("apply-install"),
+                std::ffi::OsString::from_vec(vec![0xff]),
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn diagnostic_payload_is_utf8_versioned_bounded_and_keeps_the_error_chain() {
+        let error = anyhow::anyhow!("leaf failure").context("outer operation");
+        let payload = maintenance_diagnostic_payload("apply-install", &error);
+        let text = std::str::from_utf8(&payload).unwrap();
+        assert!(text.contains("format=unionc-agent-maintenance-diagnostic-v1\n"));
+        assert!(text.contains(concat!("version=", env!("CARGO_PKG_VERSION"), "\n")));
+        assert!(text.contains("command=apply-install\n"));
+        assert!(text.contains("error-chain=outer operation: leaf failure\n"));
+
+        let oversized = anyhow::anyhow!("critical leaf code 123")
+            .context("诊断".repeat(MAINTENANCE_DIAGNOSTIC_MAX_BYTES));
+        let bounded = maintenance_diagnostic_payload("apply-install", &oversized);
+        assert!(bounded.len() <= MAINTENANCE_DIAGNOSTIC_MAX_BYTES);
+        let bounded = std::str::from_utf8(&bounded).unwrap();
+        assert!(bounded.contains("error-chain=[truncated]\n"));
+        assert!(bounded.contains("truncated=true\n"));
+        assert!(bounded.contains("leaf-cause=critical leaf code 123\n"));
+
+        let oversized_leaf = anyhow::anyhow!("诊断".repeat(MAINTENANCE_DIAGNOSTIC_MAX_BYTES));
+        let bounded_leaf = maintenance_diagnostic_payload("apply-install", &oversized_leaf);
+        assert!(bounded_leaf.len() <= MAINTENANCE_DIAGNOSTIC_MAX_BYTES);
+        assert_eq!(bounded_leaf.last(), Some(&b'\n'));
+        let bounded_leaf = std::str::from_utf8(&bounded_leaf).unwrap();
+        assert!(bounded_leaf.contains("error-chain=[truncated]\n"));
+        assert!(bounded_leaf.contains("truncated=true\n"));
+        assert!(bounded_leaf.contains("leaf-cause=诊断"));
+    }
+
+    #[test]
+    fn diagnostic_file_creation_contract_is_fixed_secure_first_only_and_best_effort() {
+        assert_eq!(
+            MAINTENANCE_DIAGNOSTIC_SDDL,
+            "O:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)"
+        );
+        let module = include_str!("mod.rs");
+        let filesystem = include_str!("filesystem.rs");
+        assert!(module.contains("program_data.join(DIAGNOSTIC_FILE)"));
+        assert!(module.contains("if invocation.diagnostics && let Err(error) = &result"));
+        assert!(module.contains("let _ = write_first_maintenance_diagnostic("));
+        assert!(filesystem.contains("CreateFileW("));
+        assert!(filesystem.contains("CREATE_NEW"));
+        assert!(filesystem.contains("Some(&attributes)"));
+        assert!(filesystem.contains("GENERIC_WRITE.0 | DELETE.0"));
+        assert!(filesystem.contains("cleanup_required: true"));
+        assert!(filesystem.contains("FlushFileBuffers(handle.handle)"));
+        assert!(filesystem.contains("rename_diagnostic_to_final(handle.handle, path)?"));
+        assert!(filesystem.contains("handle.cleanup_required = false"));
     }
 }

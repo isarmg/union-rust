@@ -437,6 +437,177 @@ fn write_new_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
+struct DiagnosticFileHandle {
+    handle: HANDLE,
+    cleanup_required: bool,
+}
+
+impl Drop for DiagnosticFileHandle {
+    fn drop(&mut self) {
+        if !self.handle.is_invalid() {
+            if self.cleanup_required {
+                let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+                let _ = unsafe {
+                    SetFileInformationByHandle(
+                        self.handle,
+                        FileDispositionInfo,
+                        (&raw const disposition).cast(),
+                        u32::try_from(size_of::<FILE_DISPOSITION_INFO>()).unwrap_or(u32::MAX),
+                    )
+                };
+            }
+            let _ = unsafe { CloseHandle(self.handle) };
+        }
+    }
+}
+
+fn rename_diagnostic_to_final(handle: HANDLE, destination: &Path) -> anyhow::Result<()> {
+    ensure!(
+        destination.is_absolute(),
+        "maintenance diagnostic destination is not absolute"
+    );
+    let mut file_name_utf16_units = 0usize;
+    for code_unit in destination.as_os_str().encode_wide() {
+        ensure!(
+            code_unit != 0,
+            "maintenance diagnostic destination contains an embedded NUL"
+        );
+        file_name_utf16_units = file_name_utf16_units
+            .checked_add(1)
+            .context("maintenance diagnostic destination length overflowed")?;
+    }
+    let file_name_offset = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
+    let plan = checked_rename_buffer_plan(
+        file_name_utf16_units,
+        file_name_offset,
+        size_of::<usize>(),
+        MAX_MAINTENANCE_PATH_BYTES,
+    )?;
+    ensure!(
+        std::mem::align_of::<FILE_RENAME_INFO>() <= std::mem::align_of::<usize>(),
+        "FILE_RENAME_INFO requires unsupported storage alignment"
+    );
+    let mut storage = Vec::<usize>::new();
+    storage
+        .try_reserve_exact(plan.storage_words)
+        .context("failed to reserve the bounded diagnostic rename buffer")?;
+    storage.resize(plan.storage_words, 0);
+    let allocated_bytes = checked_rename_storage_bytes(
+        plan,
+        size_of::<usize>(),
+        size_of::<FILE_RENAME_INFO>(),
+        file_name_offset,
+    )?;
+    ensure!(
+        storage
+            .len()
+            .checked_mul(size_of::<usize>())
+            .context("diagnostic rename information Vec size overflowed")?
+            == allocated_bytes,
+        "diagnostic rename allocation does not match its checked plan"
+    );
+    let information = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    unsafe {
+        ptr::write(information, FILE_RENAME_INFO::default());
+        (*information).Anonymous.ReplaceIfExists = false;
+        (*information).RootDirectory = HANDLE::default();
+        (*information).FileNameLength = plan.file_name_bytes;
+        let file_name = storage
+            .as_mut_ptr()
+            .cast::<u8>()
+            .add(file_name_offset)
+            .cast::<u16>();
+        for (index, code_unit) in destination.as_os_str().encode_wide().enumerate() {
+            file_name.add(index).write(code_unit);
+        }
+        SetFileInformationByHandle(
+            handle,
+            FileRenameInfo,
+            information.cast(),
+            plan.buffer_bytes,
+        )
+    }
+    .with_context(|| {
+        format!(
+            "failed to publish the first complete maintenance diagnostic {}",
+            destination.display()
+        )
+    })
+}
+
+fn write_first_maintenance_diagnostic(
+    path: &Path,
+    command: &str,
+    error: &anyhow::Error,
+) -> anyhow::Result<()> {
+    let payload = maintenance_diagnostic_payload(command, error);
+    ensure!(
+        payload.len() <= MAINTENANCE_DIAGNOSTIC_MAX_BYTES,
+        "maintenance diagnostic payload exceeded its hard limit"
+    );
+
+    let descriptor_text = wide_null(OsStr::new(MAINTENANCE_DIAGNOSTIC_SDDL));
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PCWSTR(descriptor_text.as_ptr()),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            None,
+        )
+    }
+    .context("failed to build the maintenance diagnostic security descriptor")?;
+    let descriptor = LocalSecurityDescriptor(descriptor);
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>())
+            .context("SECURITY_ATTRIBUTES size does not fit in a DWORD")?,
+        lpSecurityDescriptor: descriptor.0.0,
+        bInheritHandle: false.into(),
+    };
+    let staging_path = path.with_extension(format!("{}.pending", uuid::Uuid::new_v4()));
+    let wide_staging_path = wide_null(staging_path.as_os_str());
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR(wide_staging_path.as_ptr()),
+            GENERIC_WRITE.0 | DELETE.0,
+            FILE_SHARE_MODE::default(),
+            Some(&attributes),
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+    }
+    .with_context(|| {
+        format!(
+            "failed to create a private maintenance diagnostic staging file beside {}",
+            path.display(),
+        )
+    })?;
+    let mut handle = DiagnosticFileHandle {
+        handle,
+        cleanup_required: true,
+    };
+
+    let mut remaining = payload.as_slice();
+    while !remaining.is_empty() {
+        let mut written = 0;
+        unsafe { WriteFile(handle.handle, Some(remaining), Some(&mut written), None) }
+            .context("failed to write the maintenance diagnostic")?;
+        ensure!(written != 0, "maintenance diagnostic write made no progress");
+        let written = usize::try_from(written)?;
+        ensure!(
+            written <= remaining.len(),
+            "maintenance diagnostic write exceeded its input buffer"
+        );
+        remaining = &remaining[written..];
+    }
+    unsafe { FlushFileBuffers(handle.handle) }
+        .context("failed to flush the maintenance diagnostic")?;
+    rename_diagnostic_to_final(handle.handle, path)?;
+    handle.cleanup_required = false;
+    Ok(())
+}
+
 fn replace_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     use windows_sys::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,

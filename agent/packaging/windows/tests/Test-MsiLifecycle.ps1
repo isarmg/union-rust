@@ -51,6 +51,9 @@ $uninstallJournal = Join-Path $env:ProgramData `
     "UnionC Agent.uninstall-journal-$ProductVersion"
 $purgeQuarantine = Join-Path $env:ProgramData `
     "UnionC Agent.purge-quarantine-$ProductVersion"
+$maintenanceDiagnostic = Join-Path $env:ProgramData `
+    "UnionC Agent.maintenance-diagnostic-$ProductVersion.txt"
+$maximumMaintenanceDiagnosticBytes = 64KB
 $logs = $LogDirectory
 New-Item -ItemType Directory -Force $logs | Out-Null
 
@@ -82,6 +85,134 @@ namespace UnionC {
 "@
 }
 
+function Get-MaintenanceDiagnosticItem {
+    try {
+        return (Get-Item -LiteralPath $maintenanceDiagnostic -Force -ErrorAction Stop)
+    }
+    catch [Management.Automation.ItemNotFoundException] {
+        return $null
+    }
+}
+
+function Assert-MaintenanceDiagnosticAbsent([string]$Context) {
+    if ($null -ne (Get-MaintenanceDiagnosticItem)) {
+        throw "$Context found an unexpected maintenance diagnostic: $maintenanceDiagnostic"
+    }
+}
+
+function Read-AndRemoveMaintenanceDiagnostic {
+    $item = Get-MaintenanceDiagnosticItem
+    if ($null -eq $item) {
+        return $null
+    }
+
+    if ($item.PSIsContainer -or
+        (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw "Maintenance diagnostic is not a regular non-reparse file: $maintenanceDiagnostic"
+    }
+    if ($item.Length -gt $maximumMaintenanceDiagnosticBytes) {
+        throw ("Maintenance diagnostic exceeds the {0}-byte limit: {1}" -f `
+            $maximumMaintenanceDiagnosticBytes, $maintenanceDiagnostic)
+    }
+
+    $acl = Get-Acl -LiteralPath $maintenanceDiagnostic
+    $ownerSid = $acl.GetOwner(
+        [Security.Principal.SecurityIdentifier]
+    ).Value
+    if ($ownerSid -ne "S-1-5-18" -or -not $acl.AreAccessRulesProtected) {
+        throw "Maintenance diagnostic is not SYSTEM-owned with a protected DACL."
+    }
+
+    $rules = @($acl.Access)
+    $expectedSids = @{
+        "S-1-5-18" = $true
+        "S-1-5-32-544" = $true
+    }
+    if ($rules.Count -ne $expectedSids.Count) {
+        throw "Maintenance diagnostic DACL does not contain exactly SYSTEM and Administrators."
+    }
+    foreach ($rule in $rules) {
+        $sid = $rule.IdentityReference.Translate(
+            [Security.Principal.SecurityIdentifier]
+        ).Value
+        if (-not $expectedSids.ContainsKey($sid) -or
+            $rule.AccessControlType -ne `
+                [Security.AccessControl.AccessControlType]::Allow -or
+            [int]$rule.FileSystemRights -ne 0x1f01ff -or
+            $rule.InheritanceFlags -ne `
+                [Security.AccessControl.InheritanceFlags]::None -or
+            $rule.PropagationFlags -ne `
+                [Security.AccessControl.PropagationFlags]::None -or
+            $rule.IsInherited) {
+            throw "Maintenance diagnostic contains an unexpected DACL entry for $sid."
+        }
+        $expectedSids.Remove($sid) | Out-Null
+    }
+    if ($expectedSids.Count -ne 0) {
+        throw "Maintenance diagnostic is missing a required SYSTEM or Administrators DACL entry."
+    }
+
+    $stream = [IO.File]::Open(
+        $maintenanceDiagnostic,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::None
+    )
+    try {
+        if ($stream.Length -gt $maximumMaintenanceDiagnosticBytes) {
+            throw ("Maintenance diagnostic exceeds the {0}-byte limit: {1}" -f `
+                $maximumMaintenanceDiagnosticBytes, $maintenanceDiagnostic)
+        }
+        $bytes = [byte[]]::new($maximumMaintenanceDiagnosticBytes + 1)
+        $length = 0
+        while ($length -lt $bytes.Length) {
+            $read = $stream.Read($bytes, $length, $bytes.Length - $length)
+            if ($read -eq 0) { break }
+            $length += $read
+        }
+        if ($length -gt $maximumMaintenanceDiagnosticBytes) {
+            throw ("Maintenance diagnostic exceeds the {0}-byte limit: {1}" -f `
+                $maximumMaintenanceDiagnosticBytes, $maintenanceDiagnostic)
+        }
+        $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+        $content = $strictUtf8.GetString($bytes, 0, $length)
+    }
+    finally {
+        $stream.Dispose()
+    }
+
+    if ([string]::IsNullOrWhiteSpace($content)) {
+        throw "Maintenance diagnostic is empty: $maintenanceDiagnostic"
+    }
+    $fields = @($content -split "`n", 4)
+    $knownCommands = @(
+        "prepare-install", "apply-install", "rollback-install", "commit-install",
+        "preflight-uninstall", "rollback-uninstall-preflight", "preserve-state",
+        "rollback-uninstall", "commit-uninstall", "prepare-purge", "rollback-purge",
+        "commit-purge"
+    )
+    if ($fields.Count -ne 4 -or
+        $fields[0] -cne "format=unionc-agent-maintenance-diagnostic-v1" -or
+        $fields[1] -cne "version=$ProductVersion" -or
+        -not $fields[2].StartsWith("command=", [StringComparison]::Ordinal) -or
+        $fields[2].Substring("command=".Length) -cnotin $knownCommands -or
+        -not $fields[3].StartsWith("error-chain=", [StringComparison]::Ordinal) -or
+        [string]::IsNullOrWhiteSpace($fields[3].Substring("error-chain=".Length))) {
+        throw "Maintenance diagnostic has an invalid fixed header or error chain."
+    }
+    Remove-Item -LiteralPath $maintenanceDiagnostic -Force
+    Assert-MaintenanceDiagnosticAbsent "Maintenance diagnostic cleanup"
+    return $content
+}
+
+function Write-MaintenanceDiagnostic([string]$Content) {
+    foreach ($line in ($Content -split "`r`n|`n|`r")) {
+        # The fixed prefix prevents diagnostic text from being interpreted as a
+        # GitHub Actions workflow command even when a cause begins with `::`.
+        Write-Host ("[maintenance] {0}" -f $line)
+    }
+}
+
 function Invoke-Msi {
     param(
         [Parameter(Mandatory = $true)][ValidateSet('/i', '/x')][string]$Operation,
@@ -90,14 +221,27 @@ function Invoke-Msi {
         [string]$Properties = "",
         [switch]$ExpectFailure
     )
+    Assert-MaintenanceDiagnosticAbsent "Before MSI operation '$Name'"
     $log = Join-Path $logs "${Name}.log"
-    $arguments = "${Operation} `"${Package}`" ${Properties} /qn /norestart /l*v `"${log}`""
+    $arguments = ("${Operation} `"${Package}`" ${Properties} " +
+        "UNIONC_MAINTENANCE_DIAGNOSTICS=1 /qn /norestart /l*v `"${log}`"")
     $process = Start-Process -FilePath msiexec.exe -ArgumentList $arguments -Wait -PassThru
+    $diagnostic = Read-AndRemoveMaintenanceDiagnostic
     $succeeded = $process.ExitCode -in @(0, 3010)
+    if ($succeeded -and $null -ne $diagnostic) {
+        Write-MaintenanceDiagnostic $diagnostic
+        throw "MSI operation '$Name' succeeded after a maintenance helper reported failure."
+    }
     if ($ExpectFailure -and $succeeded) {
         throw "MSI operation '$Name' unexpectedly succeeded. Log: $log"
     }
+    if ($ExpectFailure -and -not $succeeded -and $null -eq $diagnostic) {
+        throw "MSI operation '$Name' failed without the required maintenance diagnostic. Log: $log"
+    }
     if (-not $ExpectFailure -and -not $succeeded) {
+        if ($null -ne $diagnostic) {
+            Write-MaintenanceDiagnostic $diagnostic
+        }
         $failureContext = @(Select-String -LiteralPath $log `
             -SimpleMatch "Return value 3" -Context 80, 20)
         if ($failureContext.Count -eq 0) {
@@ -290,6 +434,7 @@ function Assert-AgentCompletelyAbsent {
         (Test-Path -LiteralPath $installJournal) -or
         (Test-Path -LiteralPath $uninstallJournal) -or
         (Test-Path -LiteralPath $purgeQuarantine) -or
+        (Test-Path -LiteralPath $maintenanceDiagnostic) -or
         (Test-Path -LiteralPath $trayShortcut) -or
         (Get-ItemProperty -LiteralPath $trayRunKey -Name $trayRunName `
             -ErrorAction SilentlyContinue) -or
@@ -366,6 +511,7 @@ function Assert-PreservedStateAcl([string]$RetiredServiceSid) {
 $existingArpEntries = @(Get-UnionCAgentArpEntries)
 $runningTrayProcesses = @(Get-Process -Name "unionc-agent-tray" `
     -ErrorAction SilentlyContinue)
+Assert-MaintenanceDiagnosticAbsent "Before MSI lifecycle smoke test"
 if ((Test-Path -LiteralPath $installedRoot) -or
     (Test-Path -LiteralPath $stateRoot) -or
     (Test-Path -LiteralPath $installJournal) -or
@@ -462,3 +608,4 @@ Assert-TrayIntegration
 Assert-ArpVersion $ProductVersion
 Invoke-Msi /x $currentMsi "purge-uninstall" "PURGE=1"
 Assert-AgentCompletelyAbsent
+Assert-MaintenanceDiagnosticAbsent "After MSI lifecycle smoke test"
