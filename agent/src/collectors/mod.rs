@@ -23,6 +23,8 @@ mod linux_hwmon;
 mod nvidia;
 #[cfg(any(target_os = "windows", test))]
 mod pdh_buffer;
+#[cfg(any(target_os = "windows", test))]
+mod pdh_recovery;
 #[cfg(target_os = "windows")]
 mod windows_gpu;
 
