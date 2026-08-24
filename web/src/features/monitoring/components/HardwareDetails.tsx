@@ -20,6 +20,7 @@ import {
   subtractJsonU64,
 } from "../../../shared/lib/format";
 import { HistoryMetrics } from "./HistoryMetrics";
+import { activateTabFromKeyboard } from "../../../shared/lib/tabs";
 import {
   formatMetric,
   formatPercent,
@@ -292,7 +293,7 @@ export function MonitoringHostPanel({
     <div className="sunshine-host-panel monitoring-host-panel">
       <div className="sunshine-panel-nav-row">
         <nav className="sunshine-subnav-inline" role="tablist" aria-label={`${host.name} 详情分类`}>
-          {DETAIL_SECTIONS.map(({ key, label, Icon }) => (
+          {DETAIL_SECTIONS.map(({ key, label, Icon }, index) => (
             <button
               key={key}
               type="button"
@@ -300,8 +301,15 @@ export function MonitoringHostPanel({
               role="tab"
               aria-selected={section === key}
               aria-controls={`${tabsId}-panel-${key}`}
+              tabIndex={section === key ? 0 : -1}
               className={section === key ? "sunshine-section-tab active" : "sunshine-section-tab"}
               onClick={() => setSection(key)}
+              onKeyDown={(event) => activateTabFromKeyboard(
+                event,
+                DETAIL_SECTIONS,
+                index,
+                (next) => setSection(next.key),
+              )}
             >
               <Icon size={18} /><strong>{label}</strong>
             </button>
@@ -318,30 +326,34 @@ export function MonitoringHostPanel({
           <X size={18} aria-hidden="true" />
         </button>
       </div>
-      <div
-        className="monitoring-detail-tabpanel"
-        role="tabpanel"
-        id={`${tabsId}-panel-${section}`}
-        aria-labelledby={`${tabsId}-tab-${section}`}
-      >
-        {section !== "history" && detailLoading ? <LoadingBlock label="正在读取主机详情" /> : null}
-        {section !== "history" && detailError ? <InlineNotice tone="danger" text={detailError.message} /> : null}
-        {section === "overview" ? <OverviewTables host={host} report={report} /> : null}
-        {section === "network" ? <NetworkTable report={report} /> : null}
-        {section === "storage" ? <StorageTable report={report} /> : null}
-        {section === "gpu" ? <GpuTable report={report} /> : null}
-        {section === "temperature" ? <TemperatureTable report={report} /> : null}
-        {section === "capabilities" ? (
-          <CapabilityTable capabilities={report?.capabilities ?? host.capabilities} />
-        ) : null}
-        {section === "history" ? (
-          <section className="monitoring-history-panel">
-            {historyLoading ? <LoadingBlock label="正在读取历史指标" /> : null}
-            {historyError ? <InlineNotice tone="danger" text={historyError.message} /> : null}
-            <HistoryMetrics points={historyPoints} />
-          </section>
-        ) : null}
-      </div>
+      {DETAIL_SECTIONS.map(({ key }) => (
+        <div
+          key={key}
+          className="monitoring-detail-tabpanel"
+          role="tabpanel"
+          id={`${tabsId}-panel-${key}`}
+          aria-labelledby={`${tabsId}-tab-${key}`}
+          hidden={section !== key}
+        >
+          {section === key && key !== "history" && detailLoading ? <LoadingBlock label="正在读取主机详情" /> : null}
+          {section === key && key !== "history" && detailError ? <InlineNotice tone="danger" text={detailError.message} /> : null}
+          {section === "overview" && key === "overview" ? <OverviewTables host={host} report={report} /> : null}
+          {section === "network" && key === "network" ? <NetworkTable report={report} /> : null}
+          {section === "storage" && key === "storage" ? <StorageTable report={report} /> : null}
+          {section === "gpu" && key === "gpu" ? <GpuTable report={report} /> : null}
+          {section === "temperature" && key === "temperature" ? <TemperatureTable report={report} /> : null}
+          {section === "capabilities" && key === "capabilities" ? (
+            <CapabilityTable capabilities={report?.capabilities ?? host.capabilities} />
+          ) : null}
+          {section === "history" && key === "history" ? (
+            <section className="monitoring-history-panel">
+              {historyLoading ? <LoadingBlock label="正在读取历史指标" /> : null}
+              {historyError ? <InlineNotice tone="danger" text={historyError.message} /> : null}
+              <HistoryMetrics points={historyPoints} />
+            </section>
+          ) : null}
+        </div>
+      ))}
     </div>
   );
 }

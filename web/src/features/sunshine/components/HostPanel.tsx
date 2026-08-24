@@ -22,6 +22,7 @@ import {
 import { sunshineApi as api } from "../api";
 import { parseSunshineConfigDraft } from "../data";
 import { removeMutationFromCache } from "../../../shared/lib/mutations";
+import { activateTabFromKeyboard } from "../../../shared/lib/tabs";
 import { sunshineQueryKeys as queryKeys } from "../queryKeys";
 import type { SunshineHostInfo } from "../types";
 import { AppsSection } from "./AppsSection";
@@ -239,7 +240,7 @@ export function HostPanel({
     <div className="sunshine-host-panel">
       <div className="sunshine-panel-nav-row">
         <nav className="sunshine-subnav-inline" role="tablist" aria-label={`${host.name} 管理功能`}>
-          {HOST_SECTIONS.map(({ key, label, Icon }) => (
+          {HOST_SECTIONS.map(({ key, label, Icon }, index) => (
             <button
               key={key}
               type="button"
@@ -247,8 +248,15 @@ export function HostPanel({
               role="tab"
               aria-selected={section === key}
               aria-controls={`${tabsId}-panel-${key}`}
+              tabIndex={section === key ? 0 : -1}
               className={section === key ? "sunshine-section-tab active" : "sunshine-section-tab"}
               onClick={() => setSection(key)}
+              onKeyDown={(event) => activateTabFromKeyboard(
+                event,
+                HOST_SECTIONS,
+                index,
+                (next) => setSection(next.key),
+              )}
             >
               <Icon size={18} /><strong>{label}</strong>
             </button>
@@ -265,13 +273,21 @@ export function HostPanel({
           <X size={18} aria-hidden="true" />
         </button>
       </div>
-      <div role="tabpanel" id={`${tabsId}-panel-${section}`} aria-labelledby={`${tabsId}-tab-${section}`}>
-        {section === "apps" && <AppsSection host={host} />}
-        {section === "clients" && <ClientsSection host={host} />}
-        {section === "pairing" && <PairingSection host={host} />}
-        {section === "config" && <ConfigSection host={host} />}
-        {section === "system" && <SystemSection host={host} />}
-      </div>
+      {HOST_SECTIONS.map(({ key }) => (
+        <div
+          key={key}
+          role="tabpanel"
+          id={`${tabsId}-panel-${key}`}
+          aria-labelledby={`${tabsId}-tab-${key}`}
+          hidden={section !== key}
+        >
+          {section === "apps" && key === "apps" ? <AppsSection host={host} /> : null}
+          {section === "clients" && key === "clients" ? <ClientsSection host={host} /> : null}
+          {section === "pairing" && key === "pairing" ? <PairingSection host={host} /> : null}
+          {section === "config" && key === "config" ? <ConfigSection host={host} /> : null}
+          {section === "system" && key === "system" ? <SystemSection host={host} /> : null}
+        </div>
+      ))}
     </div>
   );
 }
