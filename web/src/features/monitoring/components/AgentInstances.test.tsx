@@ -17,7 +17,7 @@ const created: CreatedAgentInstance = {
   display_name: "测试主机",
   status: "pending",
   activation_code: "one-time-secret",
-  expires_at: "2026-08-21T12:15:00Z",
+  expires_at: "2099-08-21T12:15:00Z",
   created_at: "2026-08-21T12:00:00Z",
 };
 
@@ -49,6 +49,7 @@ afterEach(() => {
   cleanup();
   for (const client of clients.splice(0)) client.clear();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 function renderWithClient(node: React.ReactNode) {
@@ -118,6 +119,48 @@ describe("Agent activation-code lifetime", () => {
     expect(api.monitoringCreateAgentInstance).toHaveBeenCalledWith("概览", 15);
   });
 
+  it("clears the activation code at expires_at without waiting for list polling", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-01-01T00:00:00Z"));
+    const expiring = { ...created, expires_at: "2030-01-01T00:00:01Z" };
+    vi.spyOn(api, "monitoringAgentInstances").mockResolvedValue([]);
+    vi.spyOn(api, "monitoringCreateAgentInstance").mockResolvedValue(expiring);
+    const { queryClient } = renderWithClient(
+      <AgentInstances activeHostIds={new Set()} addTrigger={1} />,
+    );
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByText(expiring.activation_code)).toBeTruthy();
+    expect(activationCodes(queryClient)).toContain(expiring.activation_code);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(999); });
+    expect(screen.getByText(expiring.activation_code)).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+
+    expect(screen.queryByText(expiring.activation_code)).toBeNull();
+    expect(activationCodes(queryClient)).not.toContain(expiring.activation_code);
+    expect(screen.getByText("配对邀请已过期，授权密钥已从内存和页面清除。")).toBeTruthy();
+  });
+
+  it.each([
+    ["an already elapsed", "2029-12-31T23:59:59Z"],
+    ["an invalid", "not-a-date"],
+  ])("fails closed for %s expires_at value", async (_label, expiresAt) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-01-01T00:00:00Z"));
+    const unsafeExpiry = { ...created, expires_at: expiresAt };
+    vi.spyOn(api, "monitoringAgentInstances").mockResolvedValue([]);
+    vi.spyOn(api, "monitoringCreateAgentInstance").mockResolvedValue(unsafeExpiry);
+    const { queryClient } = renderWithClient(
+      <AgentInstances activeHostIds={new Set()} addTrigger={1} />,
+    );
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByText("配对邀请已过期，授权密钥已从内存和页面清除。")).toBeTruthy();
+    expect(screen.queryByText(unsafeExpiry.activation_code)).toBeNull();
+    expect(activationCodes(queryClient)).not.toContain(unsafeExpiry.activation_code);
+  });
+
   it("keeps an add trigger pending until the current invitation is cleared", async () => {
     const firstCreation = deferred<CreatedAgentInstance>();
     vi.spyOn(api, "monitoringAgentInstances").mockResolvedValue([]);
@@ -154,15 +197,23 @@ describe("Agent activation-code lifetime", () => {
 
   it("clears first-pairing mutation data when the operator closes the panel", async () => {
     mockPairingApis();
+    const setTimeoutSpy = vi.spyOn(window, "setTimeout");
+    const clearTimeoutSpy = vi.spyOn(window, "clearTimeout");
     const { queryClient, rerenderWithClient } = renderWithClient(
       <AgentInstances activeHostIds={new Set()} addTrigger={0} />,
     );
 
     triggerAgentCreation(rerenderWithClient);
     await expectSecretVisible(queryClient);
+    const expirationCallIndex = setTimeoutSpy.mock.calls.findIndex(
+      ([, delay]) => delay === 2_147_000_000,
+    );
+    expect(expirationCallIndex).toBeGreaterThanOrEqual(0);
+    const expirationTimerId = setTimeoutSpy.mock.results[expirationCallIndex].value;
     fireEvent.click(screen.getByRole("button", { name: "取消邀请并清除授权密钥" }));
 
     await expectSecretCleared(queryClient);
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(expirationTimerId);
     expect(api.monitoringCancelAgentInstance).toHaveBeenCalledWith(created.request_id);
   }, 15_000);
 
@@ -214,15 +265,23 @@ describe("Agent activation-code lifetime", () => {
 
   it("clears first-pairing mutation data when the component unmounts", async () => {
     mockPairingApis();
+    const setTimeoutSpy = vi.spyOn(window, "setTimeout");
+    const clearTimeoutSpy = vi.spyOn(window, "clearTimeout");
     const { queryClient, unmount, rerenderWithClient } = renderWithClient(
       <AgentInstances activeHostIds={new Set()} addTrigger={0} />,
     );
 
     triggerAgentCreation(rerenderWithClient);
     await expectSecretVisible(queryClient);
+    const expirationCallIndex = setTimeoutSpy.mock.calls.findIndex(
+      ([, delay]) => delay === 2_147_000_000,
+    );
+    expect(expirationCallIndex).toBeGreaterThanOrEqual(0);
+    const expirationTimerId = setTimeoutSpy.mock.results[expirationCallIndex].value;
     unmount();
 
     await waitFor(() => expect(activationCodes(queryClient)).not.toContain(created.activation_code));
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(expirationTimerId);
   }, 15_000);
 
 });

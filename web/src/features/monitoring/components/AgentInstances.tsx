@@ -20,6 +20,7 @@ import { monitoringQueryKeys as queryKeys } from "../queryKeys";
 import type { AgentInstanceSummary, CreatedAgentInstance, MonitoringHostSummary } from "../types";
 
 const createAgentMutationKey = ["monitoring-create-agent-instance"] as const;
+const MAX_EXPIRATION_TIMER_DELAY_MS = 2_147_000_000;
 
 function ActivationCodePanel({ created, onClose }: {
   created: CreatedAgentInstance;
@@ -184,6 +185,13 @@ export function AgentInstances({
     resetCreateMutation();
     removeMutationFromCache(queryClient, createAgentMutationKey);
   }, [queryClient, resetCreateMutation]);
+  const finishCreated = useCallback((
+    instance: CreatedAgentInstance,
+    status: AgentInstanceSummary["status"],
+  ) => {
+    setCreationOutcome({ displayName: instance.display_name, status });
+    clearCreated();
+  }, [clearCreated]);
   useEffect(() => () => {
     removeMutationFromCache(queryClient, createAgentMutationKey);
   }, [queryClient]);
@@ -212,10 +220,39 @@ export function AgentInstances({
     : (refreshedCreated?.status ?? created?.status);
 
   useEffect(() => {
+    if (!created || createdStatus !== "pending") return;
+    const expiresAt = Date.parse(created.expires_at);
+    if (!Number.isFinite(expiresAt)) {
+      finishCreated(created, "expired");
+      return;
+    }
+
+    let timeoutId: number | undefined;
+    let cancelled = false;
+    const expireWhenDue = () => {
+      if (cancelled) return;
+      const remaining = expiresAt - Date.now();
+      if (remaining <= 0) {
+        finishCreated(created, "expired");
+        return;
+      }
+      timeoutId = window.setTimeout(
+        expireWhenDue,
+        Math.min(remaining, MAX_EXPIRATION_TIMER_DELAY_MS),
+      );
+    };
+    expireWhenDue();
+
+    return () => {
+      cancelled = true;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    };
+  }, [created, createdStatus, finishCreated]);
+
+  useEffect(() => {
     if (!created || !createdStatus || createdStatus === "pending") return;
-    setCreationOutcome({ displayName: created.display_name, status: createdStatus });
-    clearCreated();
-  }, [clearCreated, created, createdStatus]);
+    finishCreated(created, createdStatus);
+  }, [created, createdStatus, finishCreated]);
 
   const cancelCreated = () => {
     const requestId = created?.request_id;
