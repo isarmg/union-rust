@@ -75,10 +75,9 @@ impl Spool {
     fn count(&self, extension: &str) -> io::Result<u64> {
         let mut total = 0;
         for entry in fs::read_dir(&self.directory)? {
-            if entry?
-                .path()
-                .extension()
-                .is_some_and(|value| value == extension)
+            let path = entry?.path();
+            if path.extension().is_some_and(|value| value == extension)
+                && fixed_spool_file_metadata(&path)?.is_some()
             {
                 total += 1;
             }
@@ -191,6 +190,9 @@ impl Spool {
             if path.extension().is_none_or(|value| value != extension) {
                 continue;
             }
+            if fixed_spool_file_metadata(&path)?.is_none() {
+                continue;
+            }
             if smallest.as_ref().is_none_or(|current| &path < current) {
                 smallest = Some(path);
             }
@@ -205,7 +207,9 @@ impl Spool {
         for entry in fs::read_dir(&self.directory)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().is_some_and(|value| value == extension) {
+            if path.extension().is_some_and(|value| value == extension)
+                && fixed_spool_file_metadata(&path)?.is_some()
+            {
                 paths.push(path);
             }
         }
@@ -240,11 +244,10 @@ impl Spool {
                 Some(JSON) => &mut pending,
                 _ => continue,
             };
-            let size = match file_size(&path) {
-                Ok(size) => size,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(error),
+            let Some(metadata) = fixed_spool_file_metadata(&path)? else {
+                continue;
             };
+            let size = accounted_file_size(&metadata);
             collect_bounded_spool_entry(target, &mut entries, (path, size))?;
             total = total.saturating_add(size);
         }
@@ -365,8 +368,43 @@ fn accounted_file_size(metadata: &fs::Metadata) -> u64 {
     metadata.len().max(allocated).max(MIN_ACCOUNTED_FILE_BYTES)
 }
 
+/// Return metadata only for a report path that names a fixed regular file.
+/// `symlink_metadata` deliberately inspects the directory entry itself so a
+/// Unix symlink cannot escape the private spool. Windows file symlinks and
+/// other name-surrogate objects are reparse points, which must be rejected
+/// explicitly even if their metadata otherwise resembles a file.
+fn fixed_spool_file_metadata(path: &Path) -> io::Result<Option<fs::Metadata>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_file() {
+        return Ok(None);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        if !windows_file_attributes_are_fixed(metadata.file_attributes()) {
+            return Ok(None);
+        }
+    }
+    Ok(Some(metadata))
+}
+
+#[cfg(windows)]
+fn windows_file_attributes_are_fixed(attributes: u32) -> bool {
+    use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    attributes & FILE_ATTRIBUTE_REPARSE_POINT.0 == 0
+}
+
+#[cfg(test)]
 fn file_size(path: &Path) -> io::Result<u64> {
-    fs::metadata(path).map(|metadata| accounted_file_size(&metadata))
+    fixed_spool_file_metadata(path)?
+        .map(|metadata| accounted_file_size(&metadata))
+        .ok_or_else(|| io::Error::other("spool candidate is not a fixed regular file"))
 }
 
 fn read_spool_file_bounded(path: &Path) -> io::Result<Vec<u8>> {
@@ -443,6 +481,70 @@ mod tests {
         assert_eq!(spool.pending_count().unwrap(), 0);
         drop(spool);
         fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn a_json_named_directory_is_not_a_spool_candidate() {
+        let directory = temp_dir();
+        let spool = Spool::open(&directory, 1024 * 1024).unwrap();
+        let fake_head = directory
+            .join("spool")
+            .join(format!("{zero:020}-directory.json", zero = 0));
+        fs::create_dir(&fake_head).unwrap();
+
+        let valid = report();
+        spool.enqueue(&valid).unwrap();
+
+        assert_eq!(spool.pending_count().unwrap(), 1);
+        let pending = spool
+            .oldest()
+            .unwrap()
+            .expect("the regular report remains the FIFO head");
+        assert_eq!(pending.report.report_id, valid.report_id);
+
+        drop(spool);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_json_symlink_is_not_a_spool_candidate() {
+        use std::os::unix::fs::symlink;
+
+        let directory = temp_dir();
+        let spool = Spool::open(&directory, 1024 * 1024).unwrap();
+        let linked_report = report();
+        let (_, linked_bytes) = report_contract::encode_report_body(&linked_report).unwrap();
+        let outside = directory.join("outside.json");
+        fs::write(&outside, linked_bytes).unwrap();
+        let link = directory
+            .join("spool")
+            .join(format!("{zero:020}-symlink.json", zero = 0));
+        symlink(&outside, &link).unwrap();
+
+        assert_eq!(spool.pending_count().unwrap(), 0);
+        assert!(spool.oldest().unwrap().is_none());
+        spool.enforce_limit().unwrap();
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+
+        drop(spool);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_reparse_attributes_are_not_fixed() {
+        use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+        assert!(!windows_file_attributes_are_fixed(
+            FILE_ATTRIBUTE_REPARSE_POINT.0
+        ));
+        assert!(windows_file_attributes_are_fixed(0));
     }
 
     #[test]
