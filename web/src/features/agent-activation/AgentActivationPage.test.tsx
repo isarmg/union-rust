@@ -33,7 +33,7 @@ function mockWaitingPairing() {
     request_id: "pairing-request",
     os: "linux",
     arch: "x86_64",
-    agent_version: "0.3.4",
+    agent_version: "0.3.5",
     status: "waiting",
     expires_at: "2026-08-22T12:15:00Z",
   });

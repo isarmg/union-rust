@@ -28,7 +28,7 @@ const host: MonitoringHostSummary = {
   os_version: "11",
   kernel_version: null,
   arch: "x86_64",
-  agent_version: "0.3.4",
+  agent_version: "0.3.5",
   registered_at: "2026-08-21T12:00:00Z",
   last_seen_at: "2026-08-21T12:00:00Z",
   latest_collected_at: "2026-08-21T12:00:00Z",

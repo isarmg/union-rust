@@ -6,7 +6,7 @@ packaging_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/unionc-agent-package-builder-test.XXXXXX")
 fixture_root=$test_root/repository
 mock_bin=$test_root/bin
-package_version=0.3.4
+package_version=0.3.5
 execution_marker=$test_root/payload-executed
 nfpm_log=$test_root/nfpm.log
 builder_output=$test_root/builder.output

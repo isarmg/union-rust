@@ -37,7 +37,7 @@ fn identity(host_id: Uuid) -> HostIdentity {
         os_version: Some("6.1.0".into()),
         kernel_version: Some("6.1.0".into()),
         arch: "x86_64".into(),
-        agent_version: "0.3.4".into(),
+        agent_version: "0.3.5".into(),
     }
 }
 
@@ -54,7 +54,7 @@ fn report(
         "host": {
             "id": host_id, "os": "linux",
             "os_version": "6.1.0", "kernel_version": "6.1.0",
-            "arch": "x86_64", "agent_version": "0.3.4"
+            "arch": "x86_64", "agent_version": "0.3.5"
         },
         "interval_seconds": 10.0,
         "system": {

@@ -10,7 +10,7 @@ mod tests {
             "host": {
                 "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
                 "os": "windows", "os_version": null,
-                "kernel_version": null, "arch": "x86_64", "agent_version": "0.3.4"
+                "kernel_version": null, "arch": "x86_64", "agent_version": "0.3.5"
             },
             "interval_seconds": 10.0,
             "system": {
@@ -47,7 +47,7 @@ mod tests {
             "host": {
                 "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
                 "os": "linux", "os_version": null,
-                "kernel_version": null, "arch": "x86_64", "agent_version": "0.3.4"
+                "kernel_version": null, "arch": "x86_64", "agent_version": "0.3.5"
             },
             "interval_seconds": 10.0,
             "system": {
@@ -100,7 +100,7 @@ mod tests {
                     "os_version": null,
                     "kernel_version": null,
                     "arch": "x86_64",
-                    "agent_version": "0.3.4"
+                    "agent_version": "0.3.5"
                 },
                 "token_hash": "a".repeat(64),
                 "polling_secret_hash": "b".repeat(64),

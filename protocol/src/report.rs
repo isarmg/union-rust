@@ -276,7 +276,7 @@ mod tests {
                 os_version: Some("1".into()),
                 kernel_version: None,
                 arch: "x86_64".into(),
-                agent_version: "0.3.4".into(),
+                agent_version: "0.3.5".into(),
             },
             interval_seconds: 0.5,
             system: SystemSnapshot {

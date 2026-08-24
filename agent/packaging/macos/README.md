@@ -10,7 +10,7 @@ Run from any directory on macOS. `VERSION` must be a numeric Installer package v
 `BINARY` must point to an executable Mach-O:
 
 ```sh
-BINARY=/path/to/unionc-agent VERSION=0.3.4 ./agent/packaging/macos/build-pkg.sh
+BINARY=/path/to/unionc-agent VERSION=0.3.5 ./agent/packaging/macos/build-pkg.sh
 ```
 
 This produces an **unsigned development installer** by default. The build wraps the component
@@ -20,8 +20,8 @@ Developer ID Application identity. Then pass the exact Developer ID Installer id
 
 ```sh
 BINARY=/path/to/signed/unionc-agent \
-VERSION=0.3.4 \
-OUTPUT=/path/to/unionc-agent-0.3.4.pkg \
+VERSION=0.3.5 \
+OUTPUT=/path/to/unionc-agent-0.3.5.pkg \
 INSTALLER_IDENTITY='Developer ID Installer: Example Company (TEAMID)' \
 ./agent/packaging/macos/build-pkg.sh
 ```
@@ -41,13 +41,13 @@ accounts:
 会安装、卸载并永久清理 Agent，必须显式确认系统变更：
 
 ```bash
-./agent/packaging/macos/tests/smoke-pkg.sh --allow-system-changes dist/unionc-agent-0.3.4.pkg
+./agent/packaging/macos/tests/smoke-pkg.sh --allow-system-changes dist/unionc-agent-0.3.5.pkg
 ```
 
 ## Install and pair
 
 ```sh
-sudo installer -pkg unionc-agent-0.3.4.pkg -target /
+sudo installer -pkg unionc-agent-0.3.5.pkg -target /
 sudo -u _unioncagent /usr/local/bin/unionc-agent pair \
   --config '/Library/Application Support/UnionC Agent/config.json' \
   --server https://unionc.example.com
@@ -73,7 +73,7 @@ sudo tail -n 100 /var/log/unionc-agent.log
 `doctor` is read-only by default. Use `doctor --delivery` only when an explicit end-to-end
 delivery attempt (including processing queued reports) is intended.
 
-Reinstalling the current 0.3.4 package leaves the old jobs running while Installer replaces only
+Reinstalling the current 0.3.5 package leaves the old jobs running while Installer replaces only
 the root-owned payload. The packaged template lives at
 `/usr/local/share/unionc-agent/config.example.json`; the pkg payload never extracts into the
 service-writable state directory. Before any `bootout`, `postinstall` verifies the immutable
@@ -89,7 +89,7 @@ reboot cannot load untrusted state; a successful rerun re-enables them. Rollback
 the labels and effective/real service-UID processes after forced cleanup, and reports an explicit
 incomplete-cleanup error if macOS refuses either operation. Reinstall preserves
 configuration/identity/spool.
-A different package version is not migrated: purge 0.3.4 state before installing another version.
+A different package version is not migrated: purge 0.3.5 state before installing another version.
 
 Because launchd executes payloads below `/usr/local`, `preinstall` checks each listed component
 of the root payload path chain, including `/usr` and `/Library`, before Installer extracts the

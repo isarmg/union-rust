@@ -543,7 +543,7 @@ fn pairing_body(token: &str, polling_secret: &str) -> serde_json::Value {
             "os_version": "test",
             "kernel_version": "test-kernel",
             "arch": "x86_64",
-            "agent_version": "0.3.4"
+            "agent_version": "0.3.5"
         },
         "token_hash": hash(token),
         "polling_secret_hash": hash(polling_secret)
@@ -561,7 +561,7 @@ fn report_body(instance_id: &str) -> serde_json::Value {
             "os_version": "test",
             "kernel_version": "test-kernel",
             "arch": "x86_64",
-            "agent_version": "0.3.4"
+            "agent_version": "0.3.5"
         },
         "interval_seconds": 10.0,
         "system": {
