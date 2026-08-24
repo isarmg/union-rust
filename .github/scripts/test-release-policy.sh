@@ -41,6 +41,50 @@ then
   fail 'workflow service images must use immutable sha256 digests'
 fi
 
+if grep -En '(runs-on:|^[[:space:]]+os:[[:space:]]+\[).*-[l]atest' \
+  "$ci_workflow" "$release_workflow"
+then
+  fail 'workflow runners must not use mutable *-latest labels'
+fi
+if grep -En 'runs-on:[[:space:]]+' "$ci_workflow" "$release_workflow" |
+  grep -Ev 'runs-on:[[:space:]]+(ubuntu-24\.04|windows-2025|macos-26|\$\{\{ matrix\.os \}\})$'
+then
+  fail 'workflow runners must use the reviewed concrete runner labels'
+fi
+if grep -En '^[[:space:]]+os:[[:space:]]+\[' "$ci_workflow" "$release_workflow" |
+  grep -Ev 'os:[[:space:]]+\[ubuntu-24\.04, windows-2025, macos-26\]$'
+then
+  fail 'runner matrices must use the reviewed concrete runner labels'
+fi
+
+if grep -En '^[[:space:]]+(toolchain|node-version|go-version):' \
+  "$ci_workflow" "$release_workflow" |
+  grep -Ev '(toolchain:[[:space:]]+1\.98\.0|node-version:[[:space:]]+'"'"'26\.7\.0'"'"'|go-version:[[:space:]]+'"'"'1\.26\.7'"'"')$'
+then
+  fail 'workflow language toolchains must use the reviewed patch versions'
+fi
+
+rust_action_count=$(grep -hF 'uses: dtolnay/rust-toolchain@' \
+  "$ci_workflow" "$release_workflow" | wc -l | tr -d ' ')
+rust_version_count=$(grep -hF 'toolchain: 1.98.0' \
+  "$ci_workflow" "$release_workflow" | wc -l | tr -d ' ')
+[ "$rust_action_count" -gt 0 ] && [ "$rust_version_count" = "$rust_action_count" ] ||
+  fail 'every Rust toolchain action must select Rust 1.98.0 explicitly'
+
+node_action_count=$(grep -hF 'uses: actions/setup-node@' \
+  "$ci_workflow" "$release_workflow" | wc -l | tr -d ' ')
+node_version_count=$(grep -hF "node-version: '26.7.0'" \
+  "$ci_workflow" "$release_workflow" | wc -l | tr -d ' ')
+[ "$node_action_count" -gt 0 ] && [ "$node_version_count" = "$node_action_count" ] ||
+  fail 'every Node setup action must select Node 26.7.0 explicitly'
+
+go_action_count=$(grep -hF 'uses: actions/setup-go@' \
+  "$ci_workflow" "$release_workflow" | wc -l | tr -d ' ')
+go_version_count=$(grep -hF "go-version: '1.26.7'" \
+  "$ci_workflow" "$release_workflow" | wc -l | tr -d ' ')
+[ "$go_action_count" -gt 0 ] && [ "$go_version_count" = "$go_action_count" ] ||
+  fail 'every Go setup action must select Go 1.26.7 explicitly'
+
 job_has_line() {
   job_name=$1
   expected=$2
