@@ -22,6 +22,16 @@ job_has_line() {
 
 grep -Eq '^  workflow_call:[[:space:]]*$' "$ci_workflow" ||
   fail 'CI is not callable from the release workflow'
+awk '
+  $0 == "concurrency:" {
+    getline
+    group = ($0 == "  group: release-${{ github.ref }}")
+    getline
+    cancel = ($0 == "  cancel-in-progress: false")
+  }
+  END { exit(group && cancel ? 0 : 1) }
+' "$release_workflow" ||
+  fail 'release runs for the same ref are not serialized without cancellation'
 job_has_line full-ci '    uses: ./.github/workflows/ci.yml' ||
   fail 'release does not invoke the repository CI workflow'
 job_has_line full-ci '    needs: verify-release-ref' ||
