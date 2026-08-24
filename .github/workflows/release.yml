@@ -203,7 +203,11 @@ jobs:
           install -Dm644 agent/packaging/linux/unionc-agent.service "$bundle/unionc-agent.service"
           install -Dm644 agent/packaging/linux/unionc-agent-gpu.conf "$bundle/unionc-agent-gpu.conf"
           install -Dm644 agent/packaging/linux/PORTABLE-README.md "$bundle/README.md"
-          tar -C dist -czf dist/unionc-agent-linux-x86_64.tar.gz unionc-agent-linux-x86_64
+          source_date_epoch="$(git show -s --format=%ct "${GITHUB_SHA}^{commit}")"
+          bash .github/scripts/create-reproducible-tar.sh \
+            "$bundle" \
+            dist/unionc-agent-linux-x86_64.tar.gz \
+            "$source_date_epoch"
 
           nfpm_bin="$(go env GOPATH)/bin/nfpm"
           NFPM_BIN="$nfpm_bin" NFPM_ARCH=amd64 \

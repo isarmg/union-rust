@@ -60,6 +60,13 @@ grep -Fq 'This prerelease intentionally contains unsigned artifacts.' "$release_
   fail 'unsigned release warning is missing'
 grep -Fq 'xargs -0 sha256sum > SHA256SUMS' "$release_workflow" ||
   fail 'unsigned release does not generate a checksum manifest'
+grep -Fq 'source_date_epoch="$(git show -s --format=%ct "${GITHUB_SHA}^{commit}")"' \
+  "$release_workflow" ||
+  fail 'portable Linux archive timestamp is not derived from the release commit'
+grep -Fq 'bash .github/scripts/create-reproducible-tar.sh' "$release_workflow" ||
+  fail 'portable Linux archive does not use the reproducible archive helper'
+
+bash .github/scripts/test-reproducible-tar.sh
 
 for forbidden in \
   Set-AuthenticodeSignature \
