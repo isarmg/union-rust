@@ -175,7 +175,7 @@ fn read_pdh_instance_name(
         || start < minimum_name
         || start >= used_end
         || start >= capacity_end
-        || start % mem::align_of::<u16>() != 0
+        || !start.is_multiple_of(mem::align_of::<u16>())
     {
         return Err(PdhReadError::message(
             "PDH instance name points outside the live returned name buffer".into(),
