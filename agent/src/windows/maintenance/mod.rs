@@ -488,6 +488,15 @@ fn protected_directory_security_descriptor() -> String {
 }
 
 #[cfg(any(windows, test))]
+fn is_protected_dacl_control(control: &str) -> bool {
+    // SetSecurityInfo can retain SE_DACL_AUTO_INHERITED while setting
+    // SE_DACL_PROTECTED on an object that previously inherited its ACL. SDDL
+    // renders that inert historical marker as PAI; P still prevents any
+    // future inheritance. Do not accept AR, AI without P, or unknown flags.
+    matches!(control, "P" | "PAI")
+}
+
+#[cfg(any(windows, test))]
 fn parse_program_dacl(sddl: &str, service_sid: &str) -> anyhow::Result<()> {
     ensure!(
         sddl.starts_with("O:SY"),
@@ -500,7 +509,10 @@ fn parse_program_dacl(sddl: &str, service_sid: &str) -> anyhow::Result<()> {
     let (control, _) = dacl
         .split_once('(')
         .context("program DACL contains no ACEs")?;
-    ensure!(control == "P", "program DACL is not protected-only: {sddl}");
+    ensure!(
+        is_protected_dacl_control(control),
+        "program DACL has unexpected protection flags: {sddl}"
+    );
     let mut system = false;
     let mut admins = false;
     let mut users = false;
@@ -579,11 +591,11 @@ mod windows_maintenance {
         AclCurrentPathFact, AclSnapshotPathFact, MAX_ACL_SNAPSHOT_BYTES, MAX_ACL_SNAPSHOT_ENTRIES,
         MAX_MAINTENANCE_PATH_BYTES, MAX_MAINTENANCE_TREE_NODES, MAX_OPEN_MUTATION_DIRECTORIES,
         OpenedManagedTargetFacts, checked_child_directory_depth, checked_rename_buffer_plan,
-        checked_rename_storage_bytes, enqueue_bounded_tree_path, managed_state_security_descriptor,
-        parse_program_dacl, program_security_descriptor, protected_directory_security_descriptor,
-        read_file_bounded, record_bounded_tree_node, rollback_path_exists,
-        run_validated_acl_restore_plan, try_push_bounded_acl_snapshot_entry, try_push_bounded_path,
-        try_reserve_bounded, validate_opened_managed_target_facts,
+        checked_rename_storage_bytes, enqueue_bounded_tree_path, is_protected_dacl_control,
+        managed_state_security_descriptor, parse_program_dacl, program_security_descriptor,
+        protected_directory_security_descriptor, read_file_bounded, record_bounded_tree_node,
+        rollback_path_exists, run_validated_acl_restore_plan, try_push_bounded_acl_snapshot_entry,
+        try_push_bounded_path, try_reserve_bounded, validate_opened_managed_target_facts,
     };
     use std::{
         ffi::{OsStr, OsString, c_void},
@@ -873,6 +885,12 @@ mod program_acl_template_tests {
 
         let tray_enabled = program_security_descriptor(SERVICE_SID);
         parse_program_dacl(&tray_enabled, SERVICE_SID).unwrap();
+        parse_program_dacl(&tray_enabled.replacen("D:P", "D:PAI", 1), SERVICE_SID).unwrap();
+
+        for unsupported_control in ["", "AI", "PAR", "PAIAR", "PX"] {
+            let unsupported = tray_enabled.replacen("D:P", &format!("D:{unsupported_control}"), 1);
+            assert!(parse_program_dacl(&unsupported, SERVICE_SID).is_err());
+        }
 
         let users_can_write = tray_enabled.replace("(A;OICI;0x1200a9;;;BU)", "(A;OICI;FA;;;BU)");
         assert!(parse_program_dacl(&users_can_write, SERVICE_SID).is_err());

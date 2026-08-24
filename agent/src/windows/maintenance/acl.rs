@@ -420,8 +420,8 @@ fn validate_managed_dacl(path: &Path, require_service_access: bool) -> anyhow::R
         .split_once('(')
         .context("managed state DACL contains no ACEs")?;
     ensure!(
-        control == "P",
-        "managed state DACL control flags are not exactly protected-only: {sddl}"
+        is_protected_dacl_control(control),
+        "managed state DACL has unexpected protection flags: {sddl}"
     );
     let service_sid = service_sid_string()?;
     let mut system = false;
