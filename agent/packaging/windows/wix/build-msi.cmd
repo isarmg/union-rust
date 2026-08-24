@@ -45,5 +45,5 @@ exit /b 0
 
 :usage
 echo Usage: build-msi.cmd VERSION AGENT_EXE MAINTENANCE_EXE TRAY_EXE 1>&2
-echo Example: build-msi.cmd 0.3.5 ..\..\..\target\x86_64-pc-windows-msvc\release\unionc-agent.exe ..\..\..\target\x86_64-pc-windows-msvc\release\unionc-agent-maintenance.exe ..\..\..\target\x86_64-pc-windows-msvc\release\unionc-agent-tray.exe 1>&2
+echo Example: build-msi.cmd 0.3.6 ..\..\..\target\x86_64-pc-windows-msvc\release\unionc-agent.exe ..\..\..\target\x86_64-pc-windows-msvc\release\unionc-agent-maintenance.exe ..\..\..\target\x86_64-pc-windows-msvc\release\unionc-agent-tray.exe 1>&2
 exit /b 2

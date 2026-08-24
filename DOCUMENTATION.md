@@ -1,6 +1,6 @@
 # UnionC 项目文档
 
-> 版本：v0.3.5 ｜ 文档更新：2026-08-23
+> 版本：v0.3.6 ｜ 文档更新：2026-08-24
 > 本文是项目的完整说明：功能、架构、各组成部分、接口契约、部署与运维。
 
 ## 目录
@@ -979,7 +979,7 @@ SQLite 与 Server 位于同一台 Linux 主机的本地磁盘。该拓扑不支�
 # 必须在工作区根执行——合并为 Cargo workspace 后产物在根 target/
 cargo build --release -p unionc
 NFPM_ARCH=amd64 server/packaging/linux/build-packages.sh
-sudo dpkg -i unionc_0.3.5_amd64.deb
+sudo dpkg -i unionc_0.3.6_amd64.deb
 ```
 
 两个 Linux 打包脚本都要求 `nfpm` 位于 `PATH`，或由 `NFPM_BIN` 指向可执行文件；正式发布
@@ -1000,10 +1000,10 @@ sudo dpkg -i unionc_0.3.5_amd64.deb
 | 数据目录 | `/var/lib/unionc`（0700 unionc:unionc） |
 | 内嵌数据库 | `/var/lib/unionc/unionc.db`（显式首次 bootstrap 创建，0600 unionc:unionc） |
 
-环境文件中的 `UNIONC_PACKAGE_VERSION=0.3.5` 是不可修改的包归属标记；裸二进制部署不要求
+环境文件中的 `UNIONC_PACKAGE_VERSION=0.3.6` 是不可修改的包归属标记；裸二进制部署不要求
 设置它。包安装还以 `/var/lib/unionc-package` 中绑定当前版本与实际 UID/GID 的 root-only
 marker 校验账户和数据目录。缺少当前标记的既有环境文件、同名账户或数据目录一律拒绝接管；
-普通卸载会保留数据和 marker，只允许同一 0.3.5 重装。
+普通卸载会保留数据和 marker，只允许同一 0.3.6 重装。
 
 unit 显式设置 `UNIONC_DATA_DIR=/var/lib/unionc` 与 `WorkingDirectory`，并附一组
 systemd 硬化：`CapabilityBoundingSet=` 为空、`NoNewPrivileges`、`ProtectSystem=strict`、
@@ -1043,7 +1043,7 @@ Pre-release；当前不执行平台签名、公证、GPG 签名或 provenance，
 
 | 变量 | 必填 | 说明 |
 |---|---|---|
-| `UNIONC_PACKAGE_VERSION` | DEB/RPM 固定 | 包内必须精确为 `0.3.5`，仅供生命周期归属校验；不要修改，裸二进制部署不设置 |
+| `UNIONC_PACKAGE_VERSION` | DEB/RPM 固定 | 包内必须精确为 `0.3.6`，仅供生命周期归属校验；不要修改，裸二进制部署不设置 |
 | `UNIONC_ENV` | 生产必填 | 设为 `production` 启用全部生产约束 |
 | `UNIONC_DATA_DIR` | 强烈建议 | 数据目录绝对路径；各级不得为符号链接，最终目录须由服务 UID 所有且精确 0700；unit 已设为 `/var/lib/unionc` |
 | `UNIONC_SECRET_KEY` | 生产必填 | 32 字节主密钥的 Base64 |
@@ -1067,16 +1067,16 @@ apt/rpm 仓库、签名 Windows MSI/winget、签名并公证的 macOS pkg、MDM�
 # 必须在工作区根执行
 cargo build --release -p unionc-agent
 NFPM_ARCH=amd64 agent/packaging/linux/build-packages.sh
-sudo dpkg -i unionc-agent_0.3.5_amd64.deb
+sudo dpkg -i unionc-agent_0.3.6_amd64.deb
 ```
 
 Windows 当前只发布 x64 MSI。可双击安装，或在管理员命令提示符中执行；`PURGE=1` 只用于
 已经在 Web 永久删除实例后的本地状态清理：
 
 ```cmd
-msiexec.exe /i UnionC-Agent-0.3.5-x64.msi /qn /norestart
-msiexec.exe /x UnionC-Agent-0.3.5-x64.msi /qn /norestart
-msiexec.exe /x UnionC-Agent-0.3.5-x64.msi PURGE=1 /qn /norestart
+msiexec.exe /i UnionC-Agent-0.3.6-x64.msi /qn /norestart
+msiexec.exe /x UnionC-Agent-0.3.6-x64.msi /qn /norestart
+msiexec.exe /x UnionC-Agent-0.3.6-x64.msi PURGE=1 /qn /norestart
 ```
 
 安装完成后的授权协议相同，Windows 另提供无需手写命令的托盘入口：
@@ -1128,7 +1128,7 @@ purge；Windows x64 WiX MSI 把只读程序与可变状态分离，以原生 SCM
 
 | 配置项 | 环境变量 | 默认 | 说明 |
 |---|---|---|---|
-| `application_version` | — | `0.3.5` | 持久配置必填且必须精确等于当前 Agent 包版本 |
+| `application_version` | — | `0.3.6` | 持久配置必填且必须精确等于当前 Agent 包版本 |
 | `endpoint` | `UNIONC_AGENT_ENDPOINT` | `http://127.0.0.1:8081/api/agent/v1/report` | 上报地址 |
 | `pairing_endpoint` | `UNIONC_AGENT_PAIRING_ENDPOINT` | 由标准 report endpoint 推导 | v2 配对请求地址；配对成功时持久化 JSON 字段会被清空，环境变量仍可在下次加载时覆盖 |
 | `interval_seconds` | `UNIONC_AGENT_INTERVAL_SECONDS` | 10 | 采集周期，1-3600 |
@@ -1146,7 +1146,7 @@ purge；Windows x64 WiX MSI 把只读程序与可变状态分离，以原生 SCM
 
 配置文件存在时必须包含表中的完整当前结构；缺字段、未知字段和不同
 `application_version` 都会在环境变量覆盖之前被拒绝。配置文件不存在时才使用编译期的
-0.3.5 默认值，成功配对会原子写出完整当前结构。
+0.3.6 默认值，成功配对会原子写出完整当前结构。
 
 pairing/report 分域时，配对成功会把持久化 JSON 中的 `pairing_endpoint` 清为 `null`。
 若服务长期设置 `UNIONC_AGENT_PAIRING_ENDPOINT`，下次加载会自动重新覆盖；否则新建实例并配对前

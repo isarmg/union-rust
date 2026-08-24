@@ -3,6 +3,19 @@
 本文件记录 UnionC 的显著变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.6] — 2026-08-24
+
+### 修复
+
+- 修复 Windows MSI 对程序和状态文件应用、校验 ACL 时的兼容性问题：按文件与目录生成继承标志，
+  接受 Windows 对受保护 DACL 的规范化结果，并以子项优先顺序更新权限，避免安装或卸载维护事务失败。
+- 修复 `PURGE=1` 卸载时状态隔离目录的句柄重命名缓冲与目标路径处理，避免清除状态的准备事务失败。
+
+### 变更
+
+- Windows MSI 支持显式设置 `UNIONC_MAINTENANCE_DIAGNOSTICS=1`；维护失败时会以有界私有文件
+  保留首个错误链，便于定位被后续回滚掩盖的根因。
+
 ## [0.3.5] — 2026-08-23
 
 ### 安全

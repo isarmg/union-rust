@@ -154,7 +154,7 @@ PowerShell 计划任务安装。
 交互安装可双击 MSI。无人值守安装在管理员命令提示符中执行：
 
 ```cmd
-msiexec.exe /i UnionC-Agent-0.3.5-x64.msi /qn /norestart /l*v "%TEMP%\unionc-agent-install.log"
+msiexec.exe /i UnionC-Agent-0.3.6-x64.msi /qn /norestart /l*v "%TEMP%\unionc-agent-install.log"
 ```
 
 主要路径：
@@ -228,20 +228,20 @@ ProgramData 状态树仍不授权 Users。任何旧 ACL 模板、旧任务或未
 状态：
 
 ```cmd
-msiexec.exe /x UnionC-Agent-0.3.5-x64.msi /qn /norestart /l*v "%TEMP%\unionc-agent-uninstall.log"
+msiexec.exe /x UnionC-Agent-0.3.6-x64.msi /qn /norestart /l*v "%TEMP%\unionc-agent-uninstall.log"
 ```
 
 永久本地清理必须显式传入唯一允许的属性 `PURGE=1`：
 
 ```cmd
 # 先在 Web 永久删除实例
-msiexec.exe /x UnionC-Agent-0.3.5-x64.msi PURGE=1 /qn /norestart /l*v "%TEMP%\unionc-agent-purge.log"
+msiexec.exe /x UnionC-Agent-0.3.6-x64.msi PURGE=1 /qn /norestart /l*v "%TEMP%\unionc-agent-purge.log"
 ```
 
 普通卸载会移除 service SID ACE，只留下 SYSTEM、Administrators 和 OWNER RIGHTS 安全边界；
 同时移除托盘程序、开始菜单入口和 HKLM Run 登录自启动项。重新安装时由 managed marker
 与精确 ACL 联合验证后接管原身份。Purge 先在同一卷把状态根
-原子移动到 `%ProgramData%\UnionC Agent.purge-quarantine-0.3.5`：进入 commit 前的失败会回滚
+原子移动到 `%ProgramData%\UnionC Agent.purge-quarantine-0.3.6`：进入 commit 前的失败会回滚
 rename，commit 阶段的递归删除则不可逆。为避免把产品回滚到部分删除的树，commit 删除失败
 不会触发 MSI 产品回滚，受保护的 quarantine 可能保留；因此 `msiexec` 成功只表示产品卸载，
 不能单独作为凭据已删除的证明。自动化必须检查状态根和固定 quarantine 均不存在；若仍有

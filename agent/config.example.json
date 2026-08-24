@@ -1,5 +1,5 @@
 {
-  "application_version": "0.3.5",
+  "application_version": "0.3.6",
   "endpoint": "https://unionc.example.com/api/agent/v1/report",
   "pairing_endpoint": "https://unionc.example.com/api/agent/v2/pairing-requests",
   "otlp_endpoint": null,

@@ -4,7 +4,7 @@ set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 packaging_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/unionc-server-packaging-test.XXXXXX")
-package_version=0.3.5
+package_version=0.3.6
 workspace_version=$(sed -n 's/^version = "\([0-9][0-9.]*\)"$/\1/p' \
   "$packaging_dir/../../../Cargo.toml")
 [ "$workspace_version" = "$package_version" ] || {

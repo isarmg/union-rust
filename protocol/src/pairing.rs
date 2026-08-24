@@ -138,7 +138,7 @@ mod tests {
             os_version: None,
             kernel_version: None,
             arch: "x86_64".into(),
-            agent_version: "0.3.5".into(),
+            agent_version: "0.3.6".into(),
         }
     }
 

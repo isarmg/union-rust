@@ -83,9 +83,9 @@ macOS 使用相同命令，但服务账户是 `_unioncagent`、配置位于
 `UNIONC_AGENT_TLS_CA_PEM`、`UNIONC_AGENT_TLS_IDENTITY_PEM`、
 `UNIONC_AGENT_TLS_IDENTITY_PKCS12`、`UNIONC_AGENT_TLS_IDENTITY_PASSWORD`、
 `UNIONC_AGENT_ALLOW_INSECURE_HTTP`。
-配置文件一旦存在，就必须是当前 0.3.5 的完整结构，并包含
-`"application_version": "0.3.5"`；缺字段、未知字段或其他应用版本都会在读取时被拒绝，
-环境变量不会替旧结构补字段。只有配置文件不存在时才使用编译进 0.3.5 的完整默认配置，
+配置文件一旦存在，就必须是当前 0.3.6 的完整结构，并包含
+`"application_version": "0.3.6"`；缺字段、未知字段或其他应用版本都会在读取时被拒绝，
+环境变量不会替旧结构补字段。只有配置文件不存在时才使用编译进 0.3.6 的完整默认配置，
 配对成功后再原子写入当前结构。
 未指定状态目录时使用 Linux `/var/lib/unionc-agent`、Windows
 `%ProgramData%\UnionC Agent` 或 macOS `/Library/Application Support/UnionC Agent`。

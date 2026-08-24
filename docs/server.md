@@ -128,7 +128,7 @@ unit 已包含一组 systemd 硬化选项，并显式设置 `UNIONC_DATA_DIR` �
 `Type=notify` 只会在环境、密钥、SQLite、路由和监听端口全部初始化成功后报告就绪；已启用
 服务的同版本重装会等待这一就绪信号，并在启动失败或随后不再 active 时让包配置失败。
 
-包内环境文件的 `UNIONC_PACKAGE_VERSION=0.3.5` 是安装归属标记，不是可调运行参数，不能
+包内环境文件的 `UNIONC_PACKAGE_VERSION=0.3.6` 是安装归属标记，不是可调运行参数，不能
 删除或修改。安装脚本还会把 `/var/lib/unionc-package` 中的版本化 marker 与实际 UID/GID、
 账户 home/shell、数据目录所有权和 0700 权限逐一比对；既有文件、账户或目录缺少当前标记
 时会 fail closed，不执行旧安装接管。marker 目录必须保持 `root:root/0700`，其中状态文件
@@ -137,7 +137,7 @@ unit 已包含一组 systemd 硬化选项，并显式设置 `UNIONC_DATA_DIR` �
 `/usr/bin/unionc`，不能由同名外部
 程序替换。`/etc/unionc` 必须是不可由非 root 写入的真实目录；`unionc.env` 必须是 root 拥有、
 0640 且没有其他硬链接的真实文件，其组只能是 root 或当前 marker 记录的 `unionc` GID。普通
-卸载保留数据与 marker，仅支持同一 0.3.5 重装。新建专用账户前，安装脚本先原子发布并同步
+卸载保留数据与 marker，仅支持同一 0.3.6 重装。新建专用账户前，安装脚本先原子发布并同步
 `pending-group` 或 `pending-user` 意图（包含预选 UID/GID），再要求账户工具创建同一个数值身份；
 确认 NSS 中名称、UID/GID、home、shell 以及唯一、锁定的 shadow/gshadow 记录均严格匹配后，
 才同步发布 `managed-group` 或 `managed-user` 提交 marker；即使 `/etc` 与 `/var` 分属不同文件

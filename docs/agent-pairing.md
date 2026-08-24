@@ -180,7 +180,7 @@ Content-Type: application/json
     "os_version": "...",
     "kernel_version": "...",
     "arch": "x86_64",
-    "agent_version": "0.3.5"
+    "agent_version": "0.3.6"
   },
   "token_hash": "64位小写SHA-256十六进制",
   "polling_secret_hash": "另一份64位小写SHA-256十六进制"
@@ -217,7 +217,7 @@ GET /api/agent/v2/pairing-requests/{request_id}
   "request_id": "...",
   "os": "linux",
   "arch": "x86_64",
-  "agent_version": "0.3.5",
+  "agent_version": "0.3.6",
   "status": "waiting",
   "expires_at": "2026-08-15T12:15:00Z"
 }
