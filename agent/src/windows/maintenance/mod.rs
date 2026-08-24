@@ -898,8 +898,8 @@ mod windows_maintenance {
                 FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
                 FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
                 FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_SHARE_MODE, FILE_SHARE_READ,
-                FILE_SHARE_WRITE, FileDispositionInfo, FileRenameInfo, FlushFileBuffers,
-                GetFileInformationByHandle, OPEN_EXISTING, READ_CONTROL,
+                FILE_SHARE_WRITE, FILE_TRAVERSE, FileDispositionInfo, FileRenameInfo,
+                FlushFileBuffers, GetFileInformationByHandle, OPEN_EXISTING, READ_CONTROL,
                 SetFileInformationByHandle, WRITE_DAC, WRITE_OWNER, WriteFile,
             },
             System::{
@@ -1428,6 +1428,50 @@ mod managed_handle_target_tests {
         assert!(filesystem.contains("validate_tree_with_directory_depth_limit("));
         assert!(filesystem.contains("managed tree root after handle-bound deletion"));
         assert!(filesystem.contains("managed rename source after handle-bound rename"));
+        let rename = filesystem
+            .split_once("fn rename_managed_directory_by_handle")
+            .unwrap()
+            .1
+            .split_once("fn write_new_private")
+            .unwrap()
+            .0;
+        assert!(rename.contains("destination.parent() == Some(source_parent)"));
+        assert!(rename.contains(".file_name()"));
+        assert!(rename.contains("source.is_absolute()"));
+        assert!(rename.contains("Component::Normal(_)"));
+        assert!(rename.contains("u16::from(b':')"));
+        assert!(rename.contains("(*information).RootDirectory = parent_handle.0;"));
+        assert!(!rename.contains("RootDirectory = HANDLE::default()"));
+        assert_eq!(rename.matches("destination_name.encode_wide()").count(), 2);
+        let opened_parent = rename.find("open_rename_parent(source_parent)").unwrap();
+        let checked_destination = rename
+            .find("ensure_absent(destination, destination_label)")
+            .unwrap();
+        let opened_source = rename.find("open_mutation_target(source, true").unwrap();
+        let applied = rename.find("SetFileInformationByHandle(").unwrap();
+        let verified = rename
+            .find("validate_real_directory(destination, destination_label)")
+            .unwrap();
+        let released_source = rename.find("drop(handle);").unwrap();
+        let released_parent = rename.find("drop(parent_handle);").unwrap();
+        assert!(
+            opened_parent < opened_source
+                && opened_parent < checked_destination
+                && checked_destination < opened_source
+                && opened_source < applied
+                && applied < verified
+                && verified < released_source
+                && released_source < released_parent
+        );
+        let parent_opener = filesystem
+            .split_once("fn open_rename_parent")
+            .unwrap()
+            .1
+            .split_once("fn delete_opened_mutation_target")
+            .unwrap()
+            .0;
+        assert!(parent_opener.contains("FILE_TRAVERSE.0 | FILE_READ_ATTRIBUTES.0"));
+        assert!(!parent_opener.contains("DELETE.0"));
         assert!(transaction.contains("remove_empty_directory_by_handle("));
         assert!(!filesystem.contains("fs::rename("));
         assert!(!filesystem.contains("fs::remove_dir("));

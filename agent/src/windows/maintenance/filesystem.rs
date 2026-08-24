@@ -142,9 +142,10 @@ impl Drop for MutationTargetHandle {
     }
 }
 
-fn open_mutation_target(
+fn open_mutation_target_with_access(
     path: &Path,
     expected_directory: bool,
+    desired_access: u32,
     operation: &str,
 ) -> anyhow::Result<MutationTargetHandle> {
     let mut flags = FILE_FLAG_OPEN_REPARSE_POINT;
@@ -152,13 +153,12 @@ fn open_mutation_target(
         flags |= FILE_FLAG_BACKUP_SEMANTICS;
     }
     let wide_path = wide_null(path.as_os_str());
-    // DELETE access permits rename/disposition changes. Omitting
-    // FILE_SHARE_DELETE prevents the validated object from being replaced
-    // before the handle-bound mutation completes.
+    // Omitting FILE_SHARE_DELETE prevents the validated object from being
+    // replaced before the handle-bound mutation completes.
     let handle = unsafe {
         CreateFileW(
             PCWSTR(wide_path.as_ptr()),
-            DELETE.0 | FILE_READ_ATTRIBUTES.0,
+            desired_access,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             None,
             OPEN_EXISTING,
@@ -184,6 +184,29 @@ fn open_mutation_target(
     })
     .with_context(|| format!("refusing {operation} for {}", path.display()))?;
     Ok(handle)
+}
+
+fn open_mutation_target(
+    path: &Path,
+    expected_directory: bool,
+    operation: &str,
+) -> anyhow::Result<MutationTargetHandle> {
+    // DELETE access permits rename and disposition changes on this target.
+    open_mutation_target_with_access(
+        path,
+        expected_directory,
+        DELETE.0 | FILE_READ_ATTRIBUTES.0,
+        operation,
+    )
+}
+
+fn open_rename_parent(path: &Path) -> anyhow::Result<MutationTargetHandle> {
+    open_mutation_target_with_access(
+        path,
+        true,
+        FILE_TRAVERSE.0 | FILE_READ_ATTRIBUTES.0,
+        "managed rename parent directory",
+    )
 }
 
 fn delete_opened_mutation_target(handle: MutationTargetHandle, path: &Path) -> anyhow::Result<()> {
@@ -334,6 +357,11 @@ fn rename_managed_directory_by_handle(
     destination_label: &str,
 ) -> anyhow::Result<()> {
     ensure!(
+        source.is_absolute(),
+        "managed rename source is not absolute: {}",
+        source.display()
+    );
+    ensure!(
         destination.is_absolute(),
         "managed rename destination is not absolute: {}",
         destination.display()
@@ -342,14 +370,37 @@ fn rename_managed_directory_by_handle(
         source != destination,
         "managed rename source and destination are identical"
     );
+    let source_parent = source
+        .parent()
+        .context("managed rename source has no parent directory")?;
+    ensure!(
+        destination.parent() == Some(source_parent),
+        "managed rename destination must share the source parent directory"
+    );
+    let destination_name = destination
+        .file_name()
+        .context("managed rename destination has no file name")?;
+    let mut destination_components = Path::new(destination_name).components();
+    ensure!(
+        matches!(destination_components.next(), Some(Component::Normal(_)))
+            && destination_components.next().is_none(),
+        "managed rename destination file name is not a single normal component"
+    );
+    // Resolve the fixed sibling name relative to an opened, validated parent
+    // so the destination namespace is deterministic across implementations.
+    let parent_handle = open_rename_parent(source_parent)?;
     ensure_absent(destination, destination_label)?;
     let handle = open_mutation_target(source, true, "managed directory rename")?;
 
     let mut file_name_utf16_units = 0usize;
-    for code_unit in destination.as_os_str().encode_wide() {
+    for code_unit in destination_name.encode_wide() {
         ensure!(
             code_unit != 0,
             "managed rename destination contains an embedded NUL"
+        );
+        ensure!(
+            code_unit != u16::from(b':'),
+            "managed rename destination contains an alternate-stream separator"
         );
         file_name_utf16_units = file_name_utf16_units
             .checked_add(1)
@@ -392,14 +443,14 @@ fn rename_managed_directory_by_handle(
     unsafe {
         ptr::write(information, FILE_RENAME_INFO::default());
         (*information).Anonymous.ReplaceIfExists = false;
-        (*information).RootDirectory = HANDLE::default();
+        (*information).RootDirectory = parent_handle.0;
         (*information).FileNameLength = plan.file_name_bytes;
         let file_name = storage
             .as_mut_ptr()
             .cast::<u8>()
             .add(file_name_offset)
             .cast::<u16>();
-        for (index, code_unit) in destination.as_os_str().encode_wide().enumerate() {
+        for (index, code_unit) in destination_name.encode_wide().enumerate() {
             file_name.add(index).write(code_unit);
         }
         SetFileInformationByHandle(
@@ -419,6 +470,7 @@ fn rename_managed_directory_by_handle(
     ensure_absent(source, "managed rename source after handle-bound rename")?;
     validate_real_directory(destination, destination_label)?;
     drop(handle);
+    drop(parent_handle);
     Ok(())
 }
 
