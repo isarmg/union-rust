@@ -300,11 +300,16 @@
 }
 
 .sunshine-inline-input:focus-visible {
-  outline: none;
+  outline: 3px solid color-mix(in srgb, var(--primary) 35%, transparent);
+  outline-offset: 2px;
 }
 
 .sunshine-inline-input.input-error {
   border-bottom-color: var(--danger);
+}
+
+.sunshine-inline-input.input-error:focus-visible {
+  outline-color: color-mix(in srgb, var(--danger) 45%, transparent);
 }
 
 .sunshine-inline-input.compact {
