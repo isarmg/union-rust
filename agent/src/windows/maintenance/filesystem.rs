@@ -258,19 +258,63 @@ fn purge_started(paths: &FixedPaths) -> anyhow::Result<bool> {
     }
 }
 
-fn create_protected_journal(path: &Path) -> anyhow::Result<()> {
-    fs::create_dir(path).with_context(|| format!("failed to create {}", path.display()))?;
-    validate_real_directory(path, "new maintenance journal")?;
-    if let Err(error) = secure_system_admin_only(path, false) {
-        let _ = remove_tree_no_reparse(path);
-        return Err(error.context("failed to secure maintenance journal"));
+struct LocalSecurityDescriptor(PSECURITY_DESCRIPTOR);
+
+impl Drop for LocalSecurityDescriptor {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            let _ = unsafe { LocalFree(Some(HLOCAL(self.0.0))) };
+        }
     }
-    validate_managed_dacl(path, false)
+}
+
+fn create_system_admin_only_directory(path: &Path, label: &str) -> anyhow::Result<()> {
+    let descriptor_text = protected_directory_security_descriptor();
+    let wide_descriptor = wide_null(OsStr::new(&descriptor_text));
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PCWSTR(wide_descriptor.as_ptr()),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            None,
+        )
+    }
+    .context("failed to build the protected directory security descriptor")?;
+    let descriptor = LocalSecurityDescriptor(descriptor);
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>())
+            .context("SECURITY_ATTRIBUTES size does not fit in a DWORD")?,
+        lpSecurityDescriptor: descriptor.0.0,
+        bInheritHandle: false.into(),
+    };
+    let wide_path = wide_null(path.as_os_str());
+    unsafe { CreateDirectoryW(PCWSTR(wide_path.as_ptr()), Some(&attributes)) }
+        .with_context(|| format!("failed to create protected {label} {}", path.display()))?;
+
+    if let Err(error) =
+        validate_real_directory(path, label).and_then(|_| validate_managed_dacl(path, false))
+    {
+        let cleanup = remove_tree_no_reparse(path);
+        return match cleanup {
+            Ok(()) => Err(error.context(format!("failed to verify protected {label}"))),
+            Err(cleanup_error) => Err(error.context(format!(
+                "failed to verify protected {label}; cleanup also failed: {cleanup_error:#}"
+            ))),
+        };
+    }
+    Ok(())
+}
+
+fn create_protected_journal(path: &Path) -> anyhow::Result<()> {
+    create_system_admin_only_directory(path, "new maintenance journal")
 }
 
 fn write_or_validate_state_marker(paths: &FixedPaths) -> anyhow::Result<()> {
-    fs::create_dir_all(&paths.state_root)?;
-    validate_real_directory(&paths.state_root, "state root")?;
+    validate_real_directory(
+        &paths.state_root,
+        "state root required before marker update",
+    )?;
     let marker = paths.state_root.join(STATE_MARKER);
     if marker.exists() {
         validate_marker_file(&marker)?;

@@ -359,6 +359,11 @@ fn managed_state_security_descriptor(service_sid: Option<&str>) -> String {
 }
 
 #[cfg(any(windows, test))]
+fn protected_directory_security_descriptor() -> String {
+    managed_state_security_descriptor(None)
+}
+
+#[cfg(any(windows, test))]
 fn parse_program_dacl(sddl: &str, service_sid: &str) -> anyhow::Result<()> {
     ensure!(
         sddl.starts_with("O:SY"),
@@ -450,9 +455,9 @@ mod windows_maintenance {
         AclCurrentPathFact, AclSnapshotPathFact, MAX_ACL_SNAPSHOT_BYTES, MAX_ACL_SNAPSHOT_ENTRIES,
         MAX_MAINTENANCE_PATH_BYTES, MAX_MAINTENANCE_TREE_NODES, enqueue_bounded_tree_path,
         managed_state_security_descriptor, parse_program_dacl, program_security_descriptor,
-        read_file_bounded, record_bounded_tree_node, rollback_path_exists,
-        run_validated_acl_restore_plan, try_push_bounded_acl_snapshot_entry, try_push_bounded_path,
-        try_reserve_bounded,
+        protected_directory_security_descriptor, read_file_bounded, record_bounded_tree_node,
+        rollback_path_exists, run_validated_acl_restore_plan, try_push_bounded_acl_snapshot_entry,
+        try_push_bounded_path, try_reserve_bounded,
     };
     use std::{
         ffi::{OsStr, OsString, c_void},
@@ -475,15 +480,19 @@ mod windows_maintenance {
         Win32::{
             Foundation::{
                 CloseHandle, ERROR_NOT_ALL_ASSIGNED, ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SUCCESS,
-                GetLastError, HANDLE, LocalFree, SetLastError,
+                GetLastError, HANDLE, HLOCAL, LocalFree, SetLastError,
             },
             Security::{
-                AdjustTokenPrivileges, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW,
-                SE_PRIVILEGE_ENABLED, SE_RESTORE_NAME, SE_TAKE_OWNERSHIP_NAME,
+                AdjustTokenPrivileges,
+                Authorization::{
+                    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+                },
+                LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, PSECURITY_DESCRIPTOR,
+                SE_PRIVILEGE_ENABLED, SE_RESTORE_NAME, SE_TAKE_OWNERSHIP_NAME, SECURITY_ATTRIBUTES,
                 TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
             },
             Storage::FileSystem::{
-                BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT,
+                BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, FILE_ATTRIBUTE_REPARSE_POINT,
                 FILE_FLAG_OPEN_REPARSE_POINT, GetFileInformationByHandle,
             },
             System::{
@@ -754,6 +763,24 @@ mod program_acl_template_tests {
                  (A;OICI;0x1301bf;;;{SERVICE_SID})(A;OICI;RC;;;OW)"
             )
         );
+    }
+
+    #[test]
+    fn protected_directory_creation_contract_is_atomic_and_system_admin_only() {
+        assert_eq!(
+            protected_directory_security_descriptor(),
+            "O:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;RC;;;OW)"
+        );
+
+        let filesystem = include_str!("filesystem.rs");
+        let transaction = include_str!("transaction.rs");
+        assert!(filesystem.contains("CreateDirectoryW("));
+        assert!(filesystem.contains("SECURITY_ATTRIBUTES {"));
+        assert!(transaction.contains("create_system_admin_only_directory(&paths.state_root"));
+        assert!(!filesystem.contains("fs::create_dir("));
+        assert!(!filesystem.contains("fs::create_dir_all("));
+        assert!(!transaction.contains("fs::create_dir("));
+        assert!(!transaction.contains("fs::create_dir_all("));
     }
 }
 

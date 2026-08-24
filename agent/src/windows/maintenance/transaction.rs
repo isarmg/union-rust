@@ -103,16 +103,7 @@ fn apply_install(paths: &FixedPaths) -> anyhow::Result<()> {
             &paths.state_root,
             "state root that appeared after install preflight",
         )?;
-        fs::create_dir(&paths.state_root).with_context(|| {
-            format!(
-                "failed to create the fixed Agent state root {}",
-                paths.state_root.display()
-            )
-        })?;
-        validate_real_directory(&paths.state_root, "new state root")?;
-        // Close the ProgramData inheritance window before service setup.
-        secure_system_admin_only(&paths.state_root, false)?;
-        validate_managed_dacl(&paths.state_root, false)?;
+        create_system_admin_only_directory(&paths.state_root, "new Agent state root")?;
         write_new_private(
             &paths.config,
             &serde_json::to_vec_pretty(&AgentConfig::default())?,
