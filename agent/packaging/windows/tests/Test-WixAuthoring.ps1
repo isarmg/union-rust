@@ -160,7 +160,7 @@ Assert-Contains $trayText '.arg("--tray-activation-stdin")' `
     "The elevated Agent child must receive the authorization key through anonymous stdin."
 Assert-Contains $trayText '.stdin(Stdio::piped())' `
     "The elevated pairing broker must create a private stdin pipe for the Agent child."
-if ($trayText -notmatch '(?s)\.serve\(process,\s*&server_for_ipc,\s*activation_code\)\s*\.and_then\(\|\(\)\|\s*\{\s*save_preferences') {
+if ($trayText -notmatch '(?s)let\s+outcome\s*=\s*ipc\.serve\(process,\s*&server_for_ipc,\s*activation_code\);\s*let\s+preferences_warning\s*=\s*outcome\.as_ref\(\)\.ok\(\)\.and_then\(\|_\|\s*\{\s*super::committed_pairing_preferences_warning\(save_preferences') {
     throw "Tray preferences must be saved only after the elevated pairing broker succeeds."
 }
 
