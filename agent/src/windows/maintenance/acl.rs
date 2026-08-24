@@ -590,7 +590,7 @@ fn security_descriptor_sddl(path: &Path) -> anyhow::Result<String> {
 }
 
 fn set_managed_security_descriptor(path: &Path, sddl: &str) -> anyhow::Result<()> {
-    set_security_descriptor(path, sddl, true)
+    set_security_descriptor(path, sddl, true, true)
 }
 
 fn saved_dacl_is_protected(sddl: &str) -> anyhow::Result<bool> {
@@ -633,11 +633,22 @@ fn validate_saved_security_descriptor(sddl: &str) -> anyhow::Result<()> {
 }
 
 fn restore_security_descriptor(path: &Path, sddl: &str) -> anyhow::Result<()> {
-    set_security_descriptor(path, sddl, saved_dacl_is_protected(sddl)?)
+    set_security_descriptor(path, sddl, saved_dacl_is_protected(sddl)?, false)
 }
 
-fn set_security_descriptor(path: &Path, sddl: &str, protected: bool) -> anyhow::Result<()> {
-    let wide_sddl = wide_null(OsStr::new(sddl));
+fn set_security_descriptor(
+    path: &Path,
+    sddl: &str,
+    protected: bool,
+    managed_template: bool,
+) -> anyhow::Result<()> {
+    let handle = open_acl_target_for_write(path)?;
+    let target_sddl = if managed_template {
+        managed_security_descriptor_for_target(sddl, handle.is_directory)
+    } else {
+        std::borrow::Cow::Borrowed(sddl)
+    };
+    let wide_sddl = wide_null(OsStr::new(target_sddl.as_ref()));
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
     let conversion = unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -676,7 +687,6 @@ fn set_security_descriptor(path: &Path, sddl: &str, protected: bool) -> anyhow::
         "exact Agent security descriptor has no DACL"
     );
 
-    let handle = open_acl_target_for_write(path)?;
     let status = unsafe {
         SetSecurityInfo(
             handle.raw,

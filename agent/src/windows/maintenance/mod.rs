@@ -617,6 +617,18 @@ fn managed_state_security_descriptor(service_sid: Option<&str>) -> String {
 }
 
 #[cfg(any(windows, test))]
+fn managed_security_descriptor_for_target(
+    descriptor: &str,
+    is_directory: bool,
+) -> std::borrow::Cow<'_, str> {
+    if is_directory {
+        std::borrow::Cow::Borrowed(descriptor)
+    } else {
+        std::borrow::Cow::Owned(descriptor.replace(";OICI;", ";;"))
+    }
+}
+
+#[cfg(any(windows, test))]
 fn protected_directory_security_descriptor() -> String {
     managed_state_security_descriptor(None)
 }
@@ -837,11 +849,12 @@ mod windows_maintenance {
         MAX_MAINTENANCE_PATH_BYTES, MAX_MAINTENANCE_TREE_NODES, MAX_OPEN_MUTATION_DIRECTORIES,
         OpenedManagedTargetFacts, checked_child_directory_depth, checked_rename_buffer_plan,
         checked_rename_storage_bytes, enqueue_bounded_tree_path, maintenance_diagnostic_payload,
-        managed_state_security_descriptor, parse_maintenance_arguments, parse_managed_dacl,
-        parse_program_dacl, program_security_descriptor, protected_directory_security_descriptor,
-        read_file_bounded, record_bounded_tree_node, rollback_path_exists,
-        run_validated_acl_restore_plan, try_push_bounded_acl_snapshot_entry, try_push_bounded_path,
-        try_reserve_bounded, validate_opened_managed_target_facts,
+        managed_security_descriptor_for_target, managed_state_security_descriptor,
+        parse_maintenance_arguments, parse_managed_dacl, parse_program_dacl,
+        program_security_descriptor, protected_directory_security_descriptor, read_file_bounded,
+        record_bounded_tree_node, rollback_path_exists, run_validated_acl_restore_plan,
+        try_push_bounded_acl_snapshot_entry, try_push_bounded_path, try_reserve_bounded,
+        validate_opened_managed_target_facts,
     };
     use std::{
         ffi::{OsStr, OsString, c_void},
@@ -1140,7 +1153,12 @@ mod program_acl_template_tests {
         assert!(parse_program_dacl(&obsolete_service_only, SERVICE_SID, true).is_err());
 
         let directory = program_security_descriptor(SERVICE_SID);
-        let file = directory.replace(";OICI;", ";;");
+        let file = managed_security_descriptor_for_target(&directory, false);
+        assert_eq!(
+            managed_security_descriptor_for_target(&directory, true),
+            directory
+        );
+        assert!(!file.contains("OICI"));
         parse_program_dacl(&directory, SERVICE_SID, true).unwrap();
         parse_program_dacl(&file, SERVICE_SID, false).unwrap();
         parse_program_dacl(&directory.replacen("D:P", "D:PAI", 1), SERVICE_SID, true).unwrap();
@@ -1178,7 +1196,7 @@ mod program_acl_template_tests {
         assert!(parse_managed_dacl(&installed_file, SERVICE_SID, true, true).is_err());
 
         let preserved_directory = managed_state_security_descriptor(None);
-        let preserved_file = preserved_directory.replace(";OICI;", ";;");
+        let preserved_file = managed_security_descriptor_for_target(&preserved_directory, false);
         parse_managed_dacl(&preserved_directory, SERVICE_SID, false, true).unwrap();
         parse_managed_dacl(&preserved_file, SERVICE_SID, false, false).unwrap();
     }
@@ -1296,6 +1314,12 @@ mod managed_handle_target_tests {
         assert!(source.contains("GetSecurityInfo("));
         assert!(source.contains("SetSecurityInfo("));
         assert!(source.contains("FILE_SHARE_READ | FILE_SHARE_WRITE"));
+        assert!(
+            source.contains("managed_security_descriptor_for_target(sddl, handle.is_directory)")
+        );
+        assert!(source.contains(
+            "set_security_descriptor(path, sddl, saved_dacl_is_protected(sddl)?, false)"
+        ));
         assert!(!source.contains("GetNamedSecurityInfoW("));
         assert!(!source.contains("SetFileSecurityW("));
     }
