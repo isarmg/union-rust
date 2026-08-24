@@ -223,6 +223,7 @@ fn checked_rename_buffer_plan(
         .context("rename destination UTF-16 byte count overflowed")?;
     let buffer_bytes = header_bytes
         .checked_add(file_name_bytes)
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<u16>()))
         .context("rename information buffer size overflowed")?;
     ensure!(
         buffer_bytes <= hard_limit,
@@ -256,6 +257,7 @@ fn checked_rename_storage_bytes(
         .context("rename destination byte count does not fit in usize")?;
     let populated_bytes = file_name_offset
         .checked_add(file_name_bytes)
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<u16>()))
         .context("rename information populated size overflowed")?;
     ensure!(
         u32::try_from(populated_bytes)
@@ -1375,7 +1377,7 @@ mod managed_handle_target_tests {
 
         let plan = RenameBufferPlan {
             file_name_bytes: 8,
-            buffer_bytes: 28,
+            buffer_bytes: 30,
             storage_words: 4,
         };
         assert_eq!(checked_rename_buffer_plan(4, 20, 8, 64).unwrap(), plan);
@@ -1393,7 +1395,7 @@ mod managed_handle_target_tests {
             .is_err()
         );
         assert!(checked_rename_buffer_plan(0, 20, 8, 64).is_err());
-        assert!(checked_rename_buffer_plan(4, 20, 8, 27).is_err());
+        assert!(checked_rename_buffer_plan(4, 20, 8, 29).is_err());
         assert!(checked_rename_buffer_plan(usize::MAX, 20, 8, usize::MAX).is_err());
 
         let filesystem = include_str!("filesystem.rs");
@@ -1440,9 +1442,14 @@ mod managed_handle_target_tests {
         assert!(rename.contains("source.is_absolute()"));
         assert!(rename.contains("Component::Normal(_)"));
         assert!(rename.contains("u16::from(b':')"));
-        assert!(rename.contains("(*information).RootDirectory = parent_handle.0;"));
-        assert!(!rename.contains("RootDirectory = HANDLE::default()"));
-        assert_eq!(rename.matches("destination_name.encode_wide()").count(), 2);
+        assert!(rename.contains("(*information).RootDirectory = HANDLE::default();"));
+        assert!(!rename.contains("RootDirectory = parent_handle.0"));
+        assert_eq!(
+            rename
+                .matches("destination.as_os_str().encode_wide()")
+                .count(),
+            2
+        );
         let opened_parent = rename.find("open_rename_parent(source_parent)").unwrap();
         let checked_destination = rename
             .find("ensure_absent(destination, destination_label)")
