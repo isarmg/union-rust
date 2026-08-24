@@ -204,6 +204,8 @@ fn try_reserve_bounded<T>(
 }
 
 #[cfg(any(windows, test))]
+// Keep both independent caps and their mutable accounting explicit at each call site.
+#[allow(clippy::too_many_arguments)]
 fn try_push_bounded_acl_snapshot_entry<T>(
     entries: &mut Vec<T>,
     entry: T,
