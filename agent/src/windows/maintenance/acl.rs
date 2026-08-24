@@ -55,8 +55,8 @@ fn validate_program_tree(path: &Path) -> anyhow::Result<()> {
 }
 
 fn validate_program_dacl(path: &Path) -> anyhow::Result<()> {
-    let sddl = security_descriptor_sddl(path)?;
-    parse_program_dacl(&sddl, &service_sid_string()?)
+    let (sddl, is_directory) = security_descriptor_sddl_with_target_type(path)?;
+    parse_program_dacl(&sddl, &service_sid_string()?, is_directory)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -407,108 +407,25 @@ fn collect_current_acl_path_facts(root: &Path) -> anyhow::Result<Vec<AclCurrentP
 }
 
 fn validate_managed_dacl(path: &Path, require_service_access: bool) -> anyhow::Result<()> {
-    let sddl = security_descriptor_sddl(path)?;
-    ensure!(
-        sddl.starts_with("O:SY"),
-        "managed state owner is not SYSTEM: {sddl}"
-    );
-    let dacl = sddl
-        .split("D:")
-        .nth(1)
-        .context("security descriptor has no DACL")?;
-    let (control, _) = dacl
-        .split_once('(')
-        .context("managed state DACL contains no ACEs")?;
-    ensure!(
-        is_protected_dacl_control(control),
-        "managed state DACL has unexpected protection flags: {sddl}"
-    );
+    let (sddl, is_directory) = security_descriptor_sddl_with_target_type(path)?;
     let service_sid = service_sid_string()?;
-    let mut system = false;
-    let mut admins = false;
-    let mut owner_rights = false;
-    let mut service = false;
-    for ace in dacl.split('(').skip(1) {
-        let ace = ace.split(')').next().context("malformed DACL ACE")?;
-        let fields = ace.split(';').collect::<Vec<_>>();
-        ensure!(
-            fields.len() == 6 && fields[0] == "A",
-            "unexpected DACL ACE: ({ace})"
-        );
-        ensure!(
-            matches!(fields[1], "OICI" | "CIOI"),
-            "managed state ACE flags are not exactly object/container inherit: ({ace})"
-        );
-        ensure!(
-            fields[3].is_empty() && fields[4].is_empty(),
-            "managed state contains an object-specific ACE: ({ace})"
-        );
-        match fields[5] {
-            "SY" | "S-1-5-18" => {
-                ensure!(!system, "managed state contains duplicate SYSTEM ACEs");
-                ensure!(
-                    fields[2] == "FA",
-                    "SYSTEM does not have exactly full access"
-                );
-                system = true;
-            }
-            "BA" | "S-1-5-32-544" => {
-                ensure!(
-                    !admins,
-                    "managed state contains duplicate Administrators ACEs"
-                );
-                ensure!(
-                    fields[2] == "FA",
-                    "Administrators do not have exactly full access"
-                );
-                admins = true;
-            }
-            "OW" | "S-1-3-4" => {
-                ensure!(
-                    !owner_rights,
-                    "managed state contains duplicate OWNER RIGHTS ACEs"
-                );
-                ensure!(
-                    fields[2] == "RC",
-                    "OWNER RIGHTS does not have ReadPermissions only"
-                );
-                owner_rights = true;
-            }
-            trustee if service_sid == trustee => {
-                ensure!(
-                    !service,
-                    "managed state contains duplicate service SID ACEs"
-                );
-                ensure!(
-                    matches!(fields[2], "0x1301bf" | "0x001301bf"),
-                    "service SID does not have exactly Modify access"
-                );
-                service = true;
-            }
-            trustee => bail!("unexpected state DACL trustee {trustee}"),
-        }
-    }
-    ensure!(
-        system && admins && owner_rights,
-        "managed state DACL is incomplete"
-    );
-    ensure!(
-        !require_service_access || service,
-        "managed state DACL lacks the service SID"
-    );
-    ensure!(
-        require_service_access || !service,
-        "preserved state still grants the service SID"
-    );
-    Ok(())
+    parse_managed_dacl(
+        &sddl,
+        &service_sid,
+        require_service_access,
+        is_directory,
+    )
 }
 
-struct AclTargetHandle(HANDLE);
+struct AclTargetHandle {
+    raw: HANDLE,
+    is_directory: bool,
+}
 
 impl Drop for AclTargetHandle {
     fn drop(&mut self) {
-        if !self.0.is_invalid() {
-            let _ = unsafe { CloseHandle(self.0) };
+        if !self.raw.is_invalid() {
+            let _ = unsafe { CloseHandle(self.raw) };
         }
     }
 }
@@ -559,18 +476,23 @@ fn open_acl_target(
         )
     }
     .with_context(|| format!("failed to open {} for {operation}", path.display()))?;
-    let handle = AclTargetHandle(handle);
+    let mut handle = AclTargetHandle {
+        raw: handle,
+        is_directory: false,
+    };
 
     let mut information = BY_HANDLE_FILE_INFORMATION::default();
-    unsafe { GetFileInformationByHandle(handle.0, &mut information) }
+    unsafe { GetFileInformationByHandle(handle.raw, &mut information) }
         .with_context(|| format!("failed to inspect opened ACL target {}", path.display()))?;
+    let actual_directory = information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0;
     validate_opened_managed_target_facts(OpenedManagedTargetFacts {
         expected_directory,
-        actual_directory: information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0,
+        actual_directory,
         is_reparse_point: information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0,
         hard_link_count: information.nNumberOfLinks,
     })
     .with_context(|| format!("refusing ACL access to {}", path.display()))?;
+    handle.is_directory = actual_directory;
     Ok(handle)
 }
 
@@ -598,12 +520,12 @@ fn check_security_status(
         .with_context(|| format!("{operation} failed for {}", path.display()))
 }
 
-fn security_descriptor_sddl(path: &Path) -> anyhow::Result<String> {
+fn security_descriptor_sddl_with_target_type(path: &Path) -> anyhow::Result<(String, bool)> {
     let handle = open_acl_target_for_read(path)?;
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
     let status = unsafe {
         GetSecurityInfo(
-            handle.0,
+            handle.raw,
             SE_FILE_OBJECT,
             OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             None,
@@ -649,12 +571,17 @@ fn security_descriptor_sddl(path: &Path) -> anyhow::Result<String> {
         .iter()
         .position(|code_unit| *code_unit == 0)
         .unwrap_or(utf16.len());
-    String::from_utf16(&utf16[..content_length]).with_context(|| {
+    let sddl = String::from_utf16(&utf16[..content_length]).with_context(|| {
         format!(
             "security descriptor for {} is not valid UTF-16",
             path.display()
         )
-    })
+    })?;
+    Ok((sddl, handle.is_directory))
+}
+
+fn security_descriptor_sddl(path: &Path) -> anyhow::Result<String> {
+    security_descriptor_sddl_with_target_type(path).map(|(sddl, _)| sddl)
 }
 
 fn set_managed_security_descriptor(path: &Path, sddl: &str) -> anyhow::Result<()> {
@@ -747,7 +674,7 @@ fn set_security_descriptor(path: &Path, sddl: &str, protected: bool) -> anyhow::
     let handle = open_acl_target_for_write(path)?;
     let status = unsafe {
         SetSecurityInfo(
-            handle.0,
+            handle.raw,
             SE_FILE_OBJECT,
             OWNER_SECURITY_INFORMATION
                 | DACL_SECURITY_INFORMATION

@@ -497,7 +497,16 @@ fn is_protected_dacl_control(control: &str) -> bool {
 }
 
 #[cfg(any(windows, test))]
-fn parse_program_dacl(sddl: &str, service_sid: &str) -> anyhow::Result<()> {
+fn has_exact_ace_inheritance_flags(flags: &str, is_directory: bool) -> bool {
+    if is_directory {
+        matches!(flags, "OICI" | "CIOI")
+    } else {
+        flags.is_empty()
+    }
+}
+
+#[cfg(any(windows, test))]
+fn parse_program_dacl(sddl: &str, service_sid: &str, is_directory: bool) -> anyhow::Result<()> {
     ensure!(
         sddl.starts_with("O:SY"),
         "program owner is not SYSTEM: {sddl}"
@@ -526,7 +535,7 @@ fn parse_program_dacl(sddl: &str, service_sid: &str) -> anyhow::Result<()> {
         ensure!(
             fields.len() == 6
                 && fields[0] == "A"
-                && matches!(fields[1], "OICI" | "CIOI")
+                && has_exact_ace_inheritance_flags(fields[1], is_directory)
                 && fields[3].is_empty()
                 && fields[4].is_empty(),
             "unexpected program DACL ACE: ({ace})"
@@ -571,6 +580,107 @@ fn parse_program_dacl(sddl: &str, service_sid: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(any(windows, test))]
+fn parse_managed_dacl(
+    sddl: &str,
+    service_sid: &str,
+    require_service_access: bool,
+    is_directory: bool,
+) -> anyhow::Result<()> {
+    ensure!(
+        sddl.starts_with("O:SY"),
+        "managed state owner is not SYSTEM: {sddl}"
+    );
+    let dacl = sddl
+        .split_once("D:")
+        .map(|(_, value)| value)
+        .context("security descriptor has no DACL")?;
+    let (control, _) = dacl
+        .split_once('(')
+        .context("managed state DACL contains no ACEs")?;
+    ensure!(
+        is_protected_dacl_control(control),
+        "managed state DACL has unexpected protection flags: {sddl}"
+    );
+    let mut system = false;
+    let mut admins = false;
+    let mut owner_rights = false;
+    let mut service = false;
+    for ace in dacl.split('(').skip(1) {
+        let ace = ace.split(')').next().context("malformed DACL ACE")?;
+        let fields = ace.split(';').collect::<Vec<_>>();
+        ensure!(
+            fields.len() == 6 && fields[0] == "A",
+            "unexpected DACL ACE: ({ace})"
+        );
+        ensure!(
+            has_exact_ace_inheritance_flags(fields[1], is_directory),
+            "managed state ACE flags do not match the target type: ({ace})"
+        );
+        ensure!(
+            fields[3].is_empty() && fields[4].is_empty(),
+            "managed state contains an object-specific ACE: ({ace})"
+        );
+        match fields[5] {
+            "SY" | "S-1-5-18" => {
+                ensure!(!system, "managed state contains duplicate SYSTEM ACEs");
+                ensure!(
+                    fields[2] == "FA",
+                    "SYSTEM does not have exactly full access"
+                );
+                system = true;
+            }
+            "BA" | "S-1-5-32-544" => {
+                ensure!(
+                    !admins,
+                    "managed state contains duplicate Administrators ACEs"
+                );
+                ensure!(
+                    fields[2] == "FA",
+                    "Administrators do not have exactly full access"
+                );
+                admins = true;
+            }
+            "OW" | "S-1-3-4" => {
+                ensure!(
+                    !owner_rights,
+                    "managed state contains duplicate OWNER RIGHTS ACEs"
+                );
+                ensure!(
+                    fields[2] == "RC",
+                    "OWNER RIGHTS does not have ReadPermissions only"
+                );
+                owner_rights = true;
+            }
+            trustee if service_sid == trustee => {
+                ensure!(
+                    !service,
+                    "managed state contains duplicate service SID ACEs"
+                );
+                ensure!(
+                    matches!(fields[2], "0x1301bf" | "0x001301bf"),
+                    "service SID does not have exactly Modify access"
+                );
+                service = true;
+            }
+            trustee => bail!("unexpected state DACL trustee {trustee}"),
+        }
+    }
+    ensure!(
+        system && admins && owner_rights,
+        "managed state DACL is incomplete"
+    );
+    ensure!(
+        !require_service_access || service,
+        "managed state DACL lacks the service SID"
+    );
+    ensure!(
+        require_service_access || !service,
+        "preserved state still grants the service SID"
+    );
+    Ok(())
+}
+
 #[cfg(not(windows))]
 pub(crate) fn entry() {
     eprintln!("unionc-agent-maintenance is available only on Windows");
@@ -591,8 +701,8 @@ mod windows_maintenance {
         AclCurrentPathFact, AclSnapshotPathFact, MAX_ACL_SNAPSHOT_BYTES, MAX_ACL_SNAPSHOT_ENTRIES,
         MAX_MAINTENANCE_PATH_BYTES, MAX_MAINTENANCE_TREE_NODES, MAX_OPEN_MUTATION_DIRECTORIES,
         OpenedManagedTargetFacts, checked_child_directory_depth, checked_rename_buffer_plan,
-        checked_rename_storage_bytes, enqueue_bounded_tree_path, is_protected_dacl_control,
-        managed_state_security_descriptor, parse_program_dacl, program_security_descriptor,
+        checked_rename_storage_bytes, enqueue_bounded_tree_path, managed_state_security_descriptor,
+        parse_managed_dacl, parse_program_dacl, program_security_descriptor,
         protected_directory_security_descriptor, read_file_bounded, record_bounded_tree_node,
         rollback_path_exists, run_validated_acl_restore_plan, try_push_bounded_acl_snapshot_entry,
         try_push_bounded_path, try_reserve_bounded, validate_opened_managed_target_facts,
@@ -881,23 +991,50 @@ mod program_acl_template_tests {
             "O:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)\
              (A;OICI;0x1200a9;;;{SERVICE_SID})"
         );
-        assert!(parse_program_dacl(&obsolete_service_only, SERVICE_SID).is_err());
+        assert!(parse_program_dacl(&obsolete_service_only, SERVICE_SID, true).is_err());
 
-        let tray_enabled = program_security_descriptor(SERVICE_SID);
-        parse_program_dacl(&tray_enabled, SERVICE_SID).unwrap();
-        parse_program_dacl(&tray_enabled.replacen("D:P", "D:PAI", 1), SERVICE_SID).unwrap();
+        let directory = program_security_descriptor(SERVICE_SID);
+        let file = directory.replace(";OICI;", ";;");
+        parse_program_dacl(&directory, SERVICE_SID, true).unwrap();
+        parse_program_dacl(&file, SERVICE_SID, false).unwrap();
+        parse_program_dacl(&directory.replacen("D:P", "D:PAI", 1), SERVICE_SID, true).unwrap();
+        parse_program_dacl(&file.replacen("D:P", "D:PAI", 1), SERVICE_SID, false).unwrap();
+        assert!(parse_program_dacl(&directory, SERVICE_SID, false).is_err());
+        assert!(parse_program_dacl(&file, SERVICE_SID, true).is_err());
 
         for unsupported_control in ["", "AI", "PAR", "PAIAR", "PX"] {
-            let unsupported = tray_enabled.replacen("D:P", &format!("D:{unsupported_control}"), 1);
-            assert!(parse_program_dacl(&unsupported, SERVICE_SID).is_err());
+            let unsupported = directory.replacen("D:P", &format!("D:{unsupported_control}"), 1);
+            assert!(parse_program_dacl(&unsupported, SERVICE_SID, true).is_err());
         }
 
-        let users_can_write = tray_enabled.replace("(A;OICI;0x1200a9;;;BU)", "(A;OICI;FA;;;BU)");
-        assert!(parse_program_dacl(&users_can_write, SERVICE_SID).is_err());
+        let users_can_write = directory.replace("(A;OICI;0x1200a9;;;BU)", "(A;OICI;FA;;;BU)");
+        assert!(parse_program_dacl(&users_can_write, SERVICE_SID, true).is_err());
 
         let unexpected_authenticated_users =
-            tray_enabled.replace("(A;OICI;0x1200a9;;;BU)", "(A;OICI;0x1200a9;;;AU)");
-        assert!(parse_program_dacl(&unexpected_authenticated_users, SERVICE_SID).is_err());
+            directory.replace("(A;OICI;0x1200a9;;;BU)", "(A;OICI;0x1200a9;;;AU)");
+        assert!(parse_program_dacl(&unexpected_authenticated_users, SERVICE_SID, true).is_err());
+    }
+
+    #[test]
+    fn managed_state_parser_matches_directory_and_file_ace_flags() {
+        let installed_directory = managed_state_security_descriptor(Some(SERVICE_SID));
+        let installed_file = installed_directory.replace(";OICI;", ";;");
+        parse_managed_dacl(&installed_directory, SERVICE_SID, true, true).unwrap();
+        parse_managed_dacl(&installed_file, SERVICE_SID, true, false).unwrap();
+        parse_managed_dacl(
+            &installed_file.replacen("D:P", "D:PAI", 1),
+            SERVICE_SID,
+            true,
+            false,
+        )
+        .unwrap();
+        assert!(parse_managed_dacl(&installed_directory, SERVICE_SID, true, false).is_err());
+        assert!(parse_managed_dacl(&installed_file, SERVICE_SID, true, true).is_err());
+
+        let preserved_directory = managed_state_security_descriptor(None);
+        let preserved_file = preserved_directory.replace(";OICI;", ";;");
+        parse_managed_dacl(&preserved_directory, SERVICE_SID, false, true).unwrap();
+        parse_managed_dacl(&preserved_file, SERVICE_SID, false, false).unwrap();
     }
 
     #[test]
