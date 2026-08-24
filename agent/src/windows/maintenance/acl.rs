@@ -102,7 +102,10 @@ fn apply_descriptor_recursively(path: &Path, descriptor: &str) -> anyhow::Result
         }
         index += 1;
     }
-    for target in targets {
+    // SetSecurityInfo propagates inheritable ACEs into existing children.
+    // Protect every descendant first so the later parent update cannot bypass
+    // the per-target handle validation or collide with MSI-owned child files.
+    for target in targets.into_iter().rev() {
         set_managed_security_descriptor(&target, descriptor)?;
     }
     Ok(())
@@ -144,7 +147,9 @@ fn apply_exact_acl(path: &Path, service_sid: Option<&str>, recursive: bool) -> a
             index += 1;
         }
     }
-    for target in targets {
+    // The collected order is parent-first. Reverse it so every descendant is
+    // protected before SetSecurityInfo sees its parent's inheritable ACEs.
+    for target in targets.into_iter().rev() {
         set_managed_security_descriptor(&target, &descriptor)?;
     }
     Ok(())

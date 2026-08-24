@@ -1301,6 +1301,22 @@ mod managed_handle_target_tests {
     }
 
     #[test]
+    fn recursive_acl_updates_protect_descendants_before_ancestors() {
+        let source = include_str!("acl.rs");
+        assert_eq!(
+            source
+                .matches("for target in targets.into_iter().rev() {")
+                .count(),
+            2,
+            "both recursive ACL application paths must run child-first"
+        );
+        assert!(
+            !source.contains("for target in targets {"),
+            "parent-first SetSecurityInfo would implicitly propagate into MSI child files"
+        );
+    }
+
+    #[test]
     fn rename_plan_is_aligned_bounded_and_used_for_all_tree_mutations() {
         assert_eq!(MAX_OPEN_MUTATION_DIRECTORIES, 256);
         assert_eq!(checked_child_directory_depth(255, 256).unwrap(), 256);
