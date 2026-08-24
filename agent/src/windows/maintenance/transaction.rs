@@ -223,12 +223,11 @@ fn remove_fresh_install_state(paths: &FixedPaths) -> anyhow::Result<()> {
             if validate_managed_dacl(&paths.state_root, false).is_ok() {
                 remove_tree_no_reparse(&paths.state_root)
             } else {
-                ensure!(
-                    fs::read_dir(&paths.state_root)?.next().is_none(),
-                    "an unmarked fresh-install state root is not protected by the exact pre-marker ACL"
-                );
-                fs::remove_dir(&paths.state_root)
-                    .context("failed to remove the empty fresh-install state root")
+                remove_empty_directory_by_handle(
+                    &paths.state_root,
+                    "unmarked fresh-install state root not protected by the exact pre-marker ACL",
+                )
+                .context("failed to remove the empty fresh-install state root by handle")
             }
         }
         Err(error) => Err(error).context("failed to inspect the fresh-install state marker"),
@@ -383,14 +382,11 @@ fn prepare_purge(paths: &FixedPaths) -> anyhow::Result<()> {
         &paths.uninstall_journal_root.join(PURGE_STARTED_FILE),
         PURGE_STARTED_CONTENT.as_bytes(),
     )?;
-    fs::rename(&paths.state_root, &paths.quarantine_root).with_context(|| {
-        format!(
-            "failed to atomically quarantine {} as {}",
-            paths.state_root.display(),
-            paths.quarantine_root.display()
-        )
-    })?;
-    validate_real_directory(&paths.quarantine_root, "purge quarantine")?;
+    rename_managed_directory_by_handle(
+        &paths.state_root,
+        &paths.quarantine_root,
+        "purge quarantine",
+    )?;
     Ok(())
 }
 
@@ -403,8 +399,12 @@ fn rollback_purge(paths: &FixedPaths) -> anyhow::Result<()> {
         validate_real_directory(&paths.quarantine_root, "purge quarantine")?;
         validate_tree(&paths.quarantine_root)?;
         ensure_absent(&paths.state_root, "replacement state root")?;
-        fs::rename(&paths.quarantine_root, &paths.state_root)
-            .context("failed to restore quarantined Agent state")?;
+        rename_managed_directory_by_handle(
+            &paths.quarantine_root,
+            &paths.state_root,
+            "restored Agent state root",
+        )
+        .context("failed to restore quarantined Agent state")?;
     }
     restore_service_state(
         paths,

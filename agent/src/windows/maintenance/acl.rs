@@ -564,7 +564,7 @@ fn open_acl_target(
     let mut information = BY_HANDLE_FILE_INFORMATION::default();
     unsafe { GetFileInformationByHandle(handle.0, &mut information) }
         .with_context(|| format!("failed to inspect opened ACL target {}", path.display()))?;
-    validate_acl_handle_target_facts(AclHandleTargetFacts {
+    validate_opened_managed_target_facts(OpenedManagedTargetFacts {
         expected_directory,
         actual_directory: information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0,
         is_reparse_point: information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0,

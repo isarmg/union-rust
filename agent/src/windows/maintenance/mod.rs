@@ -22,7 +22,7 @@ fn rollback_path_exists(path: &std::path::Path, label: &str) -> anyhow::Result<b
 
 #[cfg(any(windows, test))]
 #[derive(Clone, Copy, Debug)]
-struct AclHandleTargetFacts {
+struct OpenedManagedTargetFacts {
     expected_directory: bool,
     actual_directory: bool,
     is_reparse_point: bool,
@@ -30,20 +30,114 @@ struct AclHandleTargetFacts {
 }
 
 #[cfg(any(windows, test))]
-fn validate_acl_handle_target_facts(facts: AclHandleTargetFacts) -> anyhow::Result<()> {
+fn validate_opened_managed_target_facts(facts: OpenedManagedTargetFacts) -> anyhow::Result<()> {
     ensure!(
         !facts.is_reparse_point,
-        "ACL target handle refers to a reparse point"
+        "managed target handle refers to a reparse point"
     );
     ensure!(
         facts.actual_directory == facts.expected_directory,
-        "ACL target changed type while it was being opened"
+        "managed target changed type while it was being opened"
     );
     ensure!(
         facts.actual_directory || facts.hard_link_count == 1,
-        "ACL target handle refers to a multiply linked file"
+        "managed target handle refers to a multiply linked file"
     );
     Ok(())
+}
+
+#[cfg(any(windows, test))]
+const MAX_OPEN_MUTATION_DIRECTORIES: usize = 256;
+
+#[cfg(any(windows, test))]
+fn checked_child_directory_depth(parent_depth: usize, hard_limit: usize) -> anyhow::Result<usize> {
+    let child_depth = parent_depth
+        .checked_add(1)
+        .context("managed directory depth overflowed")?;
+    ensure!(
+        child_depth <= hard_limit,
+        "managed directory depth exceeds the hard limit of {hard_limit} open handles"
+    );
+    Ok(child_depth)
+}
+
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RenameBufferPlan {
+    file_name_bytes: u32,
+    buffer_bytes: u32,
+    storage_words: usize,
+}
+
+#[cfg(any(windows, test))]
+fn checked_rename_buffer_plan(
+    file_name_utf16_units: usize,
+    header_bytes: usize,
+    storage_word_bytes: usize,
+    hard_limit: usize,
+) -> anyhow::Result<RenameBufferPlan> {
+    ensure!(
+        file_name_utf16_units > 0,
+        "rename destination must not be empty"
+    );
+    ensure!(
+        storage_word_bytes > 0,
+        "rename buffer storage alignment must not be zero"
+    );
+    let file_name_bytes = file_name_utf16_units
+        .checked_mul(std::mem::size_of::<u16>())
+        .context("rename destination UTF-16 byte count overflowed")?;
+    let buffer_bytes = header_bytes
+        .checked_add(file_name_bytes)
+        .context("rename information buffer size overflowed")?;
+    ensure!(
+        buffer_bytes <= hard_limit,
+        "rename information exceeds the {hard_limit}-byte hard limit"
+    );
+    let storage_words = buffer_bytes
+        .checked_add(storage_word_bytes - 1)
+        .context("rename information storage size overflowed")?
+        / storage_word_bytes;
+    Ok(RenameBufferPlan {
+        file_name_bytes: u32::try_from(file_name_bytes)
+            .context("rename destination byte count does not fit in a DWORD")?,
+        buffer_bytes: u32::try_from(buffer_bytes)
+            .context("rename information buffer size does not fit in a DWORD")?,
+        storage_words,
+    })
+}
+
+#[cfg(any(windows, test))]
+fn checked_rename_storage_bytes(
+    plan: RenameBufferPlan,
+    storage_word_bytes: usize,
+    rust_struct_bytes: usize,
+    file_name_offset: usize,
+) -> anyhow::Result<usize> {
+    let allocated_bytes = plan
+        .storage_words
+        .checked_mul(storage_word_bytes)
+        .context("rename information allocation size overflowed")?;
+    let file_name_bytes = usize::try_from(plan.file_name_bytes)
+        .context("rename destination byte count does not fit in usize")?;
+    let populated_bytes = file_name_offset
+        .checked_add(file_name_bytes)
+        .context("rename information populated size overflowed")?;
+    ensure!(
+        u32::try_from(populated_bytes)
+            .context("rename information populated size does not fit in a DWORD")?
+            == plan.buffer_bytes,
+        "rename information plan is internally inconsistent"
+    );
+    ensure!(
+        allocated_bytes >= rust_struct_bytes,
+        "rename information allocation is smaller than FILE_RENAME_INFO"
+    );
+    ensure!(
+        allocated_bytes >= populated_bytes,
+        "rename information allocation is smaller than its flexible filename tail"
+    );
+    Ok(allocated_bytes)
 }
 
 /// State can legitimately contain the bounded report spool plus package files,
@@ -478,13 +572,14 @@ pub(crate) fn entry() {
 #[cfg(windows)]
 mod windows_maintenance {
     use super::{
-        AclCurrentPathFact, AclHandleTargetFacts, AclSnapshotPathFact, MAX_ACL_SNAPSHOT_BYTES,
-        MAX_ACL_SNAPSHOT_ENTRIES, MAX_MAINTENANCE_PATH_BYTES, MAX_MAINTENANCE_TREE_NODES,
-        enqueue_bounded_tree_path, managed_state_security_descriptor, parse_program_dacl,
-        program_security_descriptor, protected_directory_security_descriptor, read_file_bounded,
-        record_bounded_tree_node, rollback_path_exists, run_validated_acl_restore_plan,
-        try_push_bounded_acl_snapshot_entry, try_push_bounded_path, try_reserve_bounded,
-        validate_acl_handle_target_facts,
+        AclCurrentPathFact, AclSnapshotPathFact, MAX_ACL_SNAPSHOT_BYTES, MAX_ACL_SNAPSHOT_ENTRIES,
+        MAX_MAINTENANCE_PATH_BYTES, MAX_MAINTENANCE_TREE_NODES, MAX_OPEN_MUTATION_DIRECTORIES,
+        OpenedManagedTargetFacts, checked_child_directory_depth, checked_rename_buffer_plan,
+        checked_rename_storage_bytes, enqueue_bounded_tree_path, managed_state_security_descriptor,
+        parse_program_dacl, program_security_descriptor, protected_directory_security_descriptor,
+        read_file_bounded, record_bounded_tree_node, rollback_path_exists,
+        run_validated_acl_restore_plan, try_push_bounded_acl_snapshot_entry, try_push_bounded_path,
+        try_reserve_bounded, validate_opened_managed_target_facts,
     };
     use std::{
         ffi::{OsStr, OsString, c_void},
@@ -524,10 +619,12 @@ mod windows_maintenance {
                 UNPROTECTED_DACL_SECURITY_INFORMATION,
             },
             Storage::FileSystem::{
-                BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, CreateFileW,
-                FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-                FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
-                GetFileInformationByHandle, OPEN_EXISTING, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
+                BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, CreateFileW, DELETE,
+                FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO,
+                FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+                FILE_RENAME_INFO, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo,
+                FileRenameInfo, GetFileInformationByHandle, OPEN_EXISTING, READ_CONTROL,
+                SetFileInformationByHandle, WRITE_DAC, WRITE_OWNER,
             },
             System::{
                 Com::CoTaskMemFree,
@@ -843,19 +940,19 @@ mod rollback_path_tests {
 }
 
 #[cfg(test)]
-mod acl_handle_target_tests {
+mod managed_handle_target_tests {
     use super::*;
 
     #[test]
-    fn opened_acl_target_must_keep_its_safe_file_identity() {
-        validate_acl_handle_target_facts(AclHandleTargetFacts {
+    fn opened_target_must_keep_its_safe_file_identity() {
+        validate_opened_managed_target_facts(OpenedManagedTargetFacts {
             expected_directory: false,
             actual_directory: false,
             is_reparse_point: false,
             hard_link_count: 1,
         })
         .unwrap();
-        validate_acl_handle_target_facts(AclHandleTargetFacts {
+        validate_opened_managed_target_facts(OpenedManagedTargetFacts {
             expected_directory: true,
             actual_directory: true,
             is_reparse_point: false,
@@ -863,7 +960,7 @@ mod acl_handle_target_tests {
         })
         .unwrap();
 
-        let reparse = validate_acl_handle_target_facts(AclHandleTargetFacts {
+        let reparse = validate_opened_managed_target_facts(OpenedManagedTargetFacts {
             expected_directory: false,
             actual_directory: false,
             is_reparse_point: true,
@@ -872,7 +969,7 @@ mod acl_handle_target_tests {
         .unwrap_err();
         assert!(format!("{reparse:#}").contains("reparse point"));
 
-        let hard_link = validate_acl_handle_target_facts(AclHandleTargetFacts {
+        let hard_link = validate_opened_managed_target_facts(OpenedManagedTargetFacts {
             expected_directory: false,
             actual_directory: false,
             is_reparse_point: false,
@@ -881,7 +978,7 @@ mod acl_handle_target_tests {
         .unwrap_err();
         assert!(format!("{hard_link:#}").contains("multiply linked file"));
 
-        let changed_type = validate_acl_handle_target_facts(AclHandleTargetFacts {
+        let changed_type = validate_opened_managed_target_facts(OpenedManagedTargetFacts {
             expected_directory: true,
             actual_directory: false,
             is_reparse_point: false,
@@ -896,6 +993,75 @@ mod acl_handle_target_tests {
         assert!(source.contains("FILE_SHARE_READ | FILE_SHARE_WRITE"));
         assert!(!source.contains("GetNamedSecurityInfoW("));
         assert!(!source.contains("SetFileSecurityW("));
+    }
+
+    #[test]
+    fn rename_plan_is_aligned_bounded_and_used_for_all_tree_mutations() {
+        assert_eq!(MAX_OPEN_MUTATION_DIRECTORIES, 256);
+        assert_eq!(checked_child_directory_depth(255, 256).unwrap(), 256);
+        assert!(checked_child_directory_depth(256, 256).is_err());
+        assert!(checked_child_directory_depth(usize::MAX, usize::MAX).is_err());
+
+        let plan = RenameBufferPlan {
+            file_name_bytes: 8,
+            buffer_bytes: 28,
+            storage_words: 4,
+        };
+        assert_eq!(checked_rename_buffer_plan(4, 20, 8, 64).unwrap(), plan);
+        assert_eq!(checked_rename_storage_bytes(plan, 8, 24, 20).unwrap(), 32);
+        assert!(
+            checked_rename_storage_bytes(
+                RenameBufferPlan {
+                    storage_words: 2,
+                    ..plan
+                },
+                8,
+                24,
+                20,
+            )
+            .is_err()
+        );
+        assert!(checked_rename_buffer_plan(0, 20, 8, 64).is_err());
+        assert!(checked_rename_buffer_plan(4, 20, 8, 27).is_err());
+        assert!(checked_rename_buffer_plan(usize::MAX, 20, 8, usize::MAX).is_err());
+
+        let filesystem = include_str!("filesystem.rs");
+        let transaction = include_str!("transaction.rs");
+        let removal = filesystem
+            .split_once("fn remove_tree_no_reparse")
+            .unwrap()
+            .1
+            .split_once("fn rename_managed_directory_by_handle")
+            .unwrap()
+            .0;
+        assert!(
+            removal
+                .find("validate_tree_with_directory_depth_limit")
+                .unwrap()
+                < removal.find("delete_opened_mutation_target").unwrap()
+        );
+        let empty_only = filesystem
+            .split_once("fn remove_empty_directory_by_handle")
+            .unwrap()
+            .1
+            .split_once("struct RemovalDirectoryFrame")
+            .unwrap()
+            .0;
+        assert!(empty_only.contains("entries.next()"));
+        assert!(empty_only.contains("delete_opened_mutation_target"));
+        assert!(!empty_only.contains("remove_tree_no_reparse"));
+        assert!(filesystem.contains("SetFileInformationByHandle("));
+        assert!(filesystem.contains("FileDispositionInfo"));
+        assert!(filesystem.contains("FileRenameInfo"));
+        assert!(filesystem.contains("Vec::<usize>::new()"));
+        assert!(filesystem.contains("validate_tree_with_directory_depth_limit("));
+        assert!(filesystem.contains("managed tree root after handle-bound deletion"));
+        assert!(filesystem.contains("managed rename source after handle-bound rename"));
+        assert!(transaction.contains("remove_empty_directory_by_handle("));
+        assert!(!filesystem.contains("fs::rename("));
+        assert!(!filesystem.contains("fs::remove_dir("));
+        assert!(!transaction.contains("fs::rename("));
+        assert!(!transaction.contains("fs::remove_dir("));
     }
 }
 

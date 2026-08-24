@@ -45,21 +45,34 @@ fn validate_regular_single_link(path: &Path, label: &str) -> anyhow::Result<()> 
 }
 
 fn validate_tree(root: &Path) -> anyhow::Result<()> {
+    validate_tree_with_directory_depth_limit(root, None)
+}
+
+fn validate_tree_with_directory_depth_limit(
+    root: &Path,
+    directory_depth_limit: Option<usize>,
+) -> anyhow::Result<()> {
     validate_real_directory(root, "managed directory")?;
+    if let Some(hard_limit) = directory_depth_limit {
+        ensure!(
+            hard_limit >= 1,
+            "managed directory depth hard limit must include the root"
+        );
+    }
     let mut pending = Vec::new();
     let mut discovered = 0;
     let mut path_payload_bytes = 0;
     enqueue_bounded_tree_path(
         &mut pending,
         &mut discovered,
-        root.to_path_buf(),
+        (root.to_path_buf(), 1usize),
         maintenance_path_utf16_units(root),
         &mut path_payload_bytes,
         MAX_MAINTENANCE_TREE_NODES,
         MAX_MAINTENANCE_PATH_BYTES,
         "managed tree traversal",
     )?;
-    while let Some(directory) = pending.pop() {
+    while let Some((directory, directory_depth)) = pending.pop() {
         for entry in fs::read_dir(&directory)
             .with_context(|| format!("failed to enumerate {}", directory.display()))?
         {
@@ -72,11 +85,17 @@ fn validate_tree(root: &Path) -> anyhow::Result<()> {
                 path.display()
             );
             if metadata.is_dir() {
+                let child_depth = match directory_depth_limit {
+                    Some(hard_limit) => checked_child_directory_depth(directory_depth, hard_limit)?,
+                    None => directory_depth
+                        .checked_add(1)
+                        .context("managed directory depth overflowed")?,
+                };
                 let path_utf16_units = maintenance_path_utf16_units(&path);
                 enqueue_bounded_tree_path(
                     &mut pending,
                     &mut discovered,
-                    path,
+                    (path, child_depth),
                     path_utf16_units,
                     &mut path_payload_bytes,
                     MAX_MAINTENANCE_TREE_NODES,
@@ -113,65 +132,293 @@ fn ensure_absent(path: &Path, label: &str) -> anyhow::Result<()> {
     }
 }
 
+struct MutationTargetHandle(HANDLE);
+
+impl Drop for MutationTargetHandle {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            let _ = unsafe { CloseHandle(self.0) };
+        }
+    }
+}
+
+fn open_mutation_target(
+    path: &Path,
+    expected_directory: bool,
+    operation: &str,
+) -> anyhow::Result<MutationTargetHandle> {
+    let mut flags = FILE_FLAG_OPEN_REPARSE_POINT;
+    if expected_directory {
+        flags |= FILE_FLAG_BACKUP_SEMANTICS;
+    }
+    let wide_path = wide_null(path.as_os_str());
+    // DELETE access permits rename/disposition changes. Omitting
+    // FILE_SHARE_DELETE prevents the validated object from being replaced
+    // before the handle-bound mutation completes.
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR(wide_path.as_ptr()),
+            DELETE.0 | FILE_READ_ATTRIBUTES.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            flags,
+            None,
+        )
+    }
+    .with_context(|| format!("failed to open {} for {operation}", path.display()))?;
+    let handle = MutationTargetHandle(handle);
+
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    unsafe { GetFileInformationByHandle(handle.0, &mut information) }.with_context(|| {
+        format!(
+            "failed to inspect opened mutation target {}",
+            path.display()
+        )
+    })?;
+    validate_opened_managed_target_facts(OpenedManagedTargetFacts {
+        expected_directory,
+        actual_directory: information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0,
+        is_reparse_point: information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0,
+        hard_link_count: information.nNumberOfLinks,
+    })
+    .with_context(|| format!("refusing {operation} for {}", path.display()))?;
+    Ok(handle)
+}
+
+fn delete_opened_mutation_target(handle: MutationTargetHandle, path: &Path) -> anyhow::Result<()> {
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+    unsafe {
+        SetFileInformationByHandle(
+            handle.0,
+            FileDispositionInfo,
+            (&raw const disposition).cast(),
+            u32::try_from(size_of::<FILE_DISPOSITION_INFO>())
+                .context("FILE_DISPOSITION_INFO size does not fit in a DWORD")?,
+        )
+    }
+    .with_context(|| {
+        format!(
+            "failed to mark {} for handle-bound deletion",
+            path.display()
+        )
+    })?;
+    drop(handle);
+    Ok(())
+}
+
+fn remove_empty_directory_by_handle(path: &Path, label: &str) -> anyhow::Result<()> {
+    let handle = open_mutation_target(path, true, "empty managed directory removal")?;
+    let mut entries = fs::read_dir(path)
+        .with_context(|| format!("failed to inspect whether {label} is empty"))?;
+    match entries.next() {
+        None => {}
+        Some(Ok(_)) => bail!("{label} is not empty: {}", path.display()),
+        Some(Err(error)) => {
+            return Err(error).with_context(|| format!("failed to enumerate {label}"));
+        }
+    }
+    drop(entries);
+    delete_opened_mutation_target(handle, path)?;
+    ensure_absent(path, &format!("{label} after handle-bound deletion"))
+}
+
+struct RemovalDirectoryFrame {
+    path: PathBuf,
+    handle: MutationTargetHandle,
+    entries: fs::ReadDir,
+}
+
+fn removal_directory_frame(
+    path: PathBuf,
+    handle: MutationTargetHandle,
+) -> anyhow::Result<RemovalDirectoryFrame> {
+    let entries = fs::read_dir(&path)
+        .with_context(|| format!("failed to enumerate {} for removal", path.display()))?;
+    Ok(RemovalDirectoryFrame {
+        path,
+        handle,
+        entries,
+    })
+}
+
 fn remove_tree_no_reparse(root: &Path) -> anyhow::Result<()> {
-    validate_tree(root)?;
-    let mut directories = Vec::new();
-    let mut pending = Vec::new();
+    let root_handle = open_mutation_target(root, true, "managed tree removal")?;
+    // Preserve the existing fail-before-mutation validation while the root
+    // handle prevents the tree root from being renamed or replaced. Every
+    // final mutation is still revalidated against its own opened handle.
+    validate_tree_with_directory_depth_limit(root, Some(MAX_OPEN_MUTATION_DIRECTORIES))?;
+    let root_frame = removal_directory_frame(root.to_path_buf(), root_handle)?;
+    let mut stack = Vec::new();
     let mut discovered = 0;
     let mut path_payload_bytes = 0;
-    enqueue_bounded_tree_path(
-        &mut pending,
+    record_bounded_tree_node(
         &mut discovered,
-        root.to_path_buf(),
-        maintenance_path_utf16_units(root),
-        &mut path_payload_bytes,
         MAX_MAINTENANCE_TREE_NODES,
-        MAX_MAINTENANCE_PATH_BYTES,
         "managed tree removal",
     )?;
-    while let Some(directory) = pending.pop() {
-        try_push_bounded_path(
-            &mut directories,
-            directory.clone(),
-            maintenance_path_utf16_units(&directory),
-            &mut path_payload_bytes,
-            MAX_MAINTENANCE_TREE_NODES,
-            MAX_MAINTENANCE_PATH_BYTES,
-            "managed tree removal directory list",
-        )?;
-        for entry in fs::read_dir(&directory)? {
-            let path = entry?.path();
-            let metadata = fs::symlink_metadata(&path)?;
-            ensure!(
-                metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 == 0,
-                "refusing to delete reparse point {}",
-                path.display()
-            );
-            if metadata.is_dir() {
-                let path_utf16_units = maintenance_path_utf16_units(&path);
-                enqueue_bounded_tree_path(
-                    &mut pending,
-                    &mut discovered,
-                    path,
-                    path_utf16_units,
-                    &mut path_payload_bytes,
-                    MAX_MAINTENANCE_TREE_NODES,
-                    MAX_MAINTENANCE_PATH_BYTES,
-                    "managed tree removal queue",
-                )?;
-            } else {
+    try_push_bounded_path(
+        &mut stack,
+        root_frame,
+        maintenance_path_utf16_units(root),
+        &mut path_payload_bytes,
+        MAX_OPEN_MUTATION_DIRECTORIES,
+        MAX_MAINTENANCE_PATH_BYTES,
+        "managed tree removal directory handle stack",
+    )?;
+
+    while !stack.is_empty() {
+        let next = stack
+            .last_mut()
+            .expect("removal stack was checked as non-empty")
+            .entries
+            .next();
+        match next {
+            Some(entry) => {
+                let path = entry?.path();
+                let metadata = fs::symlink_metadata(&path).with_context(|| {
+                    format!(
+                        "failed to inspect managed removal target {}",
+                        path.display()
+                    )
+                })?;
+                let attributes = metadata.file_attributes();
+                let expected_directory = attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0;
+                ensure!(
+                    expected_directory
+                        || metadata.is_file()
+                        || attributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0,
+                    "managed tree contains a special file: {}",
+                    path.display()
+                );
                 record_bounded_tree_node(
                     &mut discovered,
                     MAX_MAINTENANCE_TREE_NODES,
                     "managed tree removal",
                 )?;
-                fs::remove_file(&path)?;
+                let handle =
+                    open_mutation_target(&path, expected_directory, "managed tree removal")?;
+                if expected_directory {
+                    let path_utf16_units = maintenance_path_utf16_units(&path);
+                    let frame = removal_directory_frame(path, handle)?;
+                    try_push_bounded_path(
+                        &mut stack,
+                        frame,
+                        path_utf16_units,
+                        &mut path_payload_bytes,
+                        MAX_OPEN_MUTATION_DIRECTORIES,
+                        MAX_MAINTENANCE_PATH_BYTES,
+                        "managed tree removal directory handle stack",
+                    )?;
+                } else {
+                    delete_opened_mutation_target(handle, &path)?;
+                }
+            }
+            None => {
+                let RemovalDirectoryFrame {
+                    path,
+                    handle,
+                    entries,
+                } = stack.pop().expect("removal stack was checked as non-empty");
+                drop(entries);
+                delete_opened_mutation_target(handle, &path)?;
             }
         }
     }
-    for directory in directories.into_iter().rev() {
-        fs::remove_dir(&directory)?;
+    ensure_absent(root, "managed tree root after handle-bound deletion")
+}
+
+fn rename_managed_directory_by_handle(
+    source: &Path,
+    destination: &Path,
+    destination_label: &str,
+) -> anyhow::Result<()> {
+    ensure!(
+        destination.is_absolute(),
+        "managed rename destination is not absolute: {}",
+        destination.display()
+    );
+    ensure!(
+        source != destination,
+        "managed rename source and destination are identical"
+    );
+    ensure_absent(destination, destination_label)?;
+    let handle = open_mutation_target(source, true, "managed directory rename")?;
+
+    let mut file_name_utf16_units = 0usize;
+    for code_unit in destination.as_os_str().encode_wide() {
+        ensure!(
+            code_unit != 0,
+            "managed rename destination contains an embedded NUL"
+        );
+        file_name_utf16_units = file_name_utf16_units
+            .checked_add(1)
+            .context("managed rename destination length overflowed")?;
     }
+    let file_name_offset = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
+    let plan = checked_rename_buffer_plan(
+        file_name_utf16_units,
+        file_name_offset,
+        size_of::<usize>(),
+        MAX_MAINTENANCE_PATH_BYTES,
+    )?;
+
+    // FILE_RENAME_INFO has an inline flexible UTF-16 tail. usize backing
+    // provides sufficient alignment for both its HANDLE and union fields.
+    ensure!(
+        std::mem::align_of::<FILE_RENAME_INFO>() <= std::mem::align_of::<usize>(),
+        "FILE_RENAME_INFO requires unsupported storage alignment"
+    );
+    let mut storage = Vec::<usize>::new();
+    storage
+        .try_reserve_exact(plan.storage_words)
+        .context("failed to reserve the bounded rename information buffer")?;
+    storage.resize(plan.storage_words, 0);
+    let allocated_bytes = checked_rename_storage_bytes(
+        plan,
+        size_of::<usize>(),
+        size_of::<FILE_RENAME_INFO>(),
+        file_name_offset,
+    )?;
+    ensure!(
+        storage
+            .len()
+            .checked_mul(size_of::<usize>())
+            .context("rename information Vec size overflowed")?
+            == allocated_bytes,
+        "rename information allocation does not match its checked plan"
+    );
+    let information = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    unsafe {
+        ptr::write(information, FILE_RENAME_INFO::default());
+        (*information).Anonymous.ReplaceIfExists = false;
+        (*information).RootDirectory = HANDLE::default();
+        (*information).FileNameLength = plan.file_name_bytes;
+        let file_name = storage
+            .as_mut_ptr()
+            .cast::<u8>()
+            .add(file_name_offset)
+            .cast::<u16>();
+        for (index, code_unit) in destination.as_os_str().encode_wide().enumerate() {
+            file_name.add(index).write(code_unit);
+        }
+        SetFileInformationByHandle(
+            handle.0,
+            FileRenameInfo,
+            information.cast(),
+            plan.buffer_bytes,
+        )
+    }
+    .with_context(|| {
+        format!(
+            "failed to rename {} to fixed destination {}",
+            source.display(),
+            destination.display()
+        )
+    })?;
+    ensure_absent(source, "managed rename source after handle-bound rename")?;
+    validate_real_directory(destination, destination_label)?;
+    drop(handle);
     Ok(())
 }
 
