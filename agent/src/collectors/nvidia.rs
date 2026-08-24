@@ -104,63 +104,164 @@ impl NvidiaCollector {
         }
 
         let mut gpus = Vec::new();
-        let mut first_device_error = None;
+        let mut first_failed_device_error = None;
         for index in 0..count {
             let device = match nvml.device_by_index(index) {
                 Ok(device) => device,
                 Err(error) => {
-                    first_device_error.get_or_insert(error);
+                    first_failed_device_error.get_or_insert(error);
                     continue;
                 }
             };
-            let utilization = device.utilization_rates().ok();
-            let memory = device.memory_info().ok();
-            gpus.push(GpuSnapshot {
-                id: device.uuid().unwrap_or_else(|_| format!("nvidia-{index}")),
-                vendor: "nvidia".to_string(),
-                name: device
-                    .name()
-                    .unwrap_or_else(|_| format!("NVIDIA GPU {index}")),
+
+            let mut first_telemetry_error = None;
+            let utilization =
+                retain_nvml_result(device.utilization_rates(), &mut first_telemetry_error);
+            let memory = retain_nvml_result(device.memory_info(), &mut first_telemetry_error);
+            let telemetry = NvidiaTelemetry {
                 utilization_percent: utilization.as_ref().map(|value| value.gpu as f64),
                 memory_total_bytes: memory.as_ref().map(|value| value.total),
                 memory_used_bytes: memory.as_ref().map(|value| value.used),
-                temperature_celsius: device
-                    .temperature(TemperatureSensor::Gpu)
-                    .ok()
-                    .map(|value| value as f64),
-                power_watts: device
-                    .power_usage()
-                    .ok()
+                temperature_celsius: retain_nvml_result(
+                    device.temperature(TemperatureSensor::Gpu),
+                    &mut first_telemetry_error,
+                )
+                .map(|value| value as f64),
+                power_watts: retain_nvml_result(device.power_usage(), &mut first_telemetry_error)
                     .map(|milliwatts| milliwatts as f64 / 1_000.0),
-                core_clock_mhz: device.clock_info(Clock::Graphics).ok().map(f64::from),
-                memory_clock_mhz: device.clock_info(Clock::Memory).ok().map(f64::from),
-                pcie_rx_bytes_per_second: device
-                    .pcie_throughput(PcieUtilCounter::Receive)
-                    .ok()
-                    .map(|kilobytes| f64::from(kilobytes) * 1024.0),
-                pcie_tx_bytes_per_second: device
-                    .pcie_throughput(PcieUtilCounter::Send)
-                    .ok()
-                    .map(|kilobytes| f64::from(kilobytes) * 1024.0),
-                source: "nvml".to_string(),
-            });
-        }
-        if gpus.is_empty() {
-            if let Some(error) = first_device_error {
-                return (gpus, nvml_error_capability(&error));
+                core_clock_mhz: retain_nvml_result(
+                    device.clock_info(Clock::Graphics),
+                    &mut first_telemetry_error,
+                )
+                .map(f64::from),
+                memory_clock_mhz: retain_nvml_result(
+                    device.clock_info(Clock::Memory),
+                    &mut first_telemetry_error,
+                )
+                .map(f64::from),
+                pcie_rx_bytes_per_second: retain_nvml_result(
+                    device.pcie_throughput(PcieUtilCounter::Receive),
+                    &mut first_telemetry_error,
+                )
+                .map(|kilobytes| f64::from(kilobytes) * 1024.0),
+                pcie_tx_bytes_per_second: retain_nvml_result(
+                    device.pcie_throughput(PcieUtilCounter::Send),
+                    &mut first_telemetry_error,
+                )
+                .map(|kilobytes| f64::from(kilobytes) * 1024.0),
+            };
+            if !telemetry.has_substantive_value() {
+                if first_failed_device_error.is_none() {
+                    first_failed_device_error = first_telemetry_error;
+                }
+                continue;
             }
-            return (
-                gpus,
-                Capability::unavailable(
-                    "gpu.nvidia",
-                    "nvml",
-                    CapabilityErrorKind::Transient,
-                    "NVML enumerated devices but none could be queried",
+
+            gpus.push(
+                telemetry.into_snapshot(
+                    device.uuid().unwrap_or_else(|_| format!("nvidia-{index}")),
+                    device
+                        .name()
+                        .unwrap_or_else(|_| format!("NVIDIA GPU {index}")),
                 ),
             );
         }
-        (gpus, Capability::available("gpu.nvidia", "nvml"))
+        finish_nvidia_collection(gpus, count, first_failed_device_error.as_ref())
     }
+}
+
+#[derive(Default)]
+struct NvidiaTelemetry {
+    utilization_percent: Option<f64>,
+    memory_total_bytes: Option<u64>,
+    memory_used_bytes: Option<u64>,
+    temperature_celsius: Option<f64>,
+    power_watts: Option<f64>,
+    core_clock_mhz: Option<f64>,
+    memory_clock_mhz: Option<f64>,
+    pcie_rx_bytes_per_second: Option<f64>,
+    pcie_tx_bytes_per_second: Option<f64>,
+}
+
+impl NvidiaTelemetry {
+    fn has_substantive_value(&self) -> bool {
+        self.utilization_percent.is_some()
+            || self.memory_total_bytes.is_some()
+            || self.memory_used_bytes.is_some()
+            || self.temperature_celsius.is_some()
+            || self.power_watts.is_some()
+            || self.core_clock_mhz.is_some()
+            || self.memory_clock_mhz.is_some()
+            || self.pcie_rx_bytes_per_second.is_some()
+            || self.pcie_tx_bytes_per_second.is_some()
+    }
+
+    fn into_snapshot(self, id: String, name: String) -> GpuSnapshot {
+        GpuSnapshot {
+            id,
+            vendor: "nvidia".to_string(),
+            name,
+            utilization_percent: self.utilization_percent,
+            memory_total_bytes: self.memory_total_bytes,
+            memory_used_bytes: self.memory_used_bytes,
+            temperature_celsius: self.temperature_celsius,
+            power_watts: self.power_watts,
+            core_clock_mhz: self.core_clock_mhz,
+            memory_clock_mhz: self.memory_clock_mhz,
+            pcie_rx_bytes_per_second: self.pcie_rx_bytes_per_second,
+            pcie_tx_bytes_per_second: self.pcie_tx_bytes_per_second,
+            source: "nvml".to_string(),
+        }
+    }
+}
+
+fn retain_nvml_result<T>(
+    result: Result<T, NvmlError>,
+    first_error: &mut Option<NvmlError>,
+) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) => {
+            if first_error.is_none() {
+                *first_error = Some(error);
+            }
+            None
+        }
+    }
+}
+
+fn finish_nvidia_collection(
+    gpus: Vec<GpuSnapshot>,
+    expected_devices: u32,
+    first_error: Option<&NvmlError>,
+) -> (Vec<GpuSnapshot>, Capability) {
+    if u32::try_from(gpus.len()) == Ok(expected_devices) {
+        return (gpus, Capability::available("gpu.nvidia", "nvml"));
+    }
+
+    let message = format!(
+        "NVML collected substantive telemetry for {} of {expected_devices} NVIDIA devices",
+        gpus.len()
+    );
+    let capability = first_error.map_or_else(
+        || {
+            Capability::unavailable(
+                "gpu.nvidia",
+                "nvml",
+                CapabilityErrorKind::InvalidData,
+                format!("{message}; no NVML error explained the missing telemetry"),
+            )
+        },
+        |error| {
+            Capability::unavailable(
+                "gpu.nvidia",
+                "nvml",
+                classify_nvml_error(error),
+                format!("{message}; first error: {error}"),
+            )
+        },
+    );
+    (gpus, capability)
 }
 
 fn nvml_error_capability(error: &NvmlError) -> Capability {
@@ -327,6 +428,74 @@ mod tests {
         assert_eq!(
             capability.message.as_deref(),
             Some("the current user does not have permission to perform this operation")
+        );
+    }
+
+    #[test]
+    fn snapshot_requires_substantive_telemetry_and_preserves_first_field_error() {
+        assert!(!NvidiaTelemetry::default().has_substantive_value());
+        assert!(
+            NvidiaTelemetry {
+                power_watts: Some(0.0),
+                ..NvidiaTelemetry::default()
+            }
+            .has_substantive_value()
+        );
+
+        let mut first_error = None;
+        assert!(
+            retain_nvml_result::<u32>(Err(NvmlError::NoPermission), &mut first_error).is_none()
+        );
+        assert!(retain_nvml_result::<u32>(Err(NvmlError::Timeout), &mut first_error).is_none());
+        assert!(matches!(first_error, Some(NvmlError::NoPermission)));
+    }
+
+    #[test]
+    fn partial_collection_keeps_snapshots_but_is_not_fully_available() {
+        let snapshot = NvidiaTelemetry {
+            utilization_percent: Some(42.0),
+            ..NvidiaTelemetry::default()
+        }
+        .into_snapshot("gpu-0".to_string(), "GPU 0".to_string());
+
+        let (gpus, capability) =
+            finish_nvidia_collection(vec![snapshot.clone()], 2, Some(&NvmlError::NoPermission));
+        assert_eq!(gpus, vec![snapshot]);
+        assert!(!capability.available);
+        assert_eq!(
+            capability.error_kind,
+            Some(CapabilityErrorKind::PermissionDenied)
+        );
+        assert!(
+            capability
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("1 of 2"))
+        );
+    }
+
+    #[test]
+    fn complete_and_unexplained_empty_collections_have_distinct_capabilities() {
+        let snapshot = NvidiaTelemetry {
+            temperature_celsius: Some(55.0),
+            ..NvidiaTelemetry::default()
+        }
+        .into_snapshot("gpu-0".to_string(), "GPU 0".to_string());
+        let (_, complete) = finish_nvidia_collection(vec![snapshot], 1, None);
+        assert!(complete.available);
+
+        let (gpus, failed) =
+            finish_nvidia_collection(Vec::new(), 2, Some(&NvmlError::NotSupported));
+        assert!(gpus.is_empty());
+        assert!(!failed.available);
+        assert_eq!(failed.error_kind, Some(CapabilityErrorKind::Unsupported));
+
+        let (gpus, unexplained) = finish_nvidia_collection(Vec::new(), 1, None);
+        assert!(gpus.is_empty());
+        assert!(!unexplained.available);
+        assert_eq!(
+            unexplained.error_kind,
+            Some(CapabilityErrorKind::InvalidData)
         );
     }
 }
