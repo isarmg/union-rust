@@ -21,6 +21,101 @@ fn rollback_path_exists(path: &std::path::Path, label: &str) -> anyhow::Result<b
 }
 
 #[cfg(any(windows, test))]
+#[derive(Clone, Debug)]
+struct AclSnapshotPathFact {
+    path_key: Vec<u16>,
+    depth: usize,
+    valid_relative_path: bool,
+    is_directory: bool,
+}
+
+#[cfg(any(windows, test))]
+#[derive(Clone, Debug)]
+struct AclCurrentPathFact {
+    path_key: Vec<u16>,
+    is_directory: bool,
+    is_regular_file: bool,
+    is_reparse_point: bool,
+    hard_link_count: Option<u64>,
+}
+
+/// Validate the complete snapshot/current-tree manifest before allowing the
+/// caller to apply even the first ACL. The callback boundary makes partial
+/// restore impossible for malformed or incomplete plans.
+#[cfg(any(windows, test))]
+fn run_validated_acl_restore_plan(
+    snapshot: &[AclSnapshotPathFact],
+    current: &[AclCurrentPathFact],
+    mut apply: impl FnMut(usize) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    ensure!(!snapshot.is_empty(), "ACL snapshot is empty");
+
+    let mut snapshot_paths = std::collections::BTreeSet::new();
+    for entry in snapshot {
+        ensure!(
+            entry.valid_relative_path,
+            "ACL snapshot contains a non-relative managed path"
+        );
+        ensure!(
+            snapshot_paths.insert(entry.path_key.clone()),
+            "ACL snapshot contains a duplicate path"
+        );
+    }
+    ensure!(
+        snapshot_paths.contains(&Vec::new()),
+        "ACL snapshot does not contain its managed root"
+    );
+
+    let mut current_by_path = std::collections::BTreeMap::new();
+    for entry in current {
+        ensure!(
+            !entry.is_reparse_point,
+            "current managed tree contains a reparse point"
+        );
+        ensure!(
+            entry.is_directory ^ entry.is_regular_file,
+            "current managed tree contains a special filesystem object"
+        );
+        if entry.is_regular_file {
+            ensure!(
+                entry.hard_link_count == Some(1),
+                "current managed tree contains a multiply linked file"
+            );
+        }
+        ensure!(
+            current_by_path
+                .insert(entry.path_key.clone(), entry)
+                .is_none(),
+            "current managed tree contains a duplicate path"
+        );
+    }
+
+    ensure!(
+        snapshot_paths.len() == current_by_path.len()
+            && snapshot_paths
+                .iter()
+                .all(|path| current_by_path.contains_key(path)),
+        "ACL snapshot path set does not exactly match the current managed tree"
+    );
+    for entry in snapshot {
+        let current_entry = current_by_path
+            .get(&entry.path_key)
+            .context("validated ACL snapshot path disappeared from the restore plan")?;
+        ensure!(
+            entry.is_directory == current_entry.is_directory,
+            "ACL snapshot target changed type"
+        );
+    }
+
+    let mut order = (0..snapshot.len()).collect::<Vec<_>>();
+    order.sort_by_key(|index| snapshot[*index].depth);
+    for index in order {
+        apply(index)?;
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
 fn program_security_descriptor(service_sid: &str) -> String {
     format!(
         "O:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)\
@@ -125,8 +220,9 @@ pub(crate) fn entry() {
 #[cfg(windows)]
 mod windows_maintenance {
     use super::{
-        managed_state_security_descriptor, parse_program_dacl, program_security_descriptor,
-        rollback_path_exists,
+        AclCurrentPathFact, AclSnapshotPathFact, managed_state_security_descriptor,
+        parse_program_dacl, program_security_descriptor, rollback_path_exists,
+        run_validated_acl_restore_plan,
     };
     use std::{
         ffi::{OsStr, OsString, c_void},
@@ -452,5 +548,64 @@ mod rollback_path_tests {
         let message = format!("{error:#}");
         assert!(message.contains("failed to inspect install journal"));
         assert!(message.contains("simulated metadata denial"));
+    }
+}
+
+#[cfg(test)]
+mod acl_restore_plan_tests {
+    use super::*;
+
+    fn snapshot(path: &[u16], depth: usize, valid: bool) -> AclSnapshotPathFact {
+        AclSnapshotPathFact {
+            path_key: path.to_vec(),
+            depth,
+            valid_relative_path: valid,
+            is_directory: path.is_empty(),
+        }
+    }
+
+    fn current(path: &[u16]) -> AclCurrentPathFact {
+        AclCurrentPathFact {
+            path_key: path.to_vec(),
+            is_directory: path.is_empty(),
+            is_regular_file: !path.is_empty(),
+            is_reparse_point: false,
+            hard_link_count: (!path.is_empty()).then_some(1),
+        }
+    }
+
+    #[test]
+    fn incomplete_or_late_invalid_manifests_apply_nothing() {
+        let root = snapshot(&[], 0, true);
+        let child = snapshot(&[b'a' as u16], 1, true);
+        let root_current = current(&[]);
+        let child_current = current(&[b'a' as u16]);
+
+        let mut applied = 0;
+        let missing = run_validated_acl_restore_plan(
+            std::slice::from_ref(&root),
+            &[root_current.clone(), child_current.clone()],
+            |_| {
+                applied += 1;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(missing.to_string().contains("does not exactly match"));
+        assert_eq!(applied, 0, "an incomplete snapshot must apply no ACLs");
+
+        let late_invalid = snapshot(&[b'z' as u16], 1, false);
+        let mut applied = 0;
+        let invalid = run_validated_acl_restore_plan(
+            &[root, child, late_invalid],
+            &[root_current, child_current, current(&[b'z' as u16])],
+            |_| {
+                applied += 1;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(invalid.to_string().contains("non-relative"));
+        assert_eq!(applied, 0, "a malformed later entry must apply no ACLs");
     }
 }

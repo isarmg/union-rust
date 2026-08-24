@@ -117,71 +117,86 @@ fn save_acl(root: &Path, destination: &Path) -> anyhow::Result<()> {
 }
 
 fn restore_acl(root: &Path, source: &Path) -> anyhow::Result<()> {
-    validate_tree(root)?;
     let snapshot: AclSnapshot = serde_json::from_slice(&fs::read(source)?)?;
     ensure!(
         snapshot.format == SNAPSHOT_FORMAT
             && snapshot.application_version == env!("CARGO_PKG_VERSION"),
         "unsupported ACL snapshot version"
     );
-    ensure!(!snapshot.entries.is_empty(), "ACL snapshot is empty");
-    let mut entries = snapshot.entries;
-    let mut unique_paths = std::collections::BTreeSet::new();
-    for entry in &entries {
-        ensure!(
-            unique_paths.insert(entry.relative_path_utf16.clone()),
-            "ACL snapshot contains a duplicate path"
-        );
-    }
-    ensure!(
-        unique_paths.contains(&Vec::new()),
-        "ACL snapshot does not contain its managed root"
-    );
-    entries.sort_by_key(|entry| {
-        PathBuf::from(OsString::from_wide(&entry.relative_path_utf16))
-            .components()
-            .count()
-    });
-    for entry in entries {
+
+    let mut snapshot_facts = Vec::with_capacity(snapshot.entries.len());
+    let mut restore_entries = Vec::with_capacity(snapshot.entries.len());
+    for entry in snapshot.entries {
         let relative = PathBuf::from(OsString::from_wide(&entry.relative_path_utf16));
-        ensure!(
-            relative
-                .components()
-                .all(|component| matches!(component, Component::Normal(_))),
-            "ACL snapshot contains a non-relative managed path"
-        );
+        let valid_relative_path = relative
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)));
+        let depth = relative.components().count();
         let target = if relative.as_os_str().is_empty() {
             root.to_path_buf()
         } else {
             root.join(&relative)
         };
-        let metadata = fs::symlink_metadata(&target)
-            .with_context(|| format!("ACL snapshot target disappeared: {}", target.display()))?;
+        validate_saved_security_descriptor(&entry.sddl)?;
+        snapshot_facts.push(AclSnapshotPathFact {
+            path_key: entry.relative_path_utf16,
+            depth,
+            valid_relative_path,
+            is_directory: entry.is_directory,
+        });
+        restore_entries.push((target, entry.sddl));
+    }
+
+    let current_facts = collect_current_acl_path_facts(root)?;
+    run_validated_acl_restore_plan(&snapshot_facts, &current_facts, |index| {
+        let (target, sddl) = &restore_entries[index];
+        restore_security_descriptor(target, sddl)?;
         ensure!(
-            metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 == 0,
-            "ACL snapshot target became a reparse point: {}",
-            target.display()
-        );
-        ensure!(
-            metadata.is_dir() == entry.is_directory,
-            "ACL snapshot target changed type: {}",
-            target.display()
-        );
-        if metadata.is_file() {
-            ensure!(
-                file_link_count(&target)? == 1,
-                "ACL snapshot target became multiply linked: {}",
-                target.display()
-            );
-        }
-        restore_security_descriptor(&target, &entry.sddl)?;
-        ensure!(
-            security_descriptor_sddl(&target)? == entry.sddl,
+            security_descriptor_sddl(target)? == *sddl,
             "restored owner/DACL did not verify for {}",
             target.display()
         );
+        Ok(())
+    })
+}
+
+fn collect_current_acl_path_facts(root: &Path) -> anyhow::Result<Vec<AclCurrentPathFact>> {
+    let mut facts = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(target) = pending.pop() {
+        let metadata = fs::symlink_metadata(&target).with_context(|| {
+            format!("failed to inspect ACL restore target {}", target.display())
+        })?;
+        let is_reparse_point = metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0;
+        let is_directory = metadata.is_dir();
+        let is_regular_file = metadata.is_file();
+        let hard_link_count = if is_regular_file && !is_reparse_point {
+            Some(u64::from(file_link_count(&target)?))
+        } else {
+            None
+        };
+        let relative = target
+            .strip_prefix(root)
+            .with_context(|| format!("{} escaped the fixed managed root", target.display()))?;
+        facts.push(AclCurrentPathFact {
+            path_key: relative.as_os_str().encode_wide().collect(),
+            is_directory,
+            is_regular_file,
+            is_reparse_point,
+            hard_link_count,
+        });
+
+        // Never traverse a name-surrogate directory. Its manifest fact will
+        // make validation fail before any ACL is restored.
+        if is_directory && !is_reparse_point {
+            for child in fs::read_dir(&target)
+                .with_context(|| format!("failed to enumerate {}", target.display()))?
+            {
+                pending.push(child?.path());
+            }
+        }
     }
-    Ok(())
+    Ok(facts)
 }
 
 fn validate_managed_dacl(path: &Path, require_service_access: bool) -> anyhow::Result<()> {
@@ -338,13 +353,47 @@ fn set_managed_security_descriptor(path: &Path, sddl: &str) -> anyhow::Result<()
     set_security_descriptor(path, sddl, true)
 }
 
-fn restore_security_descriptor(path: &Path, sddl: &str) -> anyhow::Result<()> {
+fn saved_dacl_is_protected(sddl: &str) -> anyhow::Result<bool> {
     let dacl = sddl
         .split_once("D:")
         .map(|(_, value)| value)
         .context("saved security descriptor has no DACL")?;
     let control = dacl.split_once('(').map(|(value, _)| value).unwrap_or(dacl);
-    set_security_descriptor(path, sddl, control.contains('P'))
+    Ok(control.contains('P'))
+}
+
+fn validate_saved_security_descriptor(sddl: &str) -> anyhow::Result<()> {
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::{
+            Authorization::{
+                ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+            },
+            PSECURITY_DESCRIPTOR,
+        },
+    };
+
+    saved_dacl_is_protected(sddl)?;
+    let wide_sddl = wide_null(OsStr::new(sddl));
+    let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+    let converted = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            wide_sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            ptr::null_mut(),
+        )
+    };
+    ensure!(
+        converted != 0,
+        "failed to validate a saved Agent security descriptor"
+    );
+    unsafe { LocalFree(descriptor.cast()) };
+    Ok(())
+}
+
+fn restore_security_descriptor(path: &Path, sddl: &str) -> anyhow::Result<()> {
+    set_security_descriptor(path, sddl, saved_dacl_is_protected(sddl)?)
 }
 
 fn set_security_descriptor(path: &Path, sddl: &str, protected: bool) -> anyhow::Result<()> {
