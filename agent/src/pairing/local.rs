@@ -211,7 +211,7 @@ fn ensure_active_is_current(
             && *current_instance_id == instance_id
             && current_report_endpoint == report_endpoint
         => binding_from_active_state(state),
-        _ => return Err(PairingSuperseded.into()),
+        _ => Err(PairingSuperseded.into()),
     }
 }
 
