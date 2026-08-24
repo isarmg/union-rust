@@ -245,9 +245,8 @@ impl Spool {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error),
             };
+            collect_bounded_spool_entry(target, &mut entries, (path, size))?;
             total = total.saturating_add(size);
-            entries = entries.saturating_add(1);
-            target.push((path, size));
         }
         quarantined.sort_unstable_by(|left, right| left.0.cmp(&right.0));
         pending.sort_unstable_by(|left, right| left.0.cmp(&right.0));
@@ -324,9 +323,35 @@ const MIN_ACCOUNTED_FILE_BYTES: u64 = 4 * 1024;
 /// A byte setting alone can still permit millions of tiny files when an
 /// operator configures a huge budget. Keep scans and inode use absolutely bounded.
 const MAX_SPOOL_ENTRIES: u64 = 4_096;
+/// Allow one newly enqueued report beyond the durable limit so `enforce_limit`
+/// can collect it and evict the oldest entry, while keeping scan memory bounded.
+const MAX_SPOOL_SCAN_ENTRIES: u64 = MAX_SPOOL_ENTRIES + 1;
 
 fn spool_over_budget(total_bytes: u64, entries: u64, max_bytes: u64) -> bool {
     total_bytes > max_bytes || entries > MAX_SPOOL_ENTRIES
+}
+
+fn collect_bounded_spool_entry<T>(
+    target: &mut Vec<T>,
+    collected_entries: &mut u64,
+    entry: T,
+) -> io::Result<()> {
+    if *collected_entries >= MAX_SPOOL_SCAN_ENTRIES {
+        return Err(io::Error::other(format!(
+            "spool scan exceeded the safety limit of {MAX_SPOOL_SCAN_ENTRIES} report files; \
+             refusing to collect additional .json/.invalid paths"
+        )));
+    }
+    target.try_reserve(1).map_err(|error| {
+        io::Error::other(format!(
+            "spool scan could not reserve memory for report file {} within the \
+             {MAX_SPOOL_SCAN_ENTRIES}-entry safety limit: {error}",
+            collected_entries.saturating_add(1)
+        ))
+    })?;
+    target.push(entry);
+    *collected_entries += 1;
+    Ok(())
 }
 
 fn accounted_file_size(metadata: &fs::Metadata) -> u64 {
@@ -509,6 +534,32 @@ mod tests {
         assert!(!spool_over_budget(0, MAX_SPOOL_ENTRIES, u64::MAX));
         assert!(spool_over_budget(0, MAX_SPOOL_ENTRIES + 1, u64::MAX));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn spool_scan_stops_collecting_at_the_entry_limit() {
+        let mut quarantined = Vec::new();
+        let mut pending = Vec::new();
+        let mut entries = 0_u64;
+
+        for index in 0..MAX_SPOOL_SCAN_ENTRIES {
+            let target = if index % 2 == 0 {
+                &mut quarantined
+            } else {
+                &mut pending
+            };
+            collect_bounded_spool_entry(target, &mut entries, index).unwrap();
+        }
+
+        let error = collect_bounded_spool_entry(&mut pending, &mut entries, MAX_SPOOL_SCAN_ENTRIES)
+            .expect_err("the first over-limit path must be rejected before collection");
+        assert!(error.to_string().contains("safety limit of 4097"));
+        assert_eq!(entries, MAX_SPOOL_SCAN_ENTRIES);
+        assert_eq!(
+            quarantined.len() + pending.len(),
+            usize::try_from(MAX_SPOOL_SCAN_ENTRIES).unwrap(),
+            "the rejected path must not grow either scan vector"
+        );
     }
 
     #[test]
