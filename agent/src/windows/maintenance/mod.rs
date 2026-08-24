@@ -1185,7 +1185,7 @@ mod maintenance_resource_limit_tests {
 
     #[test]
     fn rejected_path_payload_does_not_push_or_change_accounting() {
-        assert!(MAX_MAINTENANCE_PATH_BYTES >= MAINTENANCE_PATH_FIXED_BYTES + 2);
+        const { assert!(MAX_MAINTENANCE_PATH_BYTES >= MAINTENANCE_PATH_FIXED_BYTES + 2) };
         let hard_limit = MAINTENANCE_PATH_FIXED_BYTES + 2;
         let mut path_bytes = 0;
         let mut paths = Vec::new();
