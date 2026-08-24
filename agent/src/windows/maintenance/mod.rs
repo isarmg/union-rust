@@ -288,6 +288,8 @@ fn record_bounded_tree_node(
 }
 
 #[cfg(any(windows, test))]
+// Keep the node and path budgets visible beside both mutable counters.
+#[allow(clippy::too_many_arguments)]
 fn enqueue_bounded_tree_path<T>(
     pending: &mut Vec<T>,
     discovered: &mut usize,
