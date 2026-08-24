@@ -118,6 +118,40 @@ describe("Agent activation-code lifetime", () => {
     expect(api.monitoringCreateAgentInstance).toHaveBeenCalledWith("概览", 15);
   });
 
+  it("keeps an add trigger pending until the current invitation is cleared", async () => {
+    const firstCreation = deferred<CreatedAgentInstance>();
+    vi.spyOn(api, "monitoringAgentInstances").mockResolvedValue([]);
+    vi.spyOn(api, "monitoringCreateAgentInstance")
+      .mockReturnValueOnce(firstCreation.promise)
+      .mockResolvedValueOnce({ ...created, request_id: "request-2" });
+    vi.spyOn(api, "monitoringCancelAgentInstance").mockResolvedValue();
+    const onAddTriggerHandled = vi.fn();
+    const view = (addTrigger: number) => (
+      <AgentInstances
+        activeHostIds={new Set()}
+        addTrigger={addTrigger}
+        onAddTriggerHandled={onAddTriggerHandled}
+      />
+    );
+    const { rerenderWithClient } = renderWithClient(view(1));
+
+    await waitFor(() => expect(api.monitoringCreateAgentInstance).toHaveBeenCalledTimes(1));
+    rerenderWithClient(view(2));
+    expect(api.monitoringCreateAgentInstance).toHaveBeenCalledTimes(1);
+    expect(onAddTriggerHandled.mock.calls).toEqual([[1]]);
+
+    await act(async () => {
+      firstCreation.resolve(created);
+      await firstCreation.promise;
+    });
+    expect(await screen.findByText(created.activation_code)).toBeTruthy();
+    expect(api.monitoringCreateAgentInstance).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "取消邀请并清除授权密钥" }));
+    await waitFor(() => expect(api.monitoringCreateAgentInstance).toHaveBeenCalledTimes(2));
+    expect(onAddTriggerHandled.mock.calls).toEqual([[1], [2]]);
+  });
+
   it("clears first-pairing mutation data when the operator closes the panel", async () => {
     mockPairingApis();
     const { queryClient, rerenderWithClient } = renderWithClient(

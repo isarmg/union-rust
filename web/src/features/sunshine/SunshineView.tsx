@@ -238,11 +238,12 @@ export function SunshineView({
 
   useEffect(() => {
     if (addTrigger <= handledAddTriggerRef.current) return;
+    if (createInFlightRef.current || createMutation.isPending) return;
     handledAddTriggerRef.current = addTrigger;
     onAddTriggerHandled?.(addTrigger);
     createDefaultHost();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addTrigger, onAddTriggerHandled]);
+  }, [addTrigger, createMutation.isPending, onAddTriggerHandled]);
 
   function deleteHost(id: string) {
     if (deletingHostIdsRef.current.has(id)) return;

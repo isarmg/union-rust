@@ -86,6 +86,40 @@ describe("Sunshine empty state", () => {
       verify_tls: true,
     }));
   });
+
+  it("keeps an add trigger pending while a host creation is busy", async () => {
+    const firstCreation = deferred<SunshineHostInfo>();
+    vi.spyOn(api, "sunshineCreateHost")
+      .mockReturnValueOnce(firstCreation.promise)
+      .mockResolvedValueOnce(host("second", "Sunshine 2"));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    });
+    queryClient.setQueryData(queryKeys.sunshine.hosts, []);
+    const onAddTriggerHandled = vi.fn();
+    const view = (addTrigger: number) => (
+      <QueryClientProvider client={queryClient}>
+        <SunshineView
+          addTrigger={addTrigger}
+          onAddTriggerHandled={onAddTriggerHandled}
+        />
+      </QueryClientProvider>
+    );
+    const { rerender } = render(view(1));
+
+    await waitFor(() => expect(api.sunshineCreateHost).toHaveBeenCalledTimes(1));
+    rerender(view(2));
+    expect(api.sunshineCreateHost).toHaveBeenCalledTimes(1);
+    expect(onAddTriggerHandled.mock.calls).toEqual([[1]]);
+
+    await act(async () => {
+      firstCreation.resolve(host("first", "Sunshine 1"));
+      await firstCreation.promise;
+    });
+
+    await waitFor(() => expect(api.sunshineCreateHost).toHaveBeenCalledTimes(2));
+    expect(onAddTriggerHandled.mock.calls).toEqual([[1], [2]]);
+  });
 });
 
 describe("Sunshine inline password editing", () => {

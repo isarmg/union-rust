@@ -198,9 +198,9 @@ export function AgentInstances({
 
   useEffect(() => {
     if (addTrigger <= handledAddTriggerRef.current) return;
+    if (created || creationPending) return;
     handledAddTriggerRef.current = addTrigger;
     onAddTriggerHandled?.(addTrigger);
-    if (created || creationPending) return;
     createAgent();
   }, [addTrigger, createAgent, created, creationPending, onAddTriggerHandled]);
 
