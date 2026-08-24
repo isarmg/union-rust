@@ -9,6 +9,23 @@ fail() {
   exit 1
 }
 
+cargo_command_files="
+$ci_workflow
+$release_workflow
+agent/packaging/linux/build-packages.sh
+server/packaging/linux/build-packages.sh
+"
+
+# A release must consume the reviewed lock file. Match only command positions
+# (including shell substitutions) so diagnostic strings such as
+# "cargo metadata failed" are not mistaken for invocations.
+if grep -En '(^[[:space:]]*cargo|run:[[:space:]]+cargo|=[[:space:]]*cargo|\$\(cargo)[[:space:]]+(clippy|test|check|build|metadata|pkgid)([[:space:]]|$)' \
+  $cargo_command_files |
+  grep -Ev 'cargo[[:space:]]+(clippy|test|check|build|metadata|pkgid)[[:space:]]+--locked([[:space:]]|$)'
+then
+  fail 'CI, release, and packaging Cargo commands must use --locked'
+fi
+
 job_has_line() {
   job_name=$1
   expected=$2

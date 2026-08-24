@@ -37,9 +37,9 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: clippy
-        run: cargo clippy -p unionc --all-targets -- -D warnings
+        run: cargo clippy --locked -p unionc --all-targets -- -D warnings
       - name: test
-        run: cargo test -p unionc
+        run: cargo test --locked -p unionc
       - name: validate Linux Server packaging lifecycle
         run: sh server/packaging/linux/tests/test-lifecycle.sh
       - name: validate Linux Server package builder
@@ -56,9 +56,9 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: clippy
-        run: cargo clippy -p unionc-protocol --all-targets -- -D warnings
+        run: cargo clippy --locked -p unionc-protocol --all-targets -- -D warnings
       - name: test
-        run: cargo test -p unionc-protocol
+        run: cargo test --locked -p unionc-protocol
 
   # ── Agent：三平台。各平台的采集路径由 #[cfg] 完全隔离，互不重叠。────────
   agent:
@@ -80,7 +80,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw "cargo metadata failed." }
           $agentPackage = @($metadata.packages | Where-Object name -eq "unionc-agent")
           if ($agentPackage.Count -ne 1) {
@@ -92,16 +92,16 @@ jobs:
           }
           "version=$version" >> $env:GITHUB_OUTPUT
       - name: clippy
-        run: cargo clippy -p unionc-agent --all-targets -- -D warnings
+        run: cargo clippy --locked -p unionc-agent --all-targets -- -D warnings
       - name: test
-        run: cargo test -p unionc-agent
+        run: cargo test --locked -p unionc-agent
       # 默认只启用原生 NVIDIA 采集；以下矩阵同时覆盖无可选能力与 OTLP 单独启用。
       - name: check (no default features)
-        run: cargo check -p unionc-agent --no-default-features --all-targets
+        run: cargo check --locked -p unionc-agent --no-default-features --all-targets
       - name: check (otlp only)
-        run: cargo check -p unionc-agent --no-default-features --features otlp --all-targets
+        run: cargo check --locked -p unionc-agent --no-default-features --features otlp --all-targets
       - name: check (nvidia only)
-        run: cargo check -p unionc-agent --no-default-features --features nvidia --all-targets
+        run: cargo check --locked -p unionc-agent --no-default-features --features nvidia --all-targets
       - name: validate Linux packaging lifecycle
         if: runner.os == 'Linux'
         run: sh agent/packaging/linux/tests/test-lifecycle.sh
@@ -111,7 +111,7 @@ jobs:
       - name: build native Windows service, tray companion, and maintenance helper
         if: runner.os == 'Windows'
         run: >-
-          cargo build --release -p unionc-agent --target x86_64-pc-windows-msvc
+          cargo build --locked --release -p unionc-agent --target x86_64-pc-windows-msvc
           --bin unionc-agent --bin unionc-agent-maintenance --bin unionc-agent-tray
       - name: verify native Windows PE subsystems
         if: runner.os == 'Windows'
@@ -172,11 +172,11 @@ jobs:
           echo "collector did not become ready" >&2; exit 1
       - name: validate OTLP protobuf encoding
         run: >-
-          cargo test -p unionc-agent --no-default-features --features otlp
+          cargo test --locked -p unionc-agent --no-default-features --features otlp
           --test otlp_encoding
       - name: otlp end-to-end
         run: >-
-          cargo test -p unionc-agent --no-default-features --features otlp
+          cargo test --locked -p unionc-agent --no-default-features --features otlp
           --test otlp_live
 
   frontend:

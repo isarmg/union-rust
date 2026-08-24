@@ -55,7 +55,7 @@ printf 'UNIONC_PACKAGE_VERSION=%s\n' "$package_version" \
 
 cat >"$mock_bin/cargo" <<EOF
 #!/bin/sh
-[ "\$*" = "pkgid -p unionc" ] || exit 64
+[ "\$*" = "pkgid --locked -p unionc" ] || exit 64
 printf '%s\n' 'path+file:///fixture/server#unionc@$package_version'
 EOF
 

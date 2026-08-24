@@ -73,7 +73,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo_version="$(
-            cargo metadata --no-deps --format-version 1 \
+            cargo metadata --locked --no-deps --format-version 1 \
               | jq -r '.packages[] | select(.name == "unionc") | .version'
           )"
           if [[ ! "$cargo_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -92,7 +92,7 @@ jobs:
       - name: Validate Linux Server packaging lifecycle
         run: sh server/packaging/linux/tests/test-lifecycle.sh
       - name: Build release Server binary
-        run: cargo build --release -p unionc --target x86_64-unknown-linux-musl
+        run: cargo build --locked --release -p unionc --target x86_64-unknown-linux-musl
       - name: Install pinned nFPM
         run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
       - name: Build Server binary, DEB, and RPM artifacts
@@ -171,7 +171,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo_version="$(
-            cargo metadata --no-deps --format-version 1 \
+            cargo metadata --locked --no-deps --format-version 1 \
               | jq -r '.packages[] | select(.name == "unionc-agent") | .version'
           )"
           if [[ ! "$cargo_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -187,7 +187,7 @@ jobs:
             fi
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - run: cargo build --release -p unionc-agent
+      - run: cargo build --locked --release -p unionc-agent
       - name: Install pinned nFPM
         run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
       - name: Build portable, DEB, and RPM artifacts from one package definition
@@ -243,7 +243,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw "cargo metadata failed." }
           $agentPackage = @($metadata.packages | Where-Object name -eq "unionc-agent")
           if ($agentPackage.Count -ne 1) {
@@ -262,7 +262,7 @@ jobs:
           "version=$version" >> $env:GITHUB_OUTPUT
       - name: Build native Windows service, tray companion, and maintenance helper
         run: >-
-          cargo build --release -p unionc-agent --target x86_64-pc-windows-msvc
+          cargo build --locked --release -p unionc-agent --target x86_64-pc-windows-msvc
           --bin unionc-agent --bin unionc-agent-maintenance --bin unionc-agent-tray
       - name: Verify native Windows PE subsystems
         shell: powershell
@@ -318,7 +318,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo_version="$(
-            cargo metadata --no-deps --format-version 1 \
+            cargo metadata --locked --no-deps --format-version 1 \
               | jq -r '.packages[] | select(.name == "unionc-agent") | .version'
           )"
           if [[ ! "$cargo_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -338,9 +338,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release -p unionc-agent --no-default-features --features otlp \
+          cargo build --locked --release -p unionc-agent --no-default-features --features otlp \
             --target aarch64-apple-darwin
-          cargo build --release -p unionc-agent --no-default-features --features otlp \
+          cargo build --locked --release -p unionc-agent --no-default-features --features otlp \
             --target x86_64-apple-darwin
           lipo -create \
             target/aarch64-apple-darwin/release/unionc-agent \

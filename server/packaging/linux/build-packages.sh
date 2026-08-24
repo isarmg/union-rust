@@ -10,7 +10,7 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH= cd -- "$script_dir/../../.." && pwd)
 cd "$repository_root"
 
-package_id=$(cargo pkgid -p unionc) || die "cannot resolve the Server Cargo package"
+package_id=$(cargo pkgid --locked -p unionc) || die "cannot resolve the Server Cargo package"
 case "$package_id" in
   *@*) package_version=${package_id##*@} ;;
   *) die "unexpected cargo pkgid output: $package_id" ;;

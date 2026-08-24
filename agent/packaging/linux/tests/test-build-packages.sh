@@ -59,7 +59,7 @@ EOF
 
 cat >"$mock_bin/cargo" <<EOF
 #!/bin/sh
-[ "\$*" = "pkgid -p unionc-agent" ] || exit 64
+[ "\$*" = "pkgid --locked -p unionc-agent" ] || exit 64
 printf '%s\n' 'path+file:///fixture/agent#unionc-agent@$package_version'
 EOF
 
