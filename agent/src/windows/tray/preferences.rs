@@ -6,7 +6,7 @@ fn ensure_fixed_regular_file(path: &Path, label: &str) -> anyhow::Result<()> {
 }
 
 fn load_preferences(path: &Path) -> anyhow::Result<TrayPreferences> {
-    let bytes = match fs::read(path) {
+    let bytes = match super::read_bounded_tray_preferences_file(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(TrayPreferences::default());
@@ -14,7 +14,7 @@ fn load_preferences(path: &Path) -> anyhow::Result<TrayPreferences> {
         Err(error) => return Err(error.into()),
     };
     ensure!(
-        bytes.len() <= 16 * 1024,
+        bytes.len() <= super::MAX_TRAY_PREFERENCES_BYTES,
         "tray preferences file is too large"
     );
     let mut preferences: TrayPreferences =

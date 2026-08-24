@@ -94,10 +94,26 @@ fn committed_pairing_restart_warning(
     })
 }
 
+#[cfg(any(windows, test))]
+const MAX_TRAY_PREFERENCES_BYTES: usize = 16 * 1024;
+
+#[cfg(any(windows, test))]
+fn read_bounded_tray_preferences_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take((MAX_TRAY_PREFERENCES_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
 #[cfg(test)]
 mod cross_platform_tests {
     use super::{
-        MissingAuthorizationKeyEvent, committed_pairing_restart_warning, reconcile_pairing_child,
+        MAX_TRAY_PREFERENCES_BYTES, MissingAuthorizationKeyEvent,
+        committed_pairing_restart_warning, read_bounded_tray_preferences_file,
+        reconcile_pairing_child,
     };
 
     #[test]
@@ -159,6 +175,23 @@ mod cross_platform_tests {
         assert!(warning.contains("配对已成功并写入新凭据"));
         assert!(warning.contains("simulated service restart failure"));
         assert!(warning.contains("不要重新配对"));
+    }
+
+    #[test]
+    fn tray_preferences_reader_stops_after_the_size_limit_sentinel() {
+        let path = std::env::temp_dir().join(format!(
+            "unionc-tray-preferences-bounds-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len((MAX_TRAY_PREFERENCES_BYTES + 8 * 1024) as u64)
+            .unwrap();
+        drop(file);
+
+        let bytes = read_bounded_tray_preferences_file(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+
+        assert_eq!(bytes.len(), MAX_TRAY_PREFERENCES_BYTES + 1);
     }
 }
 
