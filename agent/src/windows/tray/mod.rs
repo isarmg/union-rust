@@ -94,6 +94,19 @@ fn committed_pairing_restart_warning(
     })
 }
 
+/// The elevated broker's success is the pairing commit boundary. Failure to
+/// persist a standard-user tray convenience preference after that boundary is
+/// a warning, not permission to create another host by pairing again.
+#[cfg(any(windows, test))]
+fn committed_pairing_preferences_warning(save: anyhow::Result<()>) -> Option<String> {
+    save.err().map(|error| {
+        format!(
+            "配对已成功，但托盘偏好未能保存：{error:#}。当前 Agent 凭据和 Server 主机不受影响；\
+             修复当前用户的本地应用数据写入权限后重新填写 Server 地址，不要重新配对。"
+        )
+    })
+}
+
 #[cfg(any(windows, test))]
 const MAX_TRAY_PREFERENCES_BYTES: usize = 16 * 1024;
 
@@ -112,8 +125,8 @@ fn read_bounded_tray_preferences_file(path: &std::path::Path) -> std::io::Result
 mod cross_platform_tests {
     use super::{
         MAX_TRAY_PREFERENCES_BYTES, MissingAuthorizationKeyEvent,
-        committed_pairing_restart_warning, read_bounded_tray_preferences_file,
-        reconcile_pairing_child,
+        committed_pairing_preferences_warning, committed_pairing_restart_warning,
+        read_bounded_tray_preferences_file, reconcile_pairing_child,
     };
 
     #[test]
@@ -174,6 +187,19 @@ mod cross_platform_tests {
         .expect("a post-commit restart failure must become a warning");
         assert!(warning.contains("配对已成功并写入新凭据"));
         assert!(warning.contains("simulated service restart failure"));
+        assert!(warning.contains("不要重新配对"));
+    }
+
+    #[test]
+    fn committed_pairing_is_not_failed_by_tray_preference_cleanup() {
+        assert!(committed_pairing_preferences_warning(Ok(())).is_none());
+
+        let warning = committed_pairing_preferences_warning(Err(anyhow::anyhow!(
+            "simulated LocalAppData write failure"
+        )))
+        .expect("a post-commit preference failure must become a warning");
+        assert!(warning.contains("配对已成功"));
+        assert!(warning.contains("simulated LocalAppData write failure"));
         assert!(warning.contains("不要重新配对"));
     }
 

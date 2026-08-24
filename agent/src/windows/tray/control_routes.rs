@@ -127,12 +127,13 @@ fn start_pair_from_browser(
                 "正在创建请求、提交授权并等待 Server 确认",
                 None,
             );
-            let outcome = ipc
-                .serve(process, &server_for_ipc, activation_code)
-                .and_then(|()| {
-                    save_preferences(&preferences_path, &successful_preferences)
-                        .context("pairing succeeded but tray preferences could not be saved")
-                });
+            let outcome = ipc.serve(process, &server_for_ipc, activation_code);
+            let preferences_warning = outcome.as_ref().ok().and_then(|_| {
+                super::committed_pairing_preferences_warning(save_preferences(
+                    &preferences_path,
+                    &successful_preferences,
+                ))
+            });
             // The broker has now exited (or the bounded wait failed), so
             // release exclusivity before showing any user-dismissed UI.
             drop(pairing_slot);
@@ -141,11 +142,16 @@ fn start_pair_from_browser(
                     let service = query_service_state()
                         .map(|state| state.label().to_string())
                         .unwrap_or_else(|error| format!("无法查询：{error}"));
+                    let message = if let Some(warning) = preferences_warning {
+                        format!("{warning} 当前 Agent 服务状态：{service}")
+                    } else {
+                        format!("配对成功；当前 Agent 服务状态：{service}")
+                    };
                     update_operation(
                         &operation_state,
                         &worker_operation_id,
                         "completed",
-                        format!("配对成功；当前 Agent 服务状态：{service}"),
+                        message,
                         Some(true),
                     );
                 }
