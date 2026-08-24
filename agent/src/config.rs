@@ -1087,8 +1087,10 @@ mod tests {
 
         for original_policy in [false, true] {
             let path = root.join(format!("config-{original_policy}.json"));
-            let mut original = AgentConfig::default();
-            original.allow_insecure_http = original_policy;
+            let original = AgentConfig {
+                allow_insecure_http: original_policy,
+                ..AgentConfig::default()
+            };
             fs::write(&path, serde_json::to_vec_pretty(&original).unwrap()).unwrap();
 
             let (mut loaded, issue) =
