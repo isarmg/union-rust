@@ -2,6 +2,25 @@
 use anyhow::{Context, bail, ensure};
 
 #[cfg(any(windows, test))]
+fn checked_rollback_path_status(
+    path: &std::path::Path,
+    label: &str,
+    status: std::io::Result<bool>,
+) -> anyhow::Result<bool> {
+    status.with_context(|| {
+        format!(
+            "failed to inspect {label} at {} before rollback",
+            path.display()
+        )
+    })
+}
+
+#[cfg(windows)]
+fn rollback_path_exists(path: &std::path::Path, label: &str) -> anyhow::Result<bool> {
+    checked_rollback_path_status(path, label, path.try_exists())
+}
+
+#[cfg(any(windows, test))]
 fn program_security_descriptor(service_sid: &str) -> String {
     format!(
         "O:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)\
@@ -107,6 +126,7 @@ pub(crate) fn entry() {
 mod windows_maintenance {
     use super::{
         managed_state_security_descriptor, parse_program_dacl, program_security_descriptor,
+        rollback_path_exists,
     };
     use std::{
         ffi::{OsStr, OsString, c_void},
@@ -408,5 +428,29 @@ mod program_acl_template_tests {
                  (A;OICI;0x1301bf;;;{SERVICE_SID})(A;OICI;RC;;;OW)"
             )
         );
+    }
+}
+
+#[cfg(test)]
+mod rollback_path_tests {
+    use super::*;
+
+    #[test]
+    fn metadata_errors_are_not_treated_as_missing_rollback_paths() {
+        let path = std::path::Path::new("protected-journal");
+        assert!(!checked_rollback_path_status(path, "install journal", Ok(false)).unwrap());
+
+        let error = checked_rollback_path_status(
+            path,
+            "install journal",
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "simulated metadata denial",
+            )),
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("failed to inspect install journal"));
+        assert!(message.contains("simulated metadata denial"));
     }
 }

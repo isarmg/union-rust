@@ -144,7 +144,7 @@ fn apply_install(paths: &FixedPaths) -> anyhow::Result<()> {
 }
 
 fn rollback_install(paths: &FixedPaths) -> anyhow::Result<()> {
-    if !paths.journal_root.exists() {
+    if !rollback_path_exists(&paths.journal_root, "install journal")? {
         return Ok(());
     }
     validate_real_directory(&paths.journal_root, "install journal")?;
@@ -154,16 +154,16 @@ fn rollback_install(paths: &FixedPaths) -> anyhow::Result<()> {
 
     let install_acl_snapshot = paths.journal_root.join(STATE_ACL_FILE);
     if snapshot.state_acl_saved
-        && install_acl_snapshot.exists()
-        && paths.state_root.exists()
+        && rollback_path_exists(&install_acl_snapshot, "state ACL snapshot")?
+        && rollback_path_exists(&paths.state_root, "state root")?
         && let Err(error) = restore_acl(&paths.state_root, &install_acl_snapshot)
     {
         failures.push(format!("restore state ACL: {error:#}"));
     }
     let program_acl_snapshot = paths.journal_root.join(PROGRAM_ACL_FILE);
     if snapshot.program_existed
-        && program_acl_snapshot.exists()
-        && paths.program_root.exists()
+        && rollback_path_exists(&program_acl_snapshot, "program ACL snapshot")?
+        && rollback_path_exists(&paths.program_root, "program root")?
         && let Err(error) = restore_acl(&paths.program_root, &program_acl_snapshot)
     {
         failures.push(format!("restore program ACL: {error:#}"));
@@ -183,7 +183,7 @@ fn rollback_install(paths: &FixedPaths) -> anyhow::Result<()> {
     }
 
     if !snapshot.state_existed
-        && paths.state_root.exists()
+        && rollback_path_exists(&paths.state_root, "fresh-install state root")?
         && let Err(error) = remove_fresh_install_state(paths)
     {
         failures.push(format!("remove fresh-install state: {error:#}"));
@@ -286,7 +286,7 @@ fn preflight_uninstall(paths: &FixedPaths) -> anyhow::Result<()> {
 }
 
 fn rollback_uninstall_preflight(paths: &FixedPaths) -> anyhow::Result<()> {
-    if !paths.uninstall_journal_root.exists() {
+    if !rollback_path_exists(&paths.uninstall_journal_root, "uninstall journal")? {
         return Ok(());
     }
     let snapshot = read_uninstall_snapshot(paths)?;
@@ -325,30 +325,33 @@ fn preserve_state(paths: &FixedPaths) -> anyhow::Result<()> {
     })();
     if let Err(error) = result {
         let acl_snapshot = paths.uninstall_journal_root.join(STATE_ACL_FILE);
-        let rollback = if acl_snapshot.exists() {
-            restore_acl(&paths.state_root, &acl_snapshot)
-        } else {
-            Ok(())
-        };
+        let rollback =
+            rollback_path_exists(&acl_snapshot, "state ACL snapshot").and_then(|snapshot_exists| {
+                if snapshot_exists {
+                    restore_acl(&paths.state_root, &acl_snapshot)
+                } else {
+                    Ok(())
+                }
+            });
         if rollback.is_ok() {
             let _ = remove_tree_no_reparse(&paths.uninstall_journal_root);
         }
-        return Err(error.context(match rollback {
-            Ok(()) => "state preservation failed; the original ACL was restored",
-            Err(_) => {
-                "state preservation and ACL rollback failed; the protected uninstall journal was retained"
-            }
-        }));
+        return Err(match rollback {
+            Ok(()) => error.context("state preservation failed; the original ACL was restored"),
+            Err(rollback_error) => error.context(format!(
+                "state preservation and ACL rollback failed; the protected uninstall journal was retained: {rollback_error:#}"
+            )),
+        });
     }
     Ok(())
 }
 
 fn rollback_uninstall(paths: &FixedPaths) -> anyhow::Result<()> {
-    if !paths.uninstall_journal_root.exists() {
+    if !rollback_path_exists(&paths.uninstall_journal_root, "uninstall journal")? {
         return Ok(());
     }
     let snapshot = read_uninstall_snapshot(paths)?;
-    if snapshot.state_acl_saved && paths.state_root.exists() {
+    if snapshot.state_acl_saved && rollback_path_exists(&paths.state_root, "state root")? {
         validate_tree(&paths.state_root)?;
         restore_acl(
             &paths.state_root,
@@ -401,11 +404,11 @@ fn prepare_purge(paths: &FixedPaths) -> anyhow::Result<()> {
 }
 
 fn rollback_purge(paths: &FixedPaths) -> anyhow::Result<()> {
-    if !paths.uninstall_journal_root.exists() {
+    if !rollback_path_exists(&paths.uninstall_journal_root, "uninstall journal")? {
         return Ok(());
     }
     let snapshot = read_uninstall_snapshot(paths)?;
-    if paths.quarantine_root.exists() {
+    if rollback_path_exists(&paths.quarantine_root, "purge quarantine")? {
         validate_real_directory(&paths.quarantine_root, "purge quarantine")?;
         validate_tree(&paths.quarantine_root)?;
         ensure_absent(&paths.state_root, "replacement state root")?;
