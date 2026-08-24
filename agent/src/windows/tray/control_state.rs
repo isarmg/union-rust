@@ -203,7 +203,7 @@ impl PairIpcServer {
         process: TransferHandle,
         server: &str,
         activation_code: SensitiveActivationCode,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<PairingChildReconciliation> {
         let pipe = self.pipe.into_kernel();
         let process = process.into_kernel();
         let expected_pid = unsafe { GetProcessId(process.0) };
@@ -221,12 +221,8 @@ impl PairIpcServer {
             client_pid == expected_pid,
             "pairing pipe client is not the broker launched by this tray"
         );
-        let message = read_pipe_frame(
-            pipe.0,
-            MAX_LOCAL_HTTP_BODY_BYTES,
-            deadline,
-            Some(process.0),
-        )?;
+        let message =
+            read_pipe_frame(pipe.0, MAX_LOCAL_HTTP_BODY_BYTES, deadline, Some(process.0))?;
         let message: PairIpcMessage =
             serde_json::from_slice(&message).context("invalid pairing pipe message")?;
         validate_pair_ipc_message(&message, server)?;
@@ -247,6 +243,15 @@ impl PairIpcServer {
         // until this exact ShellExecuteEx process exits successfully so a
         // second click cannot launch another UAC prompt mid-transaction.
         let process_deadline = Instant::now() + PAIR_OPERATION_TIMEOUT + PAIR_BROKER_EXIT_GRACE;
+        let completion = read_pipe_frame(
+            pipe.0,
+            MAX_LOCAL_HTTP_BODY_BYTES,
+            process_deadline,
+            Some(process.0),
+        )?;
+        let completion: PairingChildReconciliation = serde_json::from_slice(&completion)
+            .context("invalid pairing completion IPC message")?;
+        validate_pairing_child_reconciliation(&completion)?;
         let remaining = process_deadline.saturating_duration_since(Instant::now());
         let wait_millis = u32::try_from(remaining.as_millis()).unwrap_or(u32::MAX - 1);
         let wait = unsafe { WaitForSingleObject(process.0, wait_millis) };
@@ -261,7 +266,7 @@ impl PairIpcServer {
             exit_code == 0,
             "elevated pairing broker failed with exit code {exit_code}"
         );
-        Ok(())
+        Ok(completion)
     }
 }
 

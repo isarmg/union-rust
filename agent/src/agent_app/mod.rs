@@ -21,6 +21,8 @@ use unionc_agent::{
 };
 use uuid::Uuid;
 
+const MAX_POST_COMMIT_EVENT_WARNING_DETAIL_BYTES: usize = 768;
+
 #[cfg(windows)]
 use unionc_agent::service;
 
@@ -395,13 +397,16 @@ async fn run_pairing(
                     "message": "browser authorization succeeded; the host credential was stored privately"
                 });
                 if config.tray_events {
-                    emit_tray_pair_event(serde_json::json!({
+                    let event_result = emit_tray_pair_event(serde_json::json!({
                         "event": "paired",
                         "version": env!("CARGO_PKG_VERSION"),
                         "request_id": request_id,
                         "instance_id": instance_id,
                         "endpoint": report_endpoint
-                    }))?;
+                    }));
+                    if let Err(error) = event_result {
+                        write_post_commit_pair_event_warning(&error);
+                    }
                 } else {
                     match config.output_mode {
                         OutputMode::Json => {
@@ -640,6 +645,25 @@ fn emit_tray_pair_event(event: serde_json::Value) -> anyhow::Result<()> {
     stdout.write_all(b"\n")?;
     stdout.flush()?;
     Ok(())
+}
+
+fn write_post_commit_pair_event_warning(error: &anyhow::Error) {
+    let mut detail = format!("{error:#}");
+    if detail.len() > MAX_POST_COMMIT_EVENT_WARNING_DETAIL_BYTES {
+        let ellipsis = "…";
+        let mut boundary = MAX_POST_COMMIT_EVENT_WARNING_DETAIL_BYTES - ellipsis.len();
+        while !detail.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        detail.truncate(boundary);
+        detail.push_str(ellipsis);
+    }
+    let mut stderr = std::io::stderr().lock();
+    let _ = writeln!(
+        stderr,
+        "Warning: pairing credentials and configuration were committed, but the paired event could not be written: {detail}"
+    );
+    let _ = stderr.flush();
 }
 
 mod diagnostics;

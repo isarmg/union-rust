@@ -32,15 +32,95 @@ impl std::fmt::Display for MissingAuthorizationKeyEvent {
 impl std::error::Error for MissingAuthorizationKeyEvent {}
 
 #[cfg(any(windows, test))]
+const MAX_PAIRING_EVENT_WARNING_DETAIL_BYTES: usize = 768;
+
+#[cfg(any(windows, test))]
+fn bounded_pairing_warning_detail(mut detail: String) -> String {
+    if detail.len() <= MAX_PAIRING_EVENT_WARNING_DETAIL_BYTES {
+        return detail;
+    }
+    let ellipsis = "…";
+    let mut boundary = MAX_PAIRING_EVENT_WARNING_DETAIL_BYTES - ellipsis.len();
+    while !detail.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    detail.truncate(boundary);
+    detail.push_str(ellipsis);
+    detail
+}
+
+#[cfg(any(windows, test))]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct PairingPostCommitEventWarning {
+    detail: String,
+}
+
+#[cfg(any(windows, test))]
+impl std::fmt::Display for PairingPostCommitEventWarning {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "配对已成功并写入新凭据，但托盘未能完整接收完成事件：{}。\
+             请单独检查 Agent 状态；不要重新配对。",
+            self.detail
+        )
+    }
+}
+
+#[cfg(any(windows, test))]
+#[derive(Debug, Default, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct PairingChildReconciliation {
+    post_commit_event_warning: Option<PairingPostCommitEventWarning>,
+}
+
+#[cfg(any(windows, test))]
+fn validate_pairing_child_reconciliation(
+    reconciliation: &PairingChildReconciliation,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        reconciliation
+            .post_commit_event_warning
+            .as_ref()
+            .is_none_or(|warning| warning.detail.len() <= MAX_PAIRING_EVENT_WARNING_DETAIL_BYTES),
+        "pairing completion warning exceeds its size limit"
+    );
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
 fn reconcile_pairing_child(
     child_succeeded: bool,
     child_status: &str,
     event_result: anyhow::Result<()>,
     diagnostics: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<PairingChildReconciliation> {
     if child_succeeded {
-        return event_result
-            .map_err(|error| anyhow::anyhow!("pairing event processing failed: {error:#}"));
+        return match event_result {
+            Ok(()) => Ok(PairingChildReconciliation::default()),
+            Err(error)
+                if error
+                    .downcast_ref::<MissingAuthorizationKeyEvent>()
+                    .is_some() =>
+            {
+                Err(anyhow::anyhow!(
+                    "pairing event processing failed before commit: {error:#}"
+                ))
+            }
+            Err(error) => {
+                let detail = if diagnostics.trim().is_empty() {
+                    format!("{error:#}")
+                } else {
+                    format!("{error:#}; Agent diagnostics: {}", diagnostics.trim())
+                };
+                Ok(PairingChildReconciliation {
+                    post_commit_event_warning: Some(PairingPostCommitEventWarning {
+                        detail: bounded_pairing_warning_detail(detail),
+                    }),
+                })
+            }
+        };
     }
 
     match event_result {
@@ -124,9 +204,11 @@ fn read_bounded_tray_preferences_file(path: &std::path::Path) -> std::io::Result
 #[cfg(test)]
 mod cross_platform_tests {
     use super::{
-        MAX_TRAY_PREFERENCES_BYTES, MissingAuthorizationKeyEvent,
-        committed_pairing_preferences_warning, committed_pairing_restart_warning,
-        read_bounded_tray_preferences_file, reconcile_pairing_child,
+        MAX_PAIRING_EVENT_WARNING_DETAIL_BYTES, MAX_TRAY_PREFERENCES_BYTES,
+        MissingAuthorizationKeyEvent, PairingChildReconciliation, PairingPostCommitEventWarning,
+        bounded_pairing_warning_detail, committed_pairing_preferences_warning,
+        committed_pairing_restart_warning, read_bounded_tray_preferences_file,
+        reconcile_pairing_child, validate_pairing_child_reconciliation,
     };
 
     #[test]
@@ -169,6 +251,74 @@ mod cross_platform_tests {
         assert!(rendered.starts_with("pairing event processing failed"));
         assert!(rendered.contains(event_message));
         assert!(rendered.contains("pairing child was cancelled"));
+    }
+
+    #[test]
+    fn successful_child_turns_a_post_commit_event_error_into_a_typed_warning() {
+        let reconciled = reconcile_pairing_child(
+            true,
+            "exit code 0",
+            Err(anyhow::anyhow!("simulated paired-event flush failure")),
+            "Warning: paired event could not be flushed to stdout",
+        )
+        .expect("a successful child exit is the durable commit boundary");
+        let encoded = serde_json::to_vec(&reconciled).expect("warning IPC must serialize");
+        let reconciled: PairingChildReconciliation =
+            serde_json::from_slice(&encoded).expect("warning IPC must deserialize");
+        validate_pairing_child_reconciliation(&reconciled)
+            .expect("the serialized warning must satisfy the parent bound");
+        let warning = reconciled
+            .post_commit_event_warning
+            .expect("the event error must remain visible as a typed warning");
+        let rendered = warning.to_string();
+        assert!(rendered.contains("配对已成功并写入新凭据"));
+        assert!(rendered.contains("simulated paired-event flush failure"));
+        assert!(rendered.contains("could not be flushed to stdout"));
+        assert!(rendered.contains("不要重新配对"));
+    }
+
+    #[test]
+    fn failed_child_keeps_an_event_error_fatal() {
+        let error = reconcile_pairing_child(
+            false,
+            "exit code 1",
+            Err(anyhow::anyhow!("simulated pre-commit event failure")),
+            "child stopped before durable commit",
+        )
+        .unwrap_err();
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("simulated pre-commit event failure"));
+        assert!(rendered.contains("child stopped before durable commit"));
+    }
+
+    #[test]
+    fn missing_authorization_event_remains_pre_commit_even_on_success_exit() {
+        let error = reconcile_pairing_child(
+            true,
+            "exit code 0",
+            Err(MissingAuthorizationKeyEvent.into()),
+            "",
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("failed before commit"));
+    }
+
+    #[test]
+    fn post_commit_event_warning_detail_is_utf8_safe_and_bounded() {
+        let detail = bounded_pairing_warning_detail("配对事件错误".repeat(200));
+        assert!(detail.len() <= MAX_PAIRING_EVENT_WARNING_DETAIL_BYTES);
+        assert!(detail.ends_with('…'));
+        assert!(std::str::from_utf8(detail.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn parent_rejects_an_oversized_post_commit_event_warning() {
+        let reconciliation = PairingChildReconciliation {
+            post_commit_event_warning: Some(PairingPostCommitEventWarning {
+                detail: "x".repeat(MAX_PAIRING_EVENT_WARNING_DETAIL_BYTES + 1),
+            }),
+        };
+        assert!(validate_pairing_child_reconciliation(&reconciliation).is_err());
     }
 
     #[test]
@@ -223,6 +373,7 @@ mod cross_platform_tests {
 
 #[cfg(windows)]
 mod windows_tray {
+    use super::{PairingChildReconciliation, validate_pairing_child_reconciliation};
     use std::{
         collections::BTreeMap,
         ffi::{OsStr, OsString, c_void},

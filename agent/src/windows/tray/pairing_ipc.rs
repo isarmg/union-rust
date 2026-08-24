@@ -1,7 +1,4 @@
-fn elevated_pair(
-    server: String,
-    callback_nonce: String,
-) -> anyhow::Result<()> {
+fn elevated_pair(server: String, callback_nonce: String) -> anyhow::Result<()> {
     ensure_process_is_elevated()?;
     let _pair_mutex = create_single_instance_mutex(PRIVILEGED_OPERATION_MUTEX, true)?
         .context("another UnionC Agent pairing operation is already running")?;
@@ -141,13 +138,21 @@ fn run_hidden_pair(server: &str, callback_nonce: &str) -> anyhow::Result<()> {
         .stderr
         .take()
         .context("pairing stderr pipe is unavailable")?;
+    let completion_pipe = Arc::new(Mutex::new(None));
+    let completion_pipe_for_output = Arc::clone(&completion_pipe);
     let server_for_output = server.to_string();
     let nonce_for_output = callback_nonce.to_string();
     let mut stdout_thread = Some(
         thread::Builder::new()
             .name("unionc-pair-stdout".into())
             .spawn(move || {
-                process_pair_events(stdout, stdin, &server_for_output, &nonce_for_output)
+                process_pair_events(
+                    stdout,
+                    stdin,
+                    &server_for_output,
+                    &nonce_for_output,
+                    &completion_pipe_for_output,
+                )
             })
             .context("failed to start pairing event reader")?,
     );
@@ -227,12 +232,30 @@ fn run_hidden_pair(server: &str, callback_nonce: &str) -> anyhow::Result<()> {
         !forced_termination,
         "pairing child ignored graceful cancellation and was contained after 30 seconds"
     );
-    super::reconcile_pairing_child(
+    let reconciliation = super::reconcile_pairing_child(
         status.success(),
         &status.to_string(),
         event_result,
         &diagnostics,
-    )
+    )?;
+    let completion_pipe = completion_pipe
+        .lock()
+        .map_err(|_| anyhow::anyhow!("pairing completion pipe lock was poisoned"))?
+        .take()
+        .context("pairing completion pipe disappeared")?
+        .into_kernel();
+    let completion = serde_json::to_vec(&reconciliation)?;
+    ensure!(
+        completion.len() <= MAX_LOCAL_HTTP_BODY_BYTES,
+        "pairing completion IPC message is too large"
+    );
+    write_pipe_frame(
+        completion_pipe.0,
+        &completion,
+        Instant::now() + Duration::from_secs(10),
+        None,
+    )?;
+    Ok(())
 }
 
 fn process_pair_events<R: Read, W: Write>(
@@ -240,6 +263,7 @@ fn process_pair_events<R: Read, W: Write>(
     writer: W,
     server: &str,
     callback_nonce: &str,
+    completion_pipe: &Mutex<Option<TransferHandle>>,
 ) -> anyhow::Result<()> {
     let mut reader = BufReader::with_capacity(4096, reader);
     let mut writer = Some(writer);
@@ -292,7 +316,7 @@ fn process_pair_events<R: Read, W: Write>(
                 );
                 canonical_uuid(&request_id, "Agent pairing request id")?;
                 canonical_uuid(&generation, "Agent pairing generation")?;
-                let activation_code = exchange_pairing_code(
+                let (activation_code, pipe) = exchange_pairing_code(
                     callback_nonce,
                     &PairIpcMessage {
                         generation,
@@ -301,6 +325,15 @@ fn process_pair_events<R: Read, W: Write>(
                         pairing_endpoint,
                     },
                 )?;
+                let mut retained_pipe = completion_pipe
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("pairing completion pipe lock was poisoned"))?;
+                ensure!(
+                    retained_pipe.is_none(),
+                    "pairing completion pipe was already retained"
+                );
+                *retained_pipe = Some(pipe);
+                drop(retained_pipe);
                 let mut input = writer
                     .take()
                     .context("authorization-key stdin was already consumed")?;
@@ -406,7 +439,7 @@ fn drain_limited<R: Read>(mut reader: R, limit: usize) -> anyhow::Result<String>
 fn exchange_pairing_code(
     nonce: &str,
     message: &PairIpcMessage,
-) -> anyhow::Result<SensitiveActivationCode> {
+) -> anyhow::Result<(SensitiveActivationCode, TransferHandle)> {
     validate_callback_nonce(nonce)?;
     let pipe_name = pair_pipe_name(nonce);
     let pipe_name_wide = wide(&pipe_name);
@@ -429,9 +462,7 @@ fn exchange_pairing_code(
                     let wait_millis = deadline_wait_millis(Instant::now(), deadline)
                         .context("timed out connecting to the protected tray pipe")?
                         .min(200);
-                    let _ = unsafe {
-                        WaitNamedPipeW(PCWSTR(pipe_name_wide.as_ptr()), wait_millis)
-                    };
+                    let _ = unsafe { WaitNamedPipeW(PCWSTR(pipe_name_wide.as_ptr()), wait_millis) };
                 }
                 error => bail!("could not connect to the protected tray pipe: {error:?}"),
             },
@@ -446,7 +477,10 @@ fn exchange_pairing_code(
     let code = read_pipe_frame(pipe.0, 256, deadline, None)?;
     let code = String::from_utf8(code).context("tray supplied a non-UTF-8 authorization key")?;
     validate_activation_code(&code)?;
-    Ok(SensitiveActivationCode::new(code))
+    Ok((
+        SensitiveActivationCode::new(code),
+        TransferHandle::new(pipe),
+    ))
 }
 
 fn validate_pair_ipc_message(message: &PairIpcMessage, server: &str) -> anyhow::Result<()> {

@@ -138,14 +138,21 @@ fn start_pair_from_browser(
             // release exclusivity before showing any user-dismissed UI.
             drop(pairing_slot);
             match outcome {
-                Ok(()) => {
+                Ok(outcome) => {
                     let service = query_service_state()
                         .map(|state| state.label().to_string())
                         .unwrap_or_else(|error| format!("无法查询：{error}"));
-                    let message = if let Some(warning) = preferences_warning {
-                        format!("{warning} 当前 Agent 服务状态：{service}")
-                    } else {
+                    let mut warnings = Vec::new();
+                    if let Some(warning) = outcome.post_commit_event_warning {
+                        warnings.push(warning.to_string());
+                    }
+                    if let Some(warning) = preferences_warning {
+                        warnings.push(warning);
+                    }
+                    let message = if warnings.is_empty() {
                         format!("配对成功；当前 Agent 服务状态：{service}")
+                    } else {
+                        format!("{} 当前 Agent 服务状态：{service}", warnings.join("\n\n"))
                     };
                     update_operation(
                         &operation_state,
