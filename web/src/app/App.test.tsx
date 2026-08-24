@@ -213,14 +213,15 @@ describe("session verification", () => {
       offset: 0,
     });
     vi.spyOn(monitoringApi, "monitoringAgentInstances").mockResolvedValue([]);
+    const invitationCreatedAt = Date.now();
     const invitation: CreatedAgentInstance = {
       request_id: "request-1",
       instance_id: "host-1",
       display_name: "概览",
       status: "pending",
       activation_code: "one-time-secret",
-      expires_at: "2026-08-23T12:15:00Z",
-      created_at: "2026-08-23T12:00:00Z",
+      expires_at: new Date(invitationCreatedAt + 15 * 60 * 1_000).toISOString(),
+      created_at: new Date(invitationCreatedAt).toISOString(),
     };
     const create = vi.spyOn(monitoringApi, "monitoringCreateAgentInstance")
       .mockResolvedValue(invitation);
