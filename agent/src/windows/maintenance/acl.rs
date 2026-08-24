@@ -102,9 +102,8 @@ fn apply_descriptor_recursively(path: &Path, descriptor: &str) -> anyhow::Result
         }
         index += 1;
     }
-    // SetSecurityInfo propagates inheritable ACEs into existing children.
-    // Protect every descendant first so the later parent update cannot bypass
-    // the per-target handle validation or collide with MSI-owned child files.
+    // Apply every target explicitly and child-first. This avoids relying on
+    // directory ACL propagation and preserves per-target handle validation.
     for target in targets.into_iter().rev() {
         set_managed_security_descriptor(&target, descriptor)?;
     }
@@ -148,7 +147,7 @@ fn apply_exact_acl(path: &Path, service_sid: Option<&str>, recursive: bool) -> a
         }
     }
     // The collected order is parent-first. Reverse it so every descendant is
-    // protected before SetSecurityInfo sees its parent's inheritable ACEs.
+    // independently validated and protected before its parent.
     for target in targets.into_iter().rev() {
         set_managed_security_descriptor(&target, &descriptor)?;
     }
@@ -661,36 +660,10 @@ fn set_security_descriptor(
     let descriptor = LocalSecurityDescriptor(descriptor);
     conversion.context("failed to build the exact Agent security descriptor")?;
 
-    let mut owner = PSID::default();
-    let mut owner_defaulted = windows::core::BOOL::default();
-    unsafe { GetSecurityDescriptorOwner(descriptor.0, &mut owner, &mut owner_defaulted) }
-        .context("failed to read the owner from the exact Agent security descriptor")?;
-    ensure!(
-        !owner.is_invalid(),
-        "exact Agent security descriptor has no owner"
-    );
-
-    let mut dacl_present = windows::core::BOOL::default();
-    let mut dacl = ptr::null_mut::<ACL>();
-    let mut dacl_defaulted = windows::core::BOOL::default();
-    unsafe {
-        GetSecurityDescriptorDacl(
-            descriptor.0,
-            &mut dacl_present,
-            &mut dacl,
-            &mut dacl_defaulted,
-        )
-    }
-    .context("failed to read the DACL from the exact Agent security descriptor")?;
-    ensure!(
-        dacl_present.as_bool() && !dacl.is_null(),
-        "exact Agent security descriptor has no DACL"
-    );
-
-    let status = unsafe {
-        SetSecurityInfo(
-            handle.raw,
-            SE_FILE_OBJECT,
+    let wide_path = wide_null(path.as_os_str());
+    let applied = unsafe {
+        SetFileSecurityW(
+            PCWSTR(wide_path.as_ptr()),
             OWNER_SECURITY_INFORMATION
                 | DACL_SECURITY_INFORMATION
                 | if protected {
@@ -698,11 +671,14 @@ fn set_security_descriptor(
                 } else {
                     UNPROTECTED_DACL_SECURITY_INFORMATION
                 },
-            Some(owner),
-            None,
-            Some(dacl as *const ACL),
-            None,
+            descriptor.0,
         )
     };
-    check_security_status(status, "SetSecurityInfo", path)
+    let result = applied
+        .ok()
+        .with_context(|| format!("SetFileSecurityW failed for {}", path.display()));
+    // Keep the already validated, non-delete-shared target open through the
+    // path-based API call so the checked directory entry cannot be replaced.
+    drop(handle);
+    result
 }

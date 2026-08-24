@@ -635,10 +635,10 @@ fn protected_directory_security_descriptor() -> String {
 
 #[cfg(any(windows, test))]
 fn is_protected_dacl_control(control: &str) -> bool {
-    // SetSecurityInfo can retain SE_DACL_AUTO_INHERITED while setting
-    // SE_DACL_PROTECTED on an object that previously inherited its ACL. SDDL
-    // renders that inert historical marker as PAI; P still prevents any
-    // future inheritance. Do not accept AR, AI without P, or unknown flags.
+    // Windows can retain SE_DACL_AUTO_INHERITED while setting SE_DACL_PROTECTED
+    // on an object that previously inherited its ACL. SDDL renders that inert
+    // historical marker as PAI; P still prevents any future inheritance. Do
+    // not accept AR, AI without P, or unknown flags.
     matches!(control, "P" | "PAI")
 }
 
@@ -880,16 +880,16 @@ mod windows_maintenance {
                 GENERIC_WRITE, GetLastError, HANDLE, HLOCAL, LocalFree, SetLastError,
             },
             Security::{
-                ACL, AdjustTokenPrivileges,
+                AdjustTokenPrivileges,
                 Authorization::{
                     ConvertSecurityDescriptorToStringSecurityDescriptorW,
                     ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
-                    SDDL_REVISION_1, SE_FILE_OBJECT, SetSecurityInfo,
+                    SDDL_REVISION_1, SE_FILE_OBJECT,
                 },
-                DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
-                LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, OWNER_SECURITY_INFORMATION,
-                PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
-                SE_PRIVILEGE_ENABLED, SE_RESTORE_NAME, SE_TAKE_OWNERSHIP_NAME, SECURITY_ATTRIBUTES,
+                DACL_SECURITY_INFORMATION, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW,
+                OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+                PSECURITY_DESCRIPTOR, SE_PRIVILEGE_ENABLED, SE_RESTORE_NAME,
+                SE_TAKE_OWNERSHIP_NAME, SECURITY_ATTRIBUTES, SetFileSecurityW,
                 TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
                 UNPROTECTED_DACL_SECURITY_INFORMATION,
             },
@@ -1312,8 +1312,7 @@ mod managed_handle_target_tests {
 
         let source = include_str!("acl.rs");
         assert!(source.contains("GetSecurityInfo("));
-        assert!(source.contains("SetSecurityInfo("));
-        assert!(source.contains("FILE_SHARE_READ | FILE_SHARE_WRITE"));
+        assert!(source.contains("SetFileSecurityW("));
         assert!(
             source.contains("managed_security_descriptor_for_target(sddl, handle.is_directory)")
         );
@@ -1321,7 +1320,34 @@ mod managed_handle_target_tests {
             "set_security_descriptor(path, sddl, saved_dacl_is_protected(sddl)?, false)"
         ));
         assert!(!source.contains("GetNamedSecurityInfoW("));
-        assert!(!source.contains("SetFileSecurityW("));
+        assert!(!source.contains("SetSecurityInfo("));
+
+        let opener = source
+            .split_once("fn open_acl_target(")
+            .unwrap()
+            .1
+            .split_once("fn open_acl_target_for_read(")
+            .unwrap()
+            .0;
+        assert!(opener.contains("FILE_FLAG_OPEN_REPARSE_POINT"));
+        assert!(opener.contains("GetFileInformationByHandle("));
+        assert!(opener.contains("FILE_SHARE_READ | FILE_SHARE_WRITE,"));
+        assert!(!opener.contains("FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE"));
+
+        let setter = source.split_once("fn set_security_descriptor(").unwrap().1;
+        let opened = setter
+            .find("let handle = open_acl_target_for_write(path)?;")
+            .unwrap();
+        let applied = setter.find("SetFileSecurityW(").unwrap();
+        let captured = setter.find(".ok()").unwrap();
+        let released = setter.find("drop(handle);").unwrap();
+        assert!(opened < applied && applied < captured && captured < released);
+        assert_eq!(setter.matches("SetFileSecurityW(").count(), 1);
+        assert!(setter.contains("OWNER_SECURITY_INFORMATION"));
+        assert!(setter.contains("DACL_SECURITY_INFORMATION"));
+        assert!(setter.contains("PROTECTED_DACL_SECURITY_INFORMATION"));
+        assert!(setter.contains("UNPROTECTED_DACL_SECURITY_INFORMATION"));
+        assert!(setter.contains("descriptor.0"));
     }
 
     #[test]
@@ -1336,7 +1362,7 @@ mod managed_handle_target_tests {
         );
         assert!(
             !source.contains("for target in targets {"),
-            "parent-first SetSecurityInfo would implicitly propagate into MSI child files"
+            "recursive ACL updates must retain per-target child-first validation"
         );
     }
 
