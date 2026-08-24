@@ -37,6 +37,7 @@ pub struct SystemSampler {
     last_sample: Instant,
     last_slow_sample: Option<Instant>,
     cached_temperatures: Vec<TemperatureSnapshot>,
+    cached_temperature_capability: Capability,
     gpu_runtime: GpuRuntime,
 }
 
@@ -66,6 +67,7 @@ impl SystemSampler {
             last_sample: Instant::now(),
             last_slow_sample: None,
             cached_temperatures: Vec::new(),
+            cached_temperature_capability: temperature_capability(&[]),
             gpu_runtime: GpuRuntime::new(),
         }
     }
@@ -104,12 +106,14 @@ impl SystemSampler {
         if refresh_slow {
             #[cfg(not(target_os = "linux"))]
             self.components.refresh(true);
-            self.cached_temperatures = collect_temperatures(&self.components);
+            let temperature_result = collect_temperatures(&self.components);
+            self.cached_temperatures = temperature_result.temperatures;
+            self.cached_temperature_capability = temperature_result.capability;
             self.last_slow_sample = Some(now);
         }
 
         let (gpus, gpu_capabilities) = self.gpu_runtime.collect();
-        let mut capabilities = core_capabilities(&self.cached_temperatures);
+        let mut capabilities = core_capabilities(&self.cached_temperature_capability);
         capabilities.extend(gpu_capabilities);
         capabilities.sort_by(|left, right| left.name.cmp(&right.name));
         capabilities.dedup_by(|left, right| left.name == right.name && left.source == right.source);
@@ -237,7 +241,12 @@ fn collect_disks(disks: &Disks, interval_seconds: f64) -> Vec<DiskSnapshot> {
         .collect()
 }
 
-fn collect_temperatures(_components: &Components) -> Vec<TemperatureSnapshot> {
+struct TemperatureCollection {
+    temperatures: Vec<TemperatureSnapshot>,
+    capability: Capability,
+}
+
+fn collect_temperatures(_components: &Components) -> TemperatureCollection {
     #[cfg(not(target_os = "linux"))]
     let values: Vec<_> = _components
         .iter()
@@ -259,7 +268,7 @@ fn collect_temperatures(_components: &Components) -> Vec<TemperatureSnapshot> {
         .collect();
 
     #[cfg(target_os = "linux")]
-    let values = linux_hwmon::collect();
+    let result = linux_hwmon::collect();
 
     #[cfg(not(target_os = "linux"))]
     let mut seen = HashSet::new();
@@ -267,28 +276,41 @@ fn collect_temperatures(_components: &Components) -> Vec<TemperatureSnapshot> {
     let mut values = values;
     #[cfg(not(target_os = "linux"))]
     values.retain(|item| seen.insert((item.source.clone(), item.id.clone())));
-    values
+
+    #[cfg(target_os = "linux")]
+    return TemperatureCollection {
+        temperatures: result.temperatures,
+        capability: result.capability,
+    };
+
+    #[cfg(not(target_os = "linux"))]
+    TemperatureCollection {
+        capability: temperature_capability(&values),
+        temperatures: values,
+    }
 }
 
-fn core_capabilities(temperatures: &[TemperatureSnapshot]) -> Vec<Capability> {
+fn temperature_capability(temperatures: &[TemperatureSnapshot]) -> Capability {
+    if temperatures.iter().any(|value| value.celsius.is_some()) {
+        Capability::available("system.temperature", "sysinfo/hwmon")
+    } else {
+        Capability::unavailable(
+            "system.temperature",
+            "sysinfo/hwmon",
+            CapabilityErrorKind::Unsupported,
+            "the operating system or hardware exposed no readable numeric sensor",
+        )
+    }
+}
+
+fn core_capabilities(temperature: &Capability) -> Vec<Capability> {
     let mut capabilities = vec![
         Capability::available("system.cpu", "sysinfo"),
         Capability::available("system.memory", "sysinfo"),
         Capability::available("system.network", "sysinfo"),
         Capability::available("system.disk", "sysinfo"),
     ];
-    capabilities.push(
-        if temperatures.iter().any(|value| value.celsius.is_some()) {
-            Capability::available("system.temperature", "sysinfo/hwmon")
-        } else {
-            Capability::unavailable(
-                "system.temperature",
-                "sysinfo/hwmon",
-                CapabilityErrorKind::Unsupported,
-                "the operating system or hardware exposed no readable numeric sensor",
-            )
-        },
-    );
+    capabilities.push(temperature.clone());
     capabilities
 }
 
@@ -454,7 +476,8 @@ mod tests {
 
     #[test]
     fn empty_temperature_input_is_reported_as_a_capability_gap() {
-        let temperature = core_capabilities(&[])
+        let temperature_capability = temperature_capability(&[]);
+        let temperature = core_capabilities(&temperature_capability)
             .into_iter()
             .find(|capability| capability.name == "system.temperature")
             .expect("core capabilities always describe temperature support");
