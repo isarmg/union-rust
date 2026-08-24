@@ -1,3 +1,7 @@
+fn maintenance_path_utf16_units(path: &Path) -> usize {
+    path.as_os_str().encode_wide().count()
+}
+
 fn validate_optional_root(path: &Path, label: &str) -> anyhow::Result<bool> {
     match fs::symlink_metadata(path) {
         Ok(_) => {
@@ -42,7 +46,19 @@ fn validate_regular_single_link(path: &Path, label: &str) -> anyhow::Result<()> 
 
 fn validate_tree(root: &Path) -> anyhow::Result<()> {
     validate_real_directory(root, "managed directory")?;
-    let mut pending = vec![root.to_path_buf()];
+    let mut pending = Vec::new();
+    let mut discovered = 0;
+    let mut path_payload_bytes = 0;
+    enqueue_bounded_tree_path(
+        &mut pending,
+        &mut discovered,
+        root.to_path_buf(),
+        maintenance_path_utf16_units(root),
+        &mut path_payload_bytes,
+        MAX_MAINTENANCE_TREE_NODES,
+        MAX_MAINTENANCE_PATH_BYTES,
+        "managed tree traversal",
+    )?;
     while let Some(directory) = pending.pop() {
         for entry in fs::read_dir(&directory)
             .with_context(|| format!("failed to enumerate {}", directory.display()))?
@@ -56,8 +72,23 @@ fn validate_tree(root: &Path) -> anyhow::Result<()> {
                 path.display()
             );
             if metadata.is_dir() {
-                pending.push(path);
+                let path_utf16_units = maintenance_path_utf16_units(&path);
+                enqueue_bounded_tree_path(
+                    &mut pending,
+                    &mut discovered,
+                    path,
+                    path_utf16_units,
+                    &mut path_payload_bytes,
+                    MAX_MAINTENANCE_TREE_NODES,
+                    MAX_MAINTENANCE_PATH_BYTES,
+                    "managed tree traversal queue",
+                )?;
             } else {
+                record_bounded_tree_node(
+                    &mut discovered,
+                    MAX_MAINTENANCE_TREE_NODES,
+                    "managed tree traversal",
+                )?;
                 ensure!(
                     metadata.is_file(),
                     "managed tree contains a special file: {}",
@@ -85,9 +116,29 @@ fn ensure_absent(path: &Path, label: &str) -> anyhow::Result<()> {
 fn remove_tree_no_reparse(root: &Path) -> anyhow::Result<()> {
     validate_tree(root)?;
     let mut directories = Vec::new();
-    let mut pending = vec![root.to_path_buf()];
+    let mut pending = Vec::new();
+    let mut discovered = 0;
+    let mut path_payload_bytes = 0;
+    enqueue_bounded_tree_path(
+        &mut pending,
+        &mut discovered,
+        root.to_path_buf(),
+        maintenance_path_utf16_units(root),
+        &mut path_payload_bytes,
+        MAX_MAINTENANCE_TREE_NODES,
+        MAX_MAINTENANCE_PATH_BYTES,
+        "managed tree removal",
+    )?;
     while let Some(directory) = pending.pop() {
-        directories.push(directory.clone());
+        try_push_bounded_path(
+            &mut directories,
+            directory.clone(),
+            maintenance_path_utf16_units(&directory),
+            &mut path_payload_bytes,
+            MAX_MAINTENANCE_TREE_NODES,
+            MAX_MAINTENANCE_PATH_BYTES,
+            "managed tree removal directory list",
+        )?;
         for entry in fs::read_dir(&directory)? {
             let path = entry?.path();
             let metadata = fs::symlink_metadata(&path)?;
@@ -97,8 +148,23 @@ fn remove_tree_no_reparse(root: &Path) -> anyhow::Result<()> {
                 path.display()
             );
             if metadata.is_dir() {
-                pending.push(path);
+                let path_utf16_units = maintenance_path_utf16_units(&path);
+                enqueue_bounded_tree_path(
+                    &mut pending,
+                    &mut discovered,
+                    path,
+                    path_utf16_units,
+                    &mut path_payload_bytes,
+                    MAX_MAINTENANCE_TREE_NODES,
+                    MAX_MAINTENANCE_PATH_BYTES,
+                    "managed tree removal queue",
+                )?;
             } else {
+                record_bounded_tree_node(
+                    &mut discovered,
+                    MAX_MAINTENANCE_TREE_NODES,
+                    "managed tree removal",
+                )?;
                 fs::remove_file(&path)?;
             }
         }

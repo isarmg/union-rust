@@ -20,6 +20,203 @@ fn rollback_path_exists(path: &std::path::Path, label: &str) -> anyhow::Result<b
     checked_rollback_path_status(path, label, path.try_exists())
 }
 
+/// State can legitimately contain the bounded report spool plus package files,
+/// but maintenance must never materialize an attacker-sized tree in memory.
+#[cfg(any(windows, test))]
+const MAX_MAINTENANCE_TREE_NODES: usize = 16 * 1024;
+#[cfg(any(windows, test))]
+const MAX_ACL_SNAPSHOT_ENTRIES: usize = MAX_MAINTENANCE_TREE_NODES;
+#[cfg(any(windows, test))]
+const MAX_ACL_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
+#[cfg(any(windows, test))]
+const MAX_MAINTENANCE_PATH_BYTES: usize = 32 * 1024 * 1024;
+#[cfg(any(windows, test))]
+const MAINTENANCE_PATH_FIXED_BYTES: usize = 64;
+/// Conservatively charge the entry struct, allocator bookkeeping, and JSON
+/// field/punctuation overhead in addition to its two variable payloads.
+#[cfg(any(windows, test))]
+const ACL_SNAPSHOT_ENTRY_FIXED_BYTES: usize = 128;
+
+#[cfg(any(windows, test))]
+fn checked_acl_snapshot_entry_payload(
+    accounted_bytes: usize,
+    relative_path_utf16_units: usize,
+    sddl_bytes: usize,
+    hard_limit: usize,
+) -> anyhow::Result<usize> {
+    let path_bytes = relative_path_utf16_units
+        .checked_mul(std::mem::size_of::<u16>())
+        .context("ACL snapshot UTF-16 path byte count overflowed")?;
+    let entry_bytes = ACL_SNAPSHOT_ENTRY_FIXED_BYTES
+        .checked_add(path_bytes)
+        .and_then(|bytes| bytes.checked_add(sddl_bytes))
+        .context("ACL snapshot entry payload byte count overflowed")?;
+    let requested = accounted_bytes
+        .checked_add(entry_bytes)
+        .context("ACL snapshot cumulative payload byte count overflowed")?;
+    ensure!(
+        requested <= hard_limit,
+        "ACL snapshot entry payload exceeds the {hard_limit}-byte cumulative hard limit"
+    );
+    Ok(requested)
+}
+
+#[cfg(any(windows, test))]
+fn try_reserve_bounded<T>(
+    items: &mut Vec<T>,
+    additional: usize,
+    hard_limit: usize,
+    label: &str,
+) -> anyhow::Result<()> {
+    let requested = items
+        .len()
+        .checked_add(additional)
+        .context("bounded maintenance collection length overflowed")?;
+    ensure!(
+        requested <= hard_limit,
+        "{label} exceeded the hard limit of {hard_limit} entries"
+    );
+    items.try_reserve(additional).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to reserve memory for {label} within the {hard_limit}-entry hard limit: {error}"
+        )
+    })
+}
+
+#[cfg(any(windows, test))]
+fn try_push_bounded_acl_snapshot_entry<T>(
+    entries: &mut Vec<T>,
+    entry: T,
+    relative_path_utf16_units: usize,
+    sddl_bytes: usize,
+    accounted_payload_bytes: &mut usize,
+    entry_limit: usize,
+    payload_byte_limit: usize,
+    label: &str,
+) -> anyhow::Result<()> {
+    let requested_payload_bytes = checked_acl_snapshot_entry_payload(
+        *accounted_payload_bytes,
+        relative_path_utf16_units,
+        sddl_bytes,
+        payload_byte_limit,
+    )?;
+    try_reserve_bounded(entries, 1, entry_limit, label)?;
+    entries.push(entry);
+    *accounted_payload_bytes = requested_payload_bytes;
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn checked_maintenance_path_payload(
+    accounted_bytes: usize,
+    path_utf16_units: usize,
+    hard_limit: usize,
+    label: &str,
+) -> anyhow::Result<usize> {
+    let path_bytes = path_utf16_units
+        .checked_mul(std::mem::size_of::<u16>())
+        .context("maintenance UTF-16 path byte count overflowed")?;
+    let entry_bytes = MAINTENANCE_PATH_FIXED_BYTES
+        .checked_add(path_bytes)
+        .context("maintenance path payload byte count overflowed")?;
+    let requested = accounted_bytes
+        .checked_add(entry_bytes)
+        .context("maintenance cumulative path byte count overflowed")?;
+    ensure!(
+        requested <= hard_limit,
+        "{label} exceeded the {hard_limit}-byte cumulative path hard limit"
+    );
+    Ok(requested)
+}
+
+#[cfg(any(windows, test))]
+fn try_push_bounded_path<T>(
+    items: &mut Vec<T>,
+    item: T,
+    path_utf16_units: usize,
+    accounted_path_bytes: &mut usize,
+    entry_limit: usize,
+    path_byte_limit: usize,
+    label: &str,
+) -> anyhow::Result<()> {
+    let requested_path_bytes = checked_maintenance_path_payload(
+        *accounted_path_bytes,
+        path_utf16_units,
+        path_byte_limit,
+        label,
+    )?;
+    try_reserve_bounded(items, 1, entry_limit, label)?;
+    items.push(item);
+    *accounted_path_bytes = requested_path_bytes;
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn record_bounded_tree_node(
+    discovered: &mut usize,
+    hard_limit: usize,
+    label: &str,
+) -> anyhow::Result<()> {
+    ensure!(
+        *discovered < hard_limit,
+        "{label} exceeded the hard limit of {hard_limit} nodes"
+    );
+    *discovered += 1;
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn enqueue_bounded_tree_path<T>(
+    pending: &mut Vec<T>,
+    discovered: &mut usize,
+    node: T,
+    path_utf16_units: usize,
+    accounted_path_bytes: &mut usize,
+    hard_limit: usize,
+    path_byte_limit: usize,
+    label: &str,
+) -> anyhow::Result<()> {
+    ensure!(
+        *discovered < hard_limit,
+        "{label} exceeded the hard limit of {hard_limit} nodes"
+    );
+    try_push_bounded_path(
+        pending,
+        node,
+        path_utf16_units,
+        accounted_path_bytes,
+        hard_limit,
+        path_byte_limit,
+        label,
+    )?;
+    *discovered += 1;
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn read_file_bounded(
+    path: &std::path::Path,
+    max_bytes: usize,
+    label: &str,
+) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+
+    let read_limit = max_bytes
+        .checked_add(1)
+        .ok_or_else(|| std::io::Error::other("bounded file read limit overflowed"))?;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(u64::try_from(read_limit).map_err(std::io::Error::other)?)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{label} exceeds the {max_bytes}-byte hard limit"),
+        ));
+    }
+    Ok(bytes)
+}
+
 #[cfg(any(windows, test))]
 #[derive(Clone, Debug)]
 struct AclSnapshotPathFact {
@@ -49,25 +246,52 @@ fn run_validated_acl_restore_plan(
     mut apply: impl FnMut(usize) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     ensure!(!snapshot.is_empty(), "ACL snapshot is empty");
+    ensure!(
+        snapshot.len() <= MAX_ACL_SNAPSHOT_ENTRIES,
+        "ACL snapshot exceeds the {MAX_ACL_SNAPSHOT_ENTRIES}-entry hard limit"
+    );
+    ensure!(
+        current.len() <= MAX_MAINTENANCE_TREE_NODES,
+        "current managed tree exceeds the {MAX_MAINTENANCE_TREE_NODES}-node hard limit"
+    );
 
-    let mut snapshot_paths = std::collections::BTreeSet::new();
-    for entry in snapshot {
+    let mut snapshot_order = Vec::new();
+    try_reserve_bounded(
+        &mut snapshot_order,
+        snapshot.len(),
+        MAX_ACL_SNAPSHOT_ENTRIES,
+        "ACL snapshot validation index",
+    )?;
+    for (index, entry) in snapshot.iter().enumerate() {
         ensure!(
             entry.valid_relative_path,
             "ACL snapshot contains a non-relative managed path"
         );
-        ensure!(
-            snapshot_paths.insert(entry.path_key.clone()),
-            "ACL snapshot contains a duplicate path"
-        );
+        snapshot_order.push(index);
     }
+    snapshot_order
+        .sort_unstable_by(|left, right| snapshot[*left].path_key.cmp(&snapshot[*right].path_key));
     ensure!(
-        snapshot_paths.contains(&Vec::new()),
+        snapshot_order
+            .windows(2)
+            .all(|pair| snapshot[pair[0]].path_key != snapshot[pair[1]].path_key),
+        "ACL snapshot contains a duplicate path"
+    );
+    ensure!(
+        snapshot_order
+            .iter()
+            .any(|index| snapshot[*index].path_key.is_empty()),
         "ACL snapshot does not contain its managed root"
     );
 
-    let mut current_by_path = std::collections::BTreeMap::new();
-    for entry in current {
+    let mut current_order = Vec::new();
+    try_reserve_bounded(
+        &mut current_order,
+        current.len(),
+        MAX_MAINTENANCE_TREE_NODES,
+        "current managed tree validation index",
+    )?;
+    for (index, entry) in current.iter().enumerate() {
         ensure!(
             !entry.is_reparse_point,
             "current managed tree contains a reparse point"
@@ -82,34 +306,37 @@ fn run_validated_acl_restore_plan(
                 "current managed tree contains a multiply linked file"
             );
         }
-        ensure!(
-            current_by_path
-                .insert(entry.path_key.clone(), entry)
-                .is_none(),
-            "current managed tree contains a duplicate path"
-        );
+        current_order.push(index);
     }
+    current_order
+        .sort_unstable_by(|left, right| current[*left].path_key.cmp(&current[*right].path_key));
+    ensure!(
+        current_order
+            .windows(2)
+            .all(|pair| current[pair[0]].path_key != current[pair[1]].path_key),
+        "current managed tree contains a duplicate path"
+    );
 
     ensure!(
-        snapshot_paths.len() == current_by_path.len()
-            && snapshot_paths
+        snapshot_order.len() == current_order.len()
+            && snapshot_order
                 .iter()
-                .all(|path| current_by_path.contains_key(path)),
+                .zip(&current_order)
+                .all(
+                    |(snapshot_index, current_index)| snapshot[*snapshot_index].path_key
+                        == current[*current_index].path_key
+                ),
         "ACL snapshot path set does not exactly match the current managed tree"
     );
-    for entry in snapshot {
-        let current_entry = current_by_path
-            .get(&entry.path_key)
-            .context("validated ACL snapshot path disappeared from the restore plan")?;
+    for (snapshot_index, current_index) in snapshot_order.iter().zip(&current_order) {
         ensure!(
-            entry.is_directory == current_entry.is_directory,
+            snapshot[*snapshot_index].is_directory == current[*current_index].is_directory,
             "ACL snapshot target changed type"
         );
     }
 
-    let mut order = (0..snapshot.len()).collect::<Vec<_>>();
-    order.sort_by_key(|index| snapshot[*index].depth);
-    for index in order {
+    snapshot_order.sort_by_key(|index| snapshot[*index].depth);
+    for index in snapshot_order {
         apply(index)?;
     }
     Ok(())
@@ -220,9 +447,12 @@ pub(crate) fn entry() {
 #[cfg(windows)]
 mod windows_maintenance {
     use super::{
-        AclCurrentPathFact, AclSnapshotPathFact, managed_state_security_descriptor,
-        parse_program_dacl, program_security_descriptor, rollback_path_exists,
-        run_validated_acl_restore_plan,
+        AclCurrentPathFact, AclSnapshotPathFact, MAX_ACL_SNAPSHOT_BYTES, MAX_ACL_SNAPSHOT_ENTRIES,
+        MAX_MAINTENANCE_PATH_BYTES, MAX_MAINTENANCE_TREE_NODES, enqueue_bounded_tree_path,
+        managed_state_security_descriptor, parse_program_dacl, program_security_descriptor,
+        read_file_bounded, record_bounded_tree_node, rollback_path_exists,
+        run_validated_acl_restore_plan, try_push_bounded_acl_snapshot_entry, try_push_bounded_path,
+        try_reserve_bounded,
     };
     use std::{
         ffi::{OsStr, OsString, c_void},
@@ -607,5 +837,146 @@ mod acl_restore_plan_tests {
         .unwrap_err();
         assert!(invalid.to_string().contains("non-relative"));
         assert_eq!(applied, 0, "a malformed later entry must apply no ACLs");
+    }
+}
+
+#[cfg(test)]
+mod maintenance_resource_limit_tests {
+    use super::*;
+
+    #[test]
+    fn small_tree_limits_bound_total_nodes_and_live_vectors() {
+        let mut pending = Vec::new();
+        let mut discovered = 0;
+        let mut path_bytes = 0;
+        enqueue_bounded_tree_path(
+            &mut pending,
+            &mut discovered,
+            1,
+            1,
+            &mut path_bytes,
+            2,
+            1024,
+            "test traversal",
+        )
+        .unwrap();
+        assert_eq!(pending.pop(), Some(1));
+        enqueue_bounded_tree_path(
+            &mut pending,
+            &mut discovered,
+            2,
+            1,
+            &mut path_bytes,
+            2,
+            1024,
+            "test traversal",
+        )
+        .unwrap();
+        assert_eq!(pending.pop(), Some(2));
+        let accepted_path_bytes = path_bytes;
+        let error = enqueue_bounded_tree_path(
+            &mut pending,
+            &mut discovered,
+            3,
+            1,
+            &mut path_bytes,
+            2,
+            1024,
+            "test traversal",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("hard limit of 2 nodes"));
+        assert!(pending.is_empty(), "the rejected node must not be queued");
+        assert_eq!(path_bytes, accepted_path_bytes);
+
+        let mut recorded = 0;
+        record_bounded_tree_node(&mut recorded, 1, "test tree").unwrap();
+        let error = record_bounded_tree_node(&mut recorded, 1, "test tree").unwrap_err();
+        assert!(error.to_string().contains("hard limit of 1 nodes"));
+    }
+
+    #[test]
+    fn rejected_path_payload_does_not_push_or_change_accounting() {
+        assert!(MAX_MAINTENANCE_PATH_BYTES >= MAINTENANCE_PATH_FIXED_BYTES + 2);
+        let hard_limit = MAINTENANCE_PATH_FIXED_BYTES + 2;
+        let mut path_bytes = 0;
+        let mut paths = Vec::new();
+        try_push_bounded_path(
+            &mut paths,
+            "accepted",
+            1,
+            &mut path_bytes,
+            2,
+            hard_limit,
+            "test paths",
+        )
+        .unwrap();
+        let accepted_bytes = path_bytes;
+
+        let error = try_push_bounded_path(
+            &mut paths,
+            "rejected",
+            1,
+            &mut path_bytes,
+            2,
+            hard_limit,
+            "test paths",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cumulative path hard limit"));
+        assert_eq!(path_bytes, accepted_bytes);
+        assert_eq!(paths, ["accepted"]);
+    }
+
+    #[test]
+    fn rejected_snapshot_payload_does_not_grow_accounting_or_entries() {
+        let hard_limit = ACL_SNAPSHOT_ENTRY_FIXED_BYTES + 4;
+        let mut accounted = 0;
+        let mut entries = Vec::new();
+
+        try_push_bounded_acl_snapshot_entry(
+            &mut entries,
+            "accepted",
+            1,
+            2,
+            &mut accounted,
+            2,
+            hard_limit,
+            "test snapshot entries",
+        )
+        .unwrap();
+        let accepted_bytes = accounted;
+
+        let error = try_push_bounded_acl_snapshot_entry(
+            &mut entries,
+            "rejected",
+            1,
+            1,
+            &mut accounted,
+            2,
+            hard_limit,
+            "test snapshot entries",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cumulative hard limit"));
+        assert_eq!(accounted, accepted_bytes);
+        assert_eq!(entries, ["accepted"]);
+    }
+
+    #[test]
+    fn sparse_snapshot_is_rejected_after_only_limit_plus_one_bytes() {
+        let path = std::env::temp_dir().join(format!(
+            "unionc-maintenance-sparse-snapshot-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(u64::try_from(MAX_ACL_SNAPSHOT_BYTES + 1).unwrap())
+            .unwrap();
+        drop(file);
+
+        let error = read_file_bounded(&path, 64, "test ACL snapshot").unwrap_err();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("64-byte hard limit"));
     }
 }

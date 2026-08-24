@@ -19,12 +19,35 @@ fn secure_program_for_service(path: &Path) -> anyhow::Result<()> {
 
 fn validate_program_tree(path: &Path) -> anyhow::Result<()> {
     validate_tree(path)?;
-    let mut pending = vec![path.to_path_buf()];
+    let mut pending = Vec::new();
+    let mut discovered = 0;
+    let mut path_payload_bytes = 0;
+    enqueue_bounded_tree_path(
+        &mut pending,
+        &mut discovered,
+        path.to_path_buf(),
+        maintenance_path_utf16_units(path),
+        &mut path_payload_bytes,
+        MAX_MAINTENANCE_TREE_NODES,
+        MAX_MAINTENANCE_PATH_BYTES,
+        "program ACL validation traversal",
+    )?;
     while let Some(target) = pending.pop() {
         validate_program_dacl(&target)?;
         if fs::symlink_metadata(&target)?.is_dir() {
             for child in fs::read_dir(&target)? {
-                pending.push(child?.path());
+                let child = child?.path();
+                let path_utf16_units = maintenance_path_utf16_units(&child);
+                enqueue_bounded_tree_path(
+                    &mut pending,
+                    &mut discovered,
+                    child,
+                    path_utf16_units,
+                    &mut path_payload_bytes,
+                    MAX_MAINTENANCE_TREE_NODES,
+                    MAX_MAINTENANCE_PATH_BYTES,
+                    "program ACL validation traversal",
+                )?;
             }
         }
     }
@@ -48,13 +71,33 @@ enum ProgramAclRestore {
 
 fn apply_descriptor_recursively(path: &Path, descriptor: &str) -> anyhow::Result<()> {
     validate_tree(path)?;
-    let mut targets = vec![path.to_path_buf()];
+    let mut targets = Vec::new();
+    let mut path_payload_bytes = 0;
+    try_push_bounded_path(
+        &mut targets,
+        path.to_path_buf(),
+        maintenance_path_utf16_units(path),
+        &mut path_payload_bytes,
+        MAX_MAINTENANCE_TREE_NODES,
+        MAX_MAINTENANCE_PATH_BYTES,
+        "recursive ACL application targets",
+    )?;
     let mut index = 0;
     while index < targets.len() {
         let current = targets[index].clone();
         if fs::symlink_metadata(&current)?.is_dir() {
             for entry in fs::read_dir(&current)? {
-                targets.push(entry?.path());
+                let target = entry?.path();
+                let path_utf16_units = maintenance_path_utf16_units(&target);
+                try_push_bounded_path(
+                    &mut targets,
+                    target,
+                    path_utf16_units,
+                    &mut path_payload_bytes,
+                    MAX_MAINTENANCE_TREE_NODES,
+                    MAX_MAINTENANCE_PATH_BYTES,
+                    "recursive ACL application targets",
+                )?;
             }
         }
         index += 1;
@@ -67,7 +110,17 @@ fn apply_descriptor_recursively(path: &Path, descriptor: &str) -> anyhow::Result
 
 fn apply_exact_acl(path: &Path, service_sid: Option<&str>, recursive: bool) -> anyhow::Result<()> {
     let descriptor = managed_state_security_descriptor(service_sid);
-    let mut targets = vec![path.to_path_buf()];
+    let mut targets = Vec::new();
+    let mut path_payload_bytes = 0;
+    try_push_bounded_path(
+        &mut targets,
+        path.to_path_buf(),
+        maintenance_path_utf16_units(path),
+        &mut path_payload_bytes,
+        MAX_MAINTENANCE_TREE_NODES,
+        MAX_MAINTENANCE_PATH_BYTES,
+        "exact ACL application targets",
+    )?;
     if recursive {
         validate_tree(path)?;
         let mut index = 0;
@@ -75,7 +128,17 @@ fn apply_exact_acl(path: &Path, service_sid: Option<&str>, recursive: bool) -> a
             let current = targets[index].clone();
             if fs::symlink_metadata(&current)?.is_dir() {
                 for entry in fs::read_dir(&current)? {
-                    targets.push(entry?.path());
+                    let target = entry?.path();
+                    let path_utf16_units = maintenance_path_utf16_units(&target);
+                    try_push_bounded_path(
+                        &mut targets,
+                        target,
+                        path_utf16_units,
+                        &mut path_payload_bytes,
+                        MAX_MAINTENANCE_TREE_NODES,
+                        MAX_MAINTENANCE_PATH_BYTES,
+                        "exact ACL application targets",
+                    )?;
                 }
             }
             index += 1;
@@ -89,23 +152,60 @@ fn apply_exact_acl(path: &Path, service_sid: Option<&str>, recursive: bool) -> a
 
 fn save_acl(root: &Path, destination: &Path) -> anyhow::Result<()> {
     validate_tree(root)?;
-    let mut pending = vec![root.to_path_buf()];
+    let mut pending = Vec::new();
+    let mut discovered = 0;
+    let mut traversal_path_payload_bytes = 0;
+    enqueue_bounded_tree_path(
+        &mut pending,
+        &mut discovered,
+        root.to_path_buf(),
+        maintenance_path_utf16_units(root),
+        &mut traversal_path_payload_bytes,
+        MAX_MAINTENANCE_TREE_NODES,
+        MAX_MAINTENANCE_PATH_BYTES,
+        "ACL snapshot traversal",
+    )?;
     let mut entries = Vec::new();
+    let mut payload_bytes = 0;
     while let Some(target) = pending.pop() {
         let metadata = fs::symlink_metadata(&target)?;
         if metadata.is_dir() {
             for child in fs::read_dir(&target)? {
-                pending.push(child?.path());
+                let child = child?.path();
+                let path_utf16_units = maintenance_path_utf16_units(&child);
+                enqueue_bounded_tree_path(
+                    &mut pending,
+                    &mut discovered,
+                    child,
+                    path_utf16_units,
+                    &mut traversal_path_payload_bytes,
+                    MAX_MAINTENANCE_TREE_NODES,
+                    MAX_MAINTENANCE_PATH_BYTES,
+                    "ACL snapshot traversal",
+                )?;
             }
         }
         let relative = target
             .strip_prefix(root)
             .with_context(|| format!("{} escaped the fixed managed root", target.display()))?;
-        entries.push(AclSnapshotEntry {
-            relative_path_utf16: relative.as_os_str().encode_wide().collect(),
-            is_directory: metadata.is_dir(),
-            sddl: security_descriptor_sddl(&target)?,
-        });
+        let relative_path_utf16 = relative.as_os_str().encode_wide().collect::<Vec<_>>();
+        let sddl = security_descriptor_sddl(&target)?;
+        let relative_path_utf16_units = relative_path_utf16.len();
+        let sddl_bytes = sddl.len();
+        try_push_bounded_acl_snapshot_entry(
+            &mut entries,
+            AclSnapshotEntry {
+                relative_path_utf16,
+                is_directory: metadata.is_dir(),
+                sddl,
+            },
+            relative_path_utf16_units,
+            sddl_bytes,
+            &mut payload_bytes,
+            MAX_ACL_SNAPSHOT_ENTRIES,
+            MAX_ACL_SNAPSHOT_BYTES,
+            "ACL snapshot entries",
+        )?;
     }
     entries.sort_by(|left, right| left.relative_path_utf16.cmp(&right.relative_path_utf16));
     let snapshot = AclSnapshot {
@@ -113,20 +213,77 @@ fn save_acl(root: &Path, destination: &Path) -> anyhow::Result<()> {
         application_version: env!("CARGO_PKG_VERSION").to_owned(),
         entries,
     };
-    write_new_private(destination, &serde_json::to_vec(&snapshot)?)
+    write_new_private(destination, &serialize_acl_snapshot_bounded(&snapshot)?)
+}
+
+struct BoundedAclSnapshotWriter {
+    bytes: Vec<u8>,
+}
+
+impl std::io::Write for BoundedAclSnapshotWriter {
+    fn write(&mut self, input: &[u8]) -> std::io::Result<usize> {
+        let requested = self
+            .bytes
+            .len()
+            .checked_add(input.len())
+            .ok_or_else(|| std::io::Error::other("ACL snapshot size overflowed"))?;
+        if requested > MAX_ACL_SNAPSHOT_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("ACL snapshot exceeds the {MAX_ACL_SNAPSHOT_BYTES}-byte hard limit"),
+            ));
+        }
+        self.bytes.try_reserve(input.len()).map_err(|error| {
+            std::io::Error::other(format!(
+                "failed to reserve ACL snapshot bytes within the {MAX_ACL_SNAPSHOT_BYTES}-byte hard limit: {error}"
+            ))
+        })?;
+        self.bytes.extend_from_slice(input);
+        Ok(input.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn serialize_acl_snapshot_bounded(snapshot: &AclSnapshot) -> anyhow::Result<Vec<u8>> {
+    let mut writer = BoundedAclSnapshotWriter { bytes: Vec::new() };
+    serde_json::to_writer(&mut writer, snapshot)
+        .context("failed to serialize bounded ACL snapshot")?;
+    Ok(writer.bytes)
 }
 
 fn restore_acl(root: &Path, source: &Path) -> anyhow::Result<()> {
-    let snapshot: AclSnapshot = serde_json::from_slice(&fs::read(source)?)?;
+    let snapshot_bytes = read_file_bounded(source, MAX_ACL_SNAPSHOT_BYTES, "ACL snapshot")?;
+    let snapshot: AclSnapshot = serde_json::from_slice(&snapshot_bytes)?;
     ensure!(
         snapshot.format == SNAPSHOT_FORMAT
             && snapshot.application_version == env!("CARGO_PKG_VERSION"),
         "unsupported ACL snapshot version"
     );
+    ensure!(
+        snapshot.entries.len() <= MAX_ACL_SNAPSHOT_ENTRIES,
+        "ACL snapshot exceeds the {MAX_ACL_SNAPSHOT_ENTRIES}-entry hard limit"
+    );
 
-    let mut snapshot_facts = Vec::with_capacity(snapshot.entries.len());
-    let mut restore_entries = Vec::with_capacity(snapshot.entries.len());
+    let mut snapshot_facts = Vec::new();
+    try_reserve_bounded(
+        &mut snapshot_facts,
+        snapshot.entries.len(),
+        MAX_ACL_SNAPSHOT_ENTRIES,
+        "ACL snapshot restore facts",
+    )?;
+    let mut restore_entries = Vec::new();
+    try_reserve_bounded(
+        &mut restore_entries,
+        snapshot.entries.len(),
+        MAX_ACL_SNAPSHOT_ENTRIES,
+        "ACL snapshot restore entries",
+    )?;
+    let mut restore_path_payload_bytes = 0;
     for entry in snapshot.entries {
+        let relative_path_utf16_units = entry.relative_path_utf16.len();
         let relative = PathBuf::from(OsString::from_wide(&entry.relative_path_utf16));
         let valid_relative_path = relative
             .components()
@@ -138,13 +295,30 @@ fn restore_acl(root: &Path, source: &Path) -> anyhow::Result<()> {
             root.join(&relative)
         };
         validate_saved_security_descriptor(&entry.sddl)?;
-        snapshot_facts.push(AclSnapshotPathFact {
-            path_key: entry.relative_path_utf16,
-            depth,
-            valid_relative_path,
-            is_directory: entry.is_directory,
-        });
-        restore_entries.push((target, entry.sddl));
+        try_push_bounded_path(
+            &mut snapshot_facts,
+            AclSnapshotPathFact {
+                path_key: entry.relative_path_utf16,
+                depth,
+                valid_relative_path,
+                is_directory: entry.is_directory,
+            },
+            relative_path_utf16_units,
+            &mut restore_path_payload_bytes,
+            MAX_ACL_SNAPSHOT_ENTRIES,
+            MAX_MAINTENANCE_PATH_BYTES,
+            "ACL snapshot restore facts",
+        )?;
+        let target_utf16_units = maintenance_path_utf16_units(&target);
+        try_push_bounded_path(
+            &mut restore_entries,
+            (target, entry.sddl),
+            target_utf16_units,
+            &mut restore_path_payload_bytes,
+            MAX_ACL_SNAPSHOT_ENTRIES,
+            MAX_MAINTENANCE_PATH_BYTES,
+            "ACL snapshot restore targets",
+        )?;
     }
 
     let current_facts = collect_current_acl_path_facts(root)?;
@@ -162,7 +336,19 @@ fn restore_acl(root: &Path, source: &Path) -> anyhow::Result<()> {
 
 fn collect_current_acl_path_facts(root: &Path) -> anyhow::Result<Vec<AclCurrentPathFact>> {
     let mut facts = Vec::new();
-    let mut pending = vec![root.to_path_buf()];
+    let mut pending = Vec::new();
+    let mut discovered = 0;
+    let mut path_payload_bytes = 0;
+    enqueue_bounded_tree_path(
+        &mut pending,
+        &mut discovered,
+        root.to_path_buf(),
+        maintenance_path_utf16_units(root),
+        &mut path_payload_bytes,
+        MAX_MAINTENANCE_TREE_NODES,
+        MAX_MAINTENANCE_PATH_BYTES,
+        "ACL restore tree traversal",
+    )?;
     while let Some(target) = pending.pop() {
         let metadata = fs::symlink_metadata(&target).with_context(|| {
             format!("failed to inspect ACL restore target {}", target.display())
@@ -178,13 +364,23 @@ fn collect_current_acl_path_facts(root: &Path) -> anyhow::Result<Vec<AclCurrentP
         let relative = target
             .strip_prefix(root)
             .with_context(|| format!("{} escaped the fixed managed root", target.display()))?;
-        facts.push(AclCurrentPathFact {
-            path_key: relative.as_os_str().encode_wide().collect(),
-            is_directory,
-            is_regular_file,
-            is_reparse_point,
-            hard_link_count,
-        });
+        let path_key = relative.as_os_str().encode_wide().collect::<Vec<_>>();
+        let relative_path_utf16_units = path_key.len();
+        try_push_bounded_path(
+            &mut facts,
+            AclCurrentPathFact {
+                path_key,
+                is_directory,
+                is_regular_file,
+                is_reparse_point,
+                hard_link_count,
+            },
+            relative_path_utf16_units,
+            &mut path_payload_bytes,
+            MAX_MAINTENANCE_TREE_NODES,
+            MAX_MAINTENANCE_PATH_BYTES,
+            "ACL restore tree facts",
+        )?;
 
         // Never traverse a name-surrogate directory. Its manifest fact will
         // make validation fail before any ACL is restored.
@@ -192,7 +388,18 @@ fn collect_current_acl_path_facts(root: &Path) -> anyhow::Result<Vec<AclCurrentP
             for child in fs::read_dir(&target)
                 .with_context(|| format!("failed to enumerate {}", target.display()))?
             {
-                pending.push(child?.path());
+                let child = child?.path();
+                let path_utf16_units = maintenance_path_utf16_units(&child);
+                enqueue_bounded_tree_path(
+                    &mut pending,
+                    &mut discovered,
+                    child,
+                    path_utf16_units,
+                    &mut path_payload_bytes,
+                    MAX_MAINTENANCE_TREE_NODES,
+                    MAX_MAINTENANCE_PATH_BYTES,
+                    "ACL restore tree traversal",
+                )?;
             }
         }
     }
