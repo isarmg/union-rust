@@ -20,7 +20,7 @@ jobs:
     name: verify release source
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - name: Require version tags to belong to main
@@ -54,12 +54,12 @@ jobs:
     needs: [verify-release-ref, full-ci]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           targets: x86_64-unknown-linux-musl
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-go@v6
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.26.x'
           cache: false
@@ -146,7 +146,7 @@ jobs:
       - name: Smoke test Server RPM dependencies, fresh SQLite, and same-version reinstall
         shell: bash
         run: bash server/packaging/linux/tests/smoke-rpm.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: unionc-server-linux
           path: |
@@ -158,10 +158,10 @@ jobs:
     needs: [verify-release-ref, full-ci]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.26.x'
           cache: false
@@ -223,7 +223,7 @@ jobs:
       - name: Smoke test RPM fresh install, ordinary remove, same-version reinstall, and purge
         shell: bash
         run: bash agent/packaging/linux/tests/smoke-rpm.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: unionc-agent-linux
           path: |
@@ -235,9 +235,9 @@ jobs:
     needs: [verify-release-ref, full-ci]
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Resolve MSI version
         id: version
         shell: pwsh
@@ -298,7 +298,7 @@ jobs:
           agent\packaging\windows\tests\Test-MsiLifecycle.ps1
           -ProductVersion "${{ steps.version.outputs.version }}"
           -ArtifactDirectory dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: unionc-agent-windows
           path: dist/*.msi
@@ -307,11 +307,11 @@ jobs:
     needs: [verify-release-ref, full-ci]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Resolve and verify Agent version
         id: agent_version
         shell: bash
@@ -364,7 +364,7 @@ jobs:
       - name: Smoke test macOS fresh install, same-version reinstall, preserve uninstall, and purge
         shell: bash
         run: bash agent/packaging/macos/tests/smoke-pkg.sh --allow-system-changes
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: unionc-agent-macos
           path: dist/*.pkg
@@ -376,7 +376,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true
@@ -388,7 +388,7 @@ jobs:
           find . -maxdepth 1 -type f ! -name 'SHA256SUMS*' -printf '%f\0' \
             | sort -z \
             | xargs -0 sha256sum > SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: dist/*
           generate_release_notes: true

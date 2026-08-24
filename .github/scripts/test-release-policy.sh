@@ -26,6 +26,21 @@ then
   fail 'CI, release, and packaging Cargo commands must use --locked'
 fi
 
+# Repository-local reusable workflows are reviewed with this checkout. Every
+# external action must instead use an immutable full commit SHA; the trailing
+# version comment preserves the human-readable upstream release label.
+if grep -En 'uses:[[:space:]]+[^.[:space:]]' "$ci_workflow" "$release_workflow" |
+  grep -Ev 'uses:[[:space:]]+[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}([[:space:]]+#.*)?$'
+then
+  fail 'external GitHub Actions must use immutable full commit SHAs'
+fi
+
+if grep -En '^[[:space:]]+image:[[:space:]]+' "$ci_workflow" "$release_workflow" |
+  grep -Ev '@sha256:[0-9a-f]{64}([[:space:]]+#.*)?$'
+then
+  fail 'workflow service images must use immutable sha256 digests'
+fi
+
 job_has_line() {
   job_name=$1
   expected=$2
