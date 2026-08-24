@@ -5,7 +5,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::model::{Capability, CapabilityErrorKind, TemperatureSnapshot};
+use crate::model::{
+    AGENT_REPORT_MAX_TEMPERATURES, Capability, CapabilityErrorKind, TemperatureSnapshot,
+};
+
+use super::{producer_collection_limit, push_bounded};
 
 const HWMON_ROOT: &str = "/sys/class/hwmon";
 const CAPABILITY_NAME: &str = "system.temperature";
@@ -63,35 +67,49 @@ fn collect_from(root: &Path) -> LinuxHwmonResult {
     };
 
     let mut paths = Vec::new();
-    let mut errors = Vec::new();
+    let mut first_error = None;
     for entry in entries {
         match entry {
             Ok(entry) => {
                 let file_name = entry.file_name();
                 let name = file_name.to_string_lossy();
-                if is_hwmon_name(&name) {
-                    paths.push(entry.path());
+                if is_hwmon_name(&name)
+                    && !push_bounded(&mut paths, entry.path(), AGENT_REPORT_MAX_TEMPERATURES)
+                {
+                    record_first_error(
+                        &mut first_error,
+                        enumeration_limit_error(root, "hwmon device"),
+                    );
+                    break;
                 }
             }
-            Err(error) => errors.push(HwmonError::io(
-                "failed to read an entry from hwmon root",
-                root,
-                error,
-            )),
+            Err(error) => record_first_error(
+                &mut first_error,
+                HwmonError::io("failed to read an entry from hwmon root", root, error),
+            ),
         }
     }
     paths.sort();
 
     let mut temperatures = Vec::new();
+    let mut seen = HashSet::new();
     for path in paths {
-        collect_device(root, &root_canonical, &path, &mut temperatures, &mut errors);
+        collect_device(
+            root,
+            &root_canonical,
+            &path,
+            &mut temperatures,
+            &mut seen,
+            &mut first_error,
+        );
+        if temperatures.len() >= producer_collection_limit(AGENT_REPORT_MAX_TEMPERATURES) {
+            break;
+        }
     }
 
     temperatures.sort_by(|left, right| left.id.cmp(&right.id));
-    let mut seen = HashSet::new();
-    temperatures.retain(|temperature| seen.insert(temperature.id.clone()));
 
-    let capability = match errors.into_iter().next() {
+    let capability = match first_error {
         Some(error) => Capability::unavailable(
             CAPABILITY_NAME,
             CAPABILITY_SOURCE,
@@ -112,59 +130,78 @@ fn collect_device(
     root_canonical: &Path,
     path: &Path,
     temperatures: &mut Vec<TemperatureSnapshot>,
-    errors: &mut Vec<HwmonError>,
+    seen: &mut HashSet<String>,
+    first_error: &mut Option<HwmonError>,
 ) {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) => {
-            errors.push(HwmonError::io("failed to inspect hwmon entry", path, error));
+            record_first_error(
+                first_error,
+                HwmonError::io("failed to inspect hwmon entry", path, error),
+            );
             return;
         }
     };
     if !metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
-        errors.push(HwmonError::invalid(format!(
-            "hwmon entry {} is neither a directory nor a symlink",
-            path.display()
-        )));
+        record_first_error(
+            first_error,
+            HwmonError::invalid(format!(
+                "hwmon entry {} is neither a directory nor a symlink",
+                path.display()
+            )),
+        );
         return;
     }
 
     let canonical_path = match fs::canonicalize(path) {
         Ok(path) => path,
         Err(error) if error.kind() == ErrorKind::NotFound => {
-            errors.push(HwmonError::invalid(format!(
-                "hwmon entry {} is dangling",
-                path.display()
-            )));
+            record_first_error(
+                first_error,
+                HwmonError::invalid(format!("hwmon entry {} is dangling", path.display())),
+            );
             return;
         }
         Err(error) => {
-            errors.push(HwmonError::io("failed to resolve hwmon entry", path, error));
+            record_first_error(
+                first_error,
+                HwmonError::io("failed to resolve hwmon entry", path, error),
+            );
             return;
         }
     };
     if !allowed_target(root, root_canonical, &canonical_path) {
-        errors.push(HwmonError::invalid(format!(
-            "hwmon entry {} resolves outside the allowed device tree",
-            path.display()
-        )));
+        record_first_error(
+            first_error,
+            HwmonError::invalid(format!(
+                "hwmon entry {} resolves outside the allowed device tree",
+                path.display()
+            )),
+        );
         return;
     }
     match fs::metadata(&canonical_path) {
         Ok(metadata) if metadata.is_dir() => {}
         Ok(_) => {
-            errors.push(HwmonError::invalid(format!(
-                "hwmon entry {} does not resolve to a directory",
-                path.display()
-            )));
+            record_first_error(
+                first_error,
+                HwmonError::invalid(format!(
+                    "hwmon entry {} does not resolve to a directory",
+                    path.display()
+                )),
+            );
             return;
         }
         Err(error) => {
-            errors.push(HwmonError::io(
-                "failed to inspect resolved hwmon entry",
-                &canonical_path,
-                error,
-            ));
+            record_first_error(
+                first_error,
+                HwmonError::io(
+                    "failed to inspect resolved hwmon entry",
+                    &canonical_path,
+                    error,
+                ),
+            );
             return;
         }
     }
@@ -172,15 +209,18 @@ fn collect_device(
     let stable_device = match optional_device_path(&path.join("device")) {
         Ok(Some(device)) if allowed_target(root, root_canonical, &device) => device,
         Ok(Some(_)) => {
-            errors.push(HwmonError::invalid(format!(
-                "hwmon device link {} resolves outside the allowed device tree",
-                path.join("device").display()
-            )));
+            record_first_error(
+                first_error,
+                HwmonError::invalid(format!(
+                    "hwmon device link {} resolves outside the allowed device tree",
+                    path.join("device").display()
+                )),
+            );
             return;
         }
         Ok(None) => canonical_path,
         Err(error) => {
-            errors.push(error);
+            record_first_error(first_error, error);
             return;
         }
     };
@@ -192,7 +232,7 @@ fn collect_device(
         Ok(Some(driver)) => driver,
         Ok(None) => fallback_name,
         Err(error) => {
-            errors.push(error);
+            record_first_error(first_error, error);
             fallback_name
         }
     };
@@ -200,11 +240,10 @@ fn collect_device(
     let files = match fs::read_dir(path) {
         Ok(files) => files,
         Err(error) => {
-            errors.push(HwmonError::io(
-                "failed to enumerate hwmon device",
-                path,
-                error,
-            ));
+            record_first_error(
+                first_error,
+                HwmonError::io("failed to enumerate hwmon device", path, error),
+            );
             return;
         }
     };
@@ -214,15 +253,24 @@ fn collect_device(
             Ok(file) => {
                 let file_name = file.file_name();
                 let name = file_name.to_string_lossy();
-                if let Some(index) = temperature_input_index(&name) {
-                    inputs.push((index.to_string(), file.path()));
+                if let Some(index) = temperature_input_index(&name)
+                    && !push_bounded(
+                        &mut inputs,
+                        (index.to_string(), file.path()),
+                        AGENT_REPORT_MAX_TEMPERATURES,
+                    )
+                {
+                    record_first_error(
+                        first_error,
+                        enumeration_limit_error(path, "temperature input"),
+                    );
+                    break;
                 }
             }
-            Err(error) => errors.push(HwmonError::io(
-                "failed to read an entry from hwmon device",
-                path,
-                error,
-            )),
+            Err(error) => record_first_error(
+                first_error,
+                HwmonError::io("failed to read an entry from hwmon device", path, error),
+            ),
         }
     }
     inputs.sort_by(|left, right| left.0.cmp(&right.0));
@@ -231,7 +279,7 @@ fn collect_device(
         let celsius = match read_required_millidegrees(&input_path) {
             Ok(celsius) => celsius,
             Err(error) => {
-                errors.push(error);
+                record_first_error(first_error, error);
                 continue;
             }
         };
@@ -239,22 +287,33 @@ fn collect_device(
             Ok(Some(label)) => label,
             Ok(None) => format!("temp{index}"),
             Err(error) => {
-                errors.push(error);
+                record_first_error(first_error, error);
                 format!("temp{index}")
             }
         };
         let max_celsius =
-            read_optional_millidegrees(&path.join(format!("temp{index}_max")), errors);
+            read_optional_millidegrees(&path.join(format!("temp{index}_max")), first_error);
         let critical_celsius =
-            read_optional_millidegrees(&path.join(format!("temp{index}_crit")), errors);
-        temperatures.push(TemperatureSnapshot {
-            id: format!("{}:{index}", stable_device.display()),
-            label: format!("{driver} {label}"),
-            celsius: Some(celsius),
-            max_celsius,
-            critical_celsius,
-            source: "linux-hwmon".to_string(),
-        });
+            read_optional_millidegrees(&path.join(format!("temp{index}_crit")), first_error);
+        let id = format!("{}:{index}", stable_device.display());
+        if seen.contains(&id) {
+            continue;
+        }
+        if !push_bounded(
+            temperatures,
+            TemperatureSnapshot {
+                id: id.clone(),
+                label: format!("{driver} {label}"),
+                celsius: Some(celsius),
+                max_celsius,
+                critical_celsius,
+                source: "linux-hwmon".to_string(),
+            },
+            AGENT_REPORT_MAX_TEMPERATURES,
+        ) {
+            break;
+        }
+        seen.insert(id);
     }
 }
 
@@ -334,18 +393,18 @@ fn read_required_millidegrees(path: &Path) -> Result<f64, HwmonError> {
     parse_millidegrees(path, raw.trim())
 }
 
-fn read_optional_millidegrees(path: &Path, errors: &mut Vec<HwmonError>) -> Option<f64> {
+fn read_optional_millidegrees(path: &Path, first_error: &mut Option<HwmonError>) -> Option<f64> {
     match read_optional_regular_file(path) {
         Ok(Some(raw)) => match parse_millidegrees(path, raw.trim()) {
             Ok(value) => Some(value),
             Err(error) => {
-                errors.push(error);
+                record_first_error(first_error, error);
                 None
             }
         },
         Ok(None) => None,
         Err(error) => {
-            errors.push(error);
+            record_first_error(first_error, error);
             None
         }
     }
@@ -415,6 +474,20 @@ fn classify_io_error(error: &io::Error) -> CapabilityErrorKind {
     }
 }
 
+fn record_first_error(first_error: &mut Option<HwmonError>, error: HwmonError) {
+    if first_error.is_none() {
+        *first_error = Some(error);
+    }
+}
+
+fn enumeration_limit_error(path: &Path, item: &str) -> HwmonError {
+    HwmonError::invalid(format!(
+        "{item} enumeration in {} exceeded producer limit of {} retained entries",
+        path.display(),
+        producer_collection_limit(AGENT_REPORT_MAX_TEMPERATURES)
+    ))
+}
+
 fn empty_result() -> LinuxHwmonResult {
     LinuxHwmonResult {
         temperatures: Vec::new(),
@@ -453,7 +526,7 @@ mod tests {
 
     use crate::model::CapabilityErrorKind;
 
-    use super::{classify_io_error, collect_from};
+    use super::{classify_io_error, collect_from, enumeration_limit_error};
 
     static NEXT_TREE: AtomicU64 = AtomicU64::new(0);
 
@@ -555,6 +628,17 @@ mod tests {
         assert_eq!(
             classify_io_error(&io::Error::from(io::ErrorKind::Other)),
             CapabilityErrorKind::Transient
+        );
+    }
+
+    #[test]
+    fn enumeration_limit_is_an_explicit_invalid_data_error() {
+        let error = enumeration_limit_error(Path::new("/injected/hwmon"), "temperature input");
+        assert_eq!(error.kind, CapabilityErrorKind::InvalidData);
+        assert!(
+            error
+                .message
+                .contains("enumeration in /injected/hwmon exceeded producer limit")
         );
     }
 

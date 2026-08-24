@@ -10,10 +10,14 @@ use sysinfo::{
 };
 use uuid::Uuid;
 
+#[cfg(any(feature = "nvidia", target_os = "linux", target_os = "windows"))]
+use crate::model::AGENT_REPORT_MAX_GPUS;
 use crate::model::{
-    AGENT_REPORT_SCHEMA_VERSION, AgentHealth, AgentReport, Capability, CapabilityErrorKind,
-    CpuSnapshot, DiskSnapshot, GpuSnapshot, HostIdentity, MemorySnapshot, NetworkSnapshot,
-    SystemSnapshot, TemperatureSnapshot,
+    AGENT_REPORT_MAX_CAPABILITIES, AGENT_REPORT_MAX_CPU_CORES, AGENT_REPORT_MAX_DISKS,
+    AGENT_REPORT_MAX_NETWORKS, AGENT_REPORT_MAX_TEMPERATURES, AGENT_REPORT_SCHEMA_VERSION,
+    AgentHealth, AgentReport, Capability, CapabilityErrorKind, CpuSnapshot, DiskSnapshot,
+    GpuSnapshot, HostIdentity, MemorySnapshot, NetworkSnapshot, SystemSnapshot,
+    TemperatureSnapshot,
 };
 #[cfg(target_os = "linux")]
 mod linux_gpu;
@@ -107,14 +111,21 @@ impl SystemSampler {
             #[cfg(not(target_os = "linux"))]
             self.components.refresh(true);
             let temperature_result = collect_temperatures(&self.components);
-            self.cached_temperatures = temperature_result.temperatures;
+            self.cached_temperatures = collect_bounded(
+                temperature_result.temperatures,
+                AGENT_REPORT_MAX_TEMPERATURES,
+            );
             self.cached_temperature_capability = temperature_result.capability;
             self.last_slow_sample = Some(now);
         }
 
         let (gpus, gpu_capabilities) = self.gpu_runtime.collect();
         let mut capabilities = core_capabilities(&self.cached_temperature_capability);
-        capabilities.extend(gpu_capabilities);
+        extend_bounded(
+            &mut capabilities,
+            gpu_capabilities,
+            AGENT_REPORT_MAX_CAPABILITIES,
+        );
         capabilities.sort_by(|left, right| left.name.cmp(&right.name));
         capabilities.dedup_by(|left, right| left.name == right.name && left.source == right.source);
         let collector_errors = capabilities
@@ -140,12 +151,15 @@ impl SystemSampler {
                     usage_percent: finite(self.system.global_cpu_usage() as f64).unwrap_or(0.0),
                     logical_count: wire_cpu_count(self.system.cpus().len()),
                     physical_count: System::physical_core_count().map(wire_cpu_count),
-                    per_core_percent: self
-                        .system
-                        .cpus()
-                        .iter()
-                        .map(|cpu| finite(cpu.cpu_usage() as f64).unwrap_or(0.0))
-                        .collect(),
+                    // sysinfo owns its internal platform enumeration; this layer avoids making a
+                    // second unbounded copy of it before the report contract is applied.
+                    per_core_percent: collect_bounded(
+                        self.system
+                            .cpus()
+                            .iter()
+                            .map(|cpu| finite(cpu.cpu_usage() as f64).unwrap_or(0.0)),
+                        AGENT_REPORT_MAX_CPU_CORES,
+                    ),
                 },
                 memory: MemorySnapshot {
                     total_bytes: self.system.total_memory(),
@@ -156,7 +170,10 @@ impl SystemSampler {
                 },
                 networks: collect_networks(&self.networks, interval_seconds),
                 disks: collect_disks(&self.disks, interval_seconds),
-                temperatures: self.cached_temperatures.clone(),
+                temperatures: collect_bounded(
+                    self.cached_temperatures.iter().cloned(),
+                    AGENT_REPORT_MAX_TEMPERATURES,
+                ),
                 gpus,
             },
             capabilities,
@@ -204,9 +221,9 @@ pub fn transient_host_identity(id: Uuid) -> HostIdentity {
 }
 
 fn collect_networks(networks: &Networks, interval_seconds: f64) -> Vec<NetworkSnapshot> {
-    networks
-        .iter()
-        .map(|(name, data)| NetworkSnapshot {
+    // `Networks` retains sysinfo's own enumeration, but the report-facing copy is bounded.
+    collect_bounded(
+        networks.iter().map(|(name, data)| NetworkSnapshot {
             name: name.clone(),
             received_bytes_total: data.total_received(),
             transmitted_bytes_total: data.total_transmitted(),
@@ -216,14 +233,15 @@ fn collect_networks(networks: &Networks, interval_seconds: f64) -> Vec<NetworkSn
             packets_transmitted_total: data.total_packets_transmitted(),
             receive_errors_total: data.total_errors_on_received(),
             transmit_errors_total: data.total_errors_on_transmitted(),
-        })
-        .collect()
+        }),
+        AGENT_REPORT_MAX_NETWORKS,
+    )
 }
 
 fn collect_disks(disks: &Disks, interval_seconds: f64) -> Vec<DiskSnapshot> {
-    disks
-        .iter()
-        .map(|disk| {
+    // `Disks` retains sysinfo's own enumeration, but the report-facing copy is bounded.
+    collect_bounded(
+        disks.iter().map(|disk| {
             let usage = disk.usage();
             DiskSnapshot {
                 name: disk.name().to_string_lossy().into_owned(),
@@ -237,8 +255,37 @@ fn collect_disks(disks: &Disks, interval_seconds: f64) -> Vec<DiskSnapshot> {
                 written_bytes_per_second: per_second(usage.written_bytes, interval_seconds),
                 is_read_only: disk.is_read_only(),
             }
-        })
+        }),
+        AGENT_REPORT_MAX_DISKS,
+    )
+}
+
+pub(super) fn producer_collection_limit(maximum: usize) -> usize {
+    maximum.checked_add(1).unwrap_or(maximum)
+}
+
+fn collect_bounded<T>(values: impl IntoIterator<Item = T>, maximum: usize) -> Vec<T> {
+    values
+        .into_iter()
+        .take(producer_collection_limit(maximum))
         .collect()
+}
+
+pub(super) fn push_bounded<T>(values: &mut Vec<T>, value: T, maximum: usize) -> bool {
+    if values.len() >= producer_collection_limit(maximum) {
+        return false;
+    }
+    values.push(value);
+    true
+}
+
+pub(super) fn extend_bounded<T>(
+    values: &mut Vec<T>,
+    additional: impl IntoIterator<Item = T>,
+    maximum: usize,
+) {
+    let remaining = producer_collection_limit(maximum).saturating_sub(values.len());
+    values.extend(additional.into_iter().take(remaining));
 }
 
 struct TemperatureCollection {
@@ -248,9 +295,8 @@ struct TemperatureCollection {
 
 fn collect_temperatures(_components: &Components) -> TemperatureCollection {
     #[cfg(not(target_os = "linux"))]
-    let values: Vec<_> = _components
-        .iter()
-        .map(|component| TemperatureSnapshot {
+    let values = collect_bounded(
+        _components.iter().map(|component| TemperatureSnapshot {
             id: component
                 .id()
                 .map(ToOwned::to_owned)
@@ -264,8 +310,9 @@ fn collect_temperatures(_components: &Components) -> TemperatureCollection {
             max_celsius: None,
             critical_celsius: component.critical().and_then(|value| finite(value as f64)),
             source: "sysinfo-components".to_string(),
-        })
-        .collect();
+        }),
+        AGENT_REPORT_MAX_TEMPERATURES,
+    );
 
     #[cfg(target_os = "linux")]
     let result = linux_hwmon::collect();
@@ -339,44 +386,64 @@ impl GpuRuntime {
         #[cfg(feature = "nvidia")]
         {
             let result = self.nvidia.collect();
-            gpus.extend(result.0);
-            capabilities.push(result.1);
+            extend_bounded(&mut gpus, result.0, AGENT_REPORT_MAX_GPUS);
+            push_bounded(&mut capabilities, result.1, AGENT_REPORT_MAX_CAPABILITIES);
         }
         #[cfg(not(feature = "nvidia"))]
-        capabilities.push(Capability::unavailable(
-            "gpu.nvidia",
-            "nvml",
-            CapabilityErrorKind::Unsupported,
-            "agent was built without the nvidia feature",
-        ));
+        push_bounded(
+            &mut capabilities,
+            Capability::unavailable(
+                "gpu.nvidia",
+                "nvml",
+                CapabilityErrorKind::Unsupported,
+                "agent was built without the nvidia feature",
+            ),
+            AGENT_REPORT_MAX_CAPABILITIES,
+        );
 
         #[cfg(target_os = "linux")]
         {
             let result = linux_gpu::collect();
-            gpus.extend(result.gpus);
-            capabilities.extend(result.capabilities);
+            extend_bounded(&mut gpus, result.gpus, AGENT_REPORT_MAX_GPUS);
+            extend_bounded(
+                &mut capabilities,
+                result.capabilities,
+                AGENT_REPORT_MAX_CAPABILITIES,
+            );
         }
         #[cfg(target_os = "windows")]
         {
             let result = self.windows.collect();
-            gpus.extend(result.0);
-            capabilities.push(result.1);
-            capabilities.push(Capability::unavailable(
-                "gpu.amd.vendor",
-                "amd-adlx",
-                CapabilityErrorKind::Unsupported,
-                "ADLX enrichment is not present; WDDM utilization remains available",
-            ));
-            capabilities.push(Capability::unavailable(
-                "gpu.intel.vendor",
-                "intel-igcl",
-                CapabilityErrorKind::Unsupported,
-                "IGCL enrichment is not present; WDDM utilization remains available",
-            ));
+            extend_bounded(&mut gpus, result.0, AGENT_REPORT_MAX_GPUS);
+            push_bounded(&mut capabilities, result.1, AGENT_REPORT_MAX_CAPABILITIES);
+            push_bounded(
+                &mut capabilities,
+                Capability::unavailable(
+                    "gpu.amd.vendor",
+                    "amd-adlx",
+                    CapabilityErrorKind::Unsupported,
+                    "ADLX enrichment is not present; WDDM utilization remains available",
+                ),
+                AGENT_REPORT_MAX_CAPABILITIES,
+            );
+            push_bounded(
+                &mut capabilities,
+                Capability::unavailable(
+                    "gpu.intel.vendor",
+                    "intel-igcl",
+                    CapabilityErrorKind::Unsupported,
+                    "IGCL enrichment is not present; WDDM utilization remains available",
+                ),
+                AGENT_REPORT_MAX_CAPABILITIES,
+            );
         }
         #[cfg(target_os = "macos")]
         {
-            capabilities.extend(platform_gpu_capabilities("metal/thermal-state"));
+            extend_bounded(
+                &mut capabilities,
+                platform_gpu_capabilities("metal/thermal-state"),
+                AGENT_REPORT_MAX_CAPABILITIES,
+            );
         }
         (gpus, capabilities)
     }
@@ -447,6 +514,8 @@ fn finite(value: f64) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
 
     #[test]
@@ -490,6 +559,81 @@ mod tests {
                 CapabilityErrorKind::Unsupported,
                 "the operating system or hardware exposed no readable numeric sensor",
             )
+        );
+    }
+
+    #[test]
+    fn producer_limit_keeps_one_checked_truncation_sentinel() {
+        assert_eq!(producer_collection_limit(7), 8);
+        assert_eq!(producer_collection_limit(usize::MAX), usize::MAX);
+
+        let consumed = Cell::new(0);
+        let values = collect_bounded(
+            (0..).inspect(|_| consumed.set(consumed.get() + 1)),
+            AGENT_REPORT_MAX_CPU_CORES,
+        );
+        assert_eq!(values.len(), AGENT_REPORT_MAX_CPU_CORES + 1);
+        assert_eq!(consumed.get(), AGENT_REPORT_MAX_CPU_CORES + 1);
+    }
+
+    #[test]
+    fn producer_sentinel_is_bounded_and_reported_by_the_wire_contract() {
+        let per_core_percent = collect_bounded(
+            std::iter::repeat_n(10.0, AGENT_REPORT_MAX_CPU_CORES + 2),
+            AGENT_REPORT_MAX_CPU_CORES,
+        );
+        assert_eq!(per_core_percent.len(), AGENT_REPORT_MAX_CPU_CORES + 1);
+
+        let mut report = AgentReport {
+            schema_version: AGENT_REPORT_SCHEMA_VERSION,
+            report_id: Uuid::new_v4().to_string(),
+            collected_at: Utc::now(),
+            host: HostIdentity {
+                id: Uuid::new_v4().to_string(),
+                os: "linux".into(),
+                os_version: None,
+                kernel_version: None,
+                arch: "x86_64".into(),
+                agent_version: env!("CARGO_PKG_VERSION").into(),
+            },
+            interval_seconds: 10.0,
+            system: SystemSnapshot {
+                uptime_seconds: 1,
+                cpu: CpuSnapshot {
+                    usage_percent: 10.0,
+                    logical_count: wire_cpu_count(per_core_percent.len()),
+                    physical_count: None,
+                    per_core_percent,
+                },
+                memory: MemorySnapshot {
+                    total_bytes: 1,
+                    used_bytes: 0,
+                    available_bytes: 1,
+                    swap_total_bytes: 0,
+                    swap_used_bytes: 0,
+                },
+                networks: Vec::new(),
+                disks: Vec::new(),
+                temperatures: Vec::new(),
+                gpus: Vec::new(),
+            },
+            capabilities: Vec::new(),
+            agent: AgentHealth {
+                spool_pending_batches: 0,
+                collector_errors: 0,
+            },
+        };
+
+        assert!(crate::report_contract::bound_report(&mut report));
+        assert_eq!(
+            report.system.cpu.per_core_percent.len(),
+            AGENT_REPORT_MAX_CPU_CORES
+        );
+        assert!(
+            report
+                .capabilities
+                .iter()
+                .any(|capability| capability.name == "agent.report.truncated")
         );
     }
 

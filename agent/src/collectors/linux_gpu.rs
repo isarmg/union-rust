@@ -3,7 +3,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::model::{Capability, CapabilityErrorKind, GpuSnapshot};
+use crate::model::{AGENT_REPORT_MAX_GPUS, Capability, CapabilityErrorKind, GpuSnapshot};
+
+use super::{extend_bounded, producer_collection_limit, push_bounded};
 
 const DRM_ROOT: &str = "/sys/class/drm";
 
@@ -56,7 +58,7 @@ impl VendorCollection {
         if let Some(error) = reading.utilization_error {
             self.utilization_error.get_or_insert(error);
         }
-        self.gpus.push(reading.snapshot);
+        push_bounded(&mut self.gpus, reading.snapshot, AGENT_REPORT_MAX_GPUS);
     }
 }
 
@@ -73,6 +75,7 @@ pub(super) fn collect() -> LinuxGpuResult {
 fn collect_from(root: &Path) -> LinuxGpuResult {
     let mut amd = VendorCollection::default();
     let mut intel = VendorCollection::default();
+    let mut inspected_primary_cards = 0;
 
     match open_directory(root, true) {
         Ok(Some(entries)) => {
@@ -90,6 +93,13 @@ fn collect_from(root: &Path) -> LinuxGpuResult {
                 if !is_primary_card(&card) {
                     continue;
                 }
+                if inspected_primary_cards >= producer_collection_limit(AGENT_REPORT_MAX_GPUS) {
+                    let error = enumeration_limit_error(root);
+                    amd.record_coverage_error(error.clone());
+                    intel.record_coverage_error(error);
+                    break;
+                }
+                inspected_primary_cards += 1;
                 let device = match resolve_card_device(root, &entry) {
                     Ok(device) => device,
                     Err(error) => {
@@ -152,7 +162,7 @@ fn collect_from(root: &Path) -> LinuxGpuResult {
         &intel,
     ));
     let mut gpus = amd.gpus;
-    gpus.extend(intel.gpus);
+    extend_bounded(&mut gpus, intel.gpus, AGENT_REPORT_MAX_GPUS);
     LinuxGpuResult { gpus, capabilities }
 }
 
@@ -464,6 +474,16 @@ fn classify_io_error(error: &io::Error) -> CapabilityErrorKind {
     }
 }
 
+fn enumeration_limit_error(root: &Path) -> SysfsError {
+    SysfsError::invalid(
+        root,
+        format!(
+            "primary-card enumeration exceeded producer limit of {} inspected devices",
+            producer_collection_limit(AGENT_REPORT_MAX_GPUS)
+        ),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -577,6 +597,17 @@ mod tests {
         assert_eq!(
             classify_io_error(&io::Error::other("injected I/O failure")),
             CapabilityErrorKind::Transient
+        );
+    }
+
+    #[test]
+    fn primary_card_limit_is_an_explicit_coverage_error() {
+        let error = enumeration_limit_error(Path::new("/injected/drm"));
+        assert_eq!(error.kind, CapabilityErrorKind::InvalidData);
+        assert!(
+            error
+                .message
+                .contains("primary-card enumeration exceeded producer limit")
         );
     }
 

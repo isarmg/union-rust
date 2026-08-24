@@ -5,7 +5,9 @@ use nvml_wrapper::{
 };
 use std::time::{Duration, Instant};
 
-use crate::model::{Capability, CapabilityErrorKind, GpuSnapshot};
+use crate::model::{AGENT_REPORT_MAX_GPUS, Capability, CapabilityErrorKind, GpuSnapshot};
+
+use super::{producer_collection_limit, push_bounded};
 
 const NVML_INIT_RETRY_INITIAL: Duration = Duration::from_secs(30);
 const NVML_INIT_RETRY_MAX: Duration = Duration::from_secs(15 * 60);
@@ -105,7 +107,11 @@ impl NvidiaCollector {
 
         let mut gpus = Vec::new();
         let mut first_failed_device_error = None;
-        for index in 0..count {
+        let inspected_device_count = count.min(
+            u32::try_from(producer_collection_limit(AGENT_REPORT_MAX_GPUS))
+                .expect("the shared GPU report limit fits NVML's fixed-width device index"),
+        );
+        for index in 0..inspected_device_count {
             let device = match nvml.device_by_index(index) {
                 Ok(device) => device,
                 Err(error) => {
@@ -157,13 +163,15 @@ impl NvidiaCollector {
                 continue;
             }
 
-            gpus.push(
+            push_bounded(
+                &mut gpus,
                 telemetry.into_snapshot(
                     device.uuid().unwrap_or_else(|_| format!("nvidia-{index}")),
                     device
                         .name()
                         .unwrap_or_else(|_| format!("NVIDIA GPU {index}")),
                 ),
+                AGENT_REPORT_MAX_GPUS,
             );
         }
         finish_nvidia_collection(gpus, count, first_failed_device_error.as_ref())
