@@ -4,12 +4,41 @@
 //! argument, URL, form and HTTP parsing stays here so it is exercised by the
 //! normal cross-platform test suite.
 
-use std::{collections::BTreeMap, net::IpAddr};
+use std::{collections::BTreeMap, net::IpAddr, time::Instant};
 
 use anyhow::{Context, bail, ensure};
 
 pub const MAX_LOCAL_HTTP_HEAD_BYTES: usize = 16 * 1024;
 pub const MAX_LOCAL_HTTP_BODY_BYTES: usize = 16 * 1024;
+
+/// Converts an absolute I/O deadline into a finite Win32 wait interval.
+/// Positive sub-millisecond durations round up so progress cannot accidentally
+/// turn a live deadline into an immediate timeout. `INFINITE` is never returned.
+pub fn deadline_wait_millis(now: Instant, deadline: Instant) -> Option<u32> {
+    let remaining = deadline.checked_duration_since(now)?;
+    if remaining.is_zero() {
+        return None;
+    }
+    let rounded_millis = remaining
+        .as_millis()
+        .saturating_add(u128::from(remaining.subsec_nanos() % 1_000_000 != 0));
+    Some(rounded_millis.clamp(1, u128::from(u32::MAX - 1)) as u32)
+}
+
+/// Validates one partial Win32 pipe transfer and returns the bytes still due.
+pub fn advance_pipe_transfer(remaining: usize, transferred: u32) -> anyhow::Result<usize> {
+    ensure!(remaining != 0, "pipe transfer was already complete");
+    let transferred = usize::try_from(transferred)?;
+    ensure!(
+        transferred != 0,
+        "protected pairing pipe closed unexpectedly"
+    );
+    ensure!(
+        transferred <= remaining,
+        "invalid protected pairing pipe transfer count"
+    );
+    Ok(remaining - transferred)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceAction {
@@ -394,6 +423,45 @@ pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn pipe_deadlines_are_finite_and_round_up() {
+        let now = Instant::now();
+        assert_eq!(deadline_wait_millis(now, now), None);
+        assert_eq!(
+            deadline_wait_millis(now, now - Duration::from_nanos(1)),
+            None
+        );
+        assert_eq!(
+            deadline_wait_millis(now, now + Duration::from_nanos(1)),
+            Some(1)
+        );
+        assert_eq!(
+            deadline_wait_millis(now, now + Duration::from_millis(1)),
+            Some(1)
+        );
+        assert_eq!(
+            deadline_wait_millis(
+                now,
+                now + Duration::from_millis(1) + Duration::from_nanos(1)
+            ),
+            Some(2)
+        );
+        assert_eq!(
+            deadline_wait_millis(now, now + Duration::from_secs(u64::from(u32::MAX))),
+            Some(u32::MAX - 1)
+        );
+    }
+
+    #[test]
+    fn partial_pipe_transfers_cannot_stall_or_overrun() {
+        assert_eq!(advance_pipe_transfer(8, 3).unwrap(), 5);
+        assert_eq!(advance_pipe_transfer(5, 5).unwrap(), 0);
+        assert!(advance_pipe_transfer(5, 0).is_err());
+        assert!(advance_pipe_transfer(5, 6).is_err());
+        assert!(advance_pipe_transfer(0, 1).is_err());
+    }
 
     #[test]
     fn privileged_argument_surface_is_strict() {

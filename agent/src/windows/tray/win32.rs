@@ -19,49 +19,244 @@ fn pair_pipe_name(nonce: &str) -> String {
     format!(r"\\.\pipe\UnionCAgentPair-{nonce}")
 }
 
-fn read_pipe_frame(handle: HANDLE, limit: usize) -> anyhow::Result<Vec<u8>> {
+fn read_pipe_frame(
+    handle: HANDLE,
+    limit: usize,
+    deadline: Instant,
+    peer_process: Option<HANDLE>,
+) -> anyhow::Result<Vec<u8>> {
     let mut length = [0_u8; 4];
-    read_pipe_exact(handle, &mut length)?;
+    read_pipe_exact(handle, &mut length, deadline, peer_process)?;
     let length = u32::from_le_bytes(length) as usize;
     ensure!(length <= limit, "pairing pipe frame exceeds its size limit");
     let mut body = vec![0_u8; length];
-    read_pipe_exact(handle, &mut body)?;
+    read_pipe_exact(handle, &mut body, deadline, peer_process)?;
     Ok(body)
 }
 
-fn write_pipe_frame(handle: HANDLE, body: &[u8]) -> anyhow::Result<()> {
+fn write_pipe_frame(
+    handle: HANDLE,
+    body: &[u8],
+    deadline: Instant,
+    peer_process: Option<HANDLE>,
+) -> anyhow::Result<()> {
     let length = u32::try_from(body.len()).context("pairing pipe frame is too large")?;
-    write_pipe_all(handle, &length.to_le_bytes())?;
-    write_pipe_all(handle, body)
+    write_pipe_all(handle, &length.to_le_bytes(), deadline, peer_process)?;
+    write_pipe_all(handle, body, deadline, peer_process)
 }
 
-fn read_pipe_exact(handle: HANDLE, mut destination: &mut [u8]) -> anyhow::Result<()> {
+fn read_pipe_exact(
+    handle: HANDLE,
+    mut destination: &mut [u8],
+    deadline: Instant,
+    peer_process: Option<HANDLE>,
+) -> anyhow::Result<()> {
     while !destination.is_empty() {
-        let mut read = 0_u32;
-        unsafe { ReadFile(handle, Some(destination), Some(&mut read), None) }
-            .context("failed to read from the protected pairing pipe")?;
-        ensure!(read != 0, "protected pairing pipe closed unexpectedly");
-        let consumed = usize::try_from(read)?;
         ensure!(
-            consumed <= destination.len(),
-            "invalid pairing pipe read count"
+            deadline_wait_millis(Instant::now(), deadline).is_some(),
+            "timed out reading from the protected pairing pipe"
         );
+        let event = create_overlapped_event("pairing pipe read")?;
+        let mut overlapped = OVERLAPPED {
+            hEvent: event.0,
+            ..Default::default()
+        };
+        let read = match unsafe {
+            ReadFile(
+                handle,
+                Some(destination),
+                None,
+                Some(&mut overlapped),
+            )
+        } {
+            Ok(()) => overlapped_result(handle, &overlapped, "pairing pipe read")?,
+            Err(error) => {
+                let code = unsafe { GetLastError() };
+                ensure!(
+                    code == ERROR_IO_PENDING,
+                    "failed to read from the protected pairing pipe ({code:?}): {error}"
+                );
+                wait_for_overlapped(
+                    handle,
+                    &overlapped,
+                    deadline,
+                    peer_process,
+                    "pairing pipe read",
+                )?
+            }
+        };
+        let remaining = advance_pipe_transfer(destination.len(), read)?;
+        let consumed = destination.len() - remaining;
         destination = &mut destination[consumed..];
     }
     Ok(())
 }
 
-fn write_pipe_all(handle: HANDLE, mut body: &[u8]) -> anyhow::Result<()> {
+fn write_pipe_all(
+    handle: HANDLE,
+    mut body: &[u8],
+    deadline: Instant,
+    peer_process: Option<HANDLE>,
+) -> anyhow::Result<()> {
     while !body.is_empty() {
-        let mut written = 0_u32;
-        unsafe { WriteFile(handle, Some(body), Some(&mut written), None) }
-            .context("failed to write to the protected pairing pipe")?;
-        ensure!(written != 0, "protected pairing pipe closed unexpectedly");
-        let consumed = usize::try_from(written)?;
-        ensure!(consumed <= body.len(), "invalid pairing pipe write count");
+        ensure!(
+            deadline_wait_millis(Instant::now(), deadline).is_some(),
+            "timed out writing to the protected pairing pipe"
+        );
+        let event = create_overlapped_event("pairing pipe write")?;
+        let mut overlapped = OVERLAPPED {
+            hEvent: event.0,
+            ..Default::default()
+        };
+        let written = match unsafe { WriteFile(handle, Some(body), None, Some(&mut overlapped)) } {
+            Ok(()) => overlapped_result(handle, &overlapped, "pairing pipe write")?,
+            Err(error) => {
+                let code = unsafe { GetLastError() };
+                ensure!(
+                    code == ERROR_IO_PENDING,
+                    "failed to write to the protected pairing pipe ({code:?}): {error}"
+                );
+                wait_for_overlapped(
+                    handle,
+                    &overlapped,
+                    deadline,
+                    peer_process,
+                    "pairing pipe write",
+                )?
+            }
+        };
+        let remaining = advance_pipe_transfer(body.len(), written)?;
+        let consumed = body.len() - remaining;
         body = &body[consumed..];
     }
     Ok(())
+}
+
+fn create_overlapped_event(operation: &str) -> anyhow::Result<KernelHandle> {
+    let event = unsafe { CreateEventW(None, true, false, PCWSTR::null()) }
+        .with_context(|| format!("failed to create the {operation} completion event"))?;
+    Ok(KernelHandle(event))
+}
+
+fn overlapped_result(
+    handle: HANDLE,
+    overlapped: &OVERLAPPED,
+    operation: &str,
+) -> anyhow::Result<u32> {
+    let mut transferred = 0_u32;
+    unsafe { GetOverlappedResult(handle, overlapped, &mut transferred, false) }
+        .with_context(|| format!("{operation} failed"))?;
+    Ok(transferred)
+}
+
+fn wait_for_overlapped(
+    handle: HANDLE,
+    overlapped: &OVERLAPPED,
+    deadline: Instant,
+    peer_process: Option<HANDLE>,
+    operation: &str,
+) -> anyhow::Result<u32> {
+    let Some(wait_millis) = deadline_wait_millis(Instant::now(), deadline) else {
+        cancel_and_reap_overlapped(handle, overlapped, operation)?;
+        bail!("{operation} timed out");
+    };
+    let wait = if let Some(process) = peer_process {
+        unsafe { WaitForMultipleObjects(&[overlapped.hEvent, process], false, wait_millis) }
+    } else {
+        unsafe { WaitForSingleObject(overlapped.hEvent, wait_millis) }
+    };
+    if wait == WAIT_OBJECT_0 {
+        return overlapped_result(handle, overlapped, operation);
+    }
+    if peer_process.is_some() && wait.0 == WAIT_OBJECT_0.0 + 1 {
+        cancel_and_reap_overlapped(handle, overlapped, operation)?;
+        bail!("{operation} was interrupted because the elevated broker exited");
+    }
+    if wait == WAIT_TIMEOUT {
+        cancel_and_reap_overlapped(handle, overlapped, operation)?;
+        bail!("{operation} timed out");
+    }
+    let wait_error = (wait == WAIT_FAILED).then(|| unsafe { GetLastError() });
+    cancel_and_reap_overlapped(handle, overlapped, operation)?;
+    bail!("failed to wait for {operation} ({wait:?}, {wait_error:?})")
+}
+
+/// `CancelIoEx` only requests cancellation. Always reap the exact operation
+/// before its stack-resident buffer, event, or `OVERLAPPED` can be released.
+fn cancel_and_reap_overlapped(
+    handle: HANDLE,
+    overlapped: &OVERLAPPED,
+    operation: &str,
+) -> anyhow::Result<()> {
+    let cancel_failure = match unsafe { CancelIoEx(handle, Some(overlapped)) } {
+        Ok(()) => None,
+        Err(error) => {
+            let code = unsafe { GetLastError() };
+            (code != ERROR_NOT_FOUND).then(|| format!("{code:?}: {error}"))
+        }
+    };
+    let mut transferred = 0_u32;
+    let completion_status = match unsafe {
+        GetOverlappedResult(handle, overlapped, &mut transferred, true)
+    } {
+        Ok(()) => None,
+        Err(error) => {
+            let code = unsafe { GetLastError() };
+            Some(format!("{code:?}: {error}"))
+        }
+    };
+    // A cancellation race may finish normally, as cancelled, or with another
+    // terminal I/O error such as ERROR_BROKEN_PIPE. The dedicated manual-reset
+    // event proves that every such result is complete and the stack resources
+    // can be released; the particular terminal error belongs to the original
+    // timeout/peer-exit path rather than to cleanup itself.
+    let completion_wait = unsafe { WaitForSingleObject(overlapped.hEvent, 0) };
+    ensure!(
+        completion_wait == WAIT_OBJECT_0,
+        "failed to reap {operation} ({completion_wait:?}, terminal status {completion_status:?})"
+    );
+    ensure!(
+        cancel_failure.is_none(),
+        "failed to cancel {operation}: {}",
+        cancel_failure.unwrap_or_default()
+    );
+    Ok(())
+}
+
+fn connect_pipe_with_deadline(
+    pipe: HANDLE,
+    peer_process: HANDLE,
+    deadline: Instant,
+) -> anyhow::Result<()> {
+    ensure!(
+        deadline_wait_millis(Instant::now(), deadline).is_some(),
+        "timed out waiting for the elevated pairing broker"
+    );
+    let event = create_overlapped_event("pairing pipe connection")?;
+    let mut overlapped = OVERLAPPED {
+        hEvent: event.0,
+        ..Default::default()
+    };
+    match unsafe { ConnectNamedPipe(pipe, Some(&mut overlapped)) } {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let code = unsafe { GetLastError() };
+            match code {
+                ERROR_PIPE_CONNECTED => Ok(()),
+                ERROR_IO_PENDING => {
+                    wait_for_overlapped(
+                        pipe,
+                        &overlapped,
+                        deadline,
+                        Some(peer_process),
+                        "pairing pipe connection",
+                    )?;
+                    Ok(())
+                }
+                _ => bail!("protected pairing pipe connection failed ({code:?}): {error}"),
+            }
+        }
+    }
 }
 
 fn set_clean_agent_environment(command: &mut Command) -> anyhow::Result<()> {

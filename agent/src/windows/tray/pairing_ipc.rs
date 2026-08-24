@@ -419,14 +419,19 @@ fn exchange_pairing_code(
                 FILE_SHARE_MODE::default(),
                 None,
                 OPEN_EXISTING,
-                SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION | FILE_FLAG_OVERLAPPED,
                 None,
             )
         } {
             Ok(pipe) => break KernelHandle(pipe),
             Err(_) => match unsafe { GetLastError() } {
-                ERROR_PIPE_BUSY | ERROR_FILE_NOT_FOUND if Instant::now() < deadline => {
-                    let _ = unsafe { WaitNamedPipeW(PCWSTR(pipe_name_wide.as_ptr()), 200) };
+                ERROR_PIPE_BUSY | ERROR_FILE_NOT_FOUND => {
+                    let wait_millis = deadline_wait_millis(Instant::now(), deadline)
+                        .context("timed out connecting to the protected tray pipe")?
+                        .min(200);
+                    let _ = unsafe {
+                        WaitNamedPipeW(PCWSTR(pipe_name_wide.as_ptr()), wait_millis)
+                    };
                 }
                 error => bail!("could not connect to the protected tray pipe: {error:?}"),
             },
@@ -437,8 +442,8 @@ fn exchange_pairing_code(
         body.len() <= MAX_LOCAL_HTTP_BODY_BYTES,
         "pairing IPC message is too large"
     );
-    write_pipe_frame(pipe.0, &body)?;
-    let code = read_pipe_frame(pipe.0, 256)?;
+    write_pipe_frame(pipe.0, &body, deadline, None)?;
+    let code = read_pipe_frame(pipe.0, 256, deadline, None)?;
     let code = String::from_utf8(code).context("tray supplied a non-UTF-8 authorization key")?;
     validate_activation_code(&code)?;
     Ok(SensitiveActivationCode::new(code))

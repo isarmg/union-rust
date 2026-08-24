@@ -191,18 +191,18 @@ mod windows_tray {
         service::WINDOWS_SERVICE_NAME,
         tray_support::{
             MAX_LOCAL_HTTP_BODY_BYTES, MAX_LOCAL_HTTP_HEAD_BYTES, ServiceAction, TrayCommand,
-            browser_url_matches_server_origin, constant_time_eq, encode_base64url,
-            parse_tray_arguments, quote_windows_argument, validate_activation_code,
-            validate_browser_url, validate_server_base,
+            advance_pipe_transfer, browser_url_matches_server_origin, constant_time_eq,
+            deadline_wait_millis, encode_base64url, parse_tray_arguments, quote_windows_argument,
+            validate_activation_code, validate_browser_url, validate_server_base,
         },
     };
     use windows::{
         Win32::{
             Foundation::{
-                CloseHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY,
-                ERROR_PIPE_CONNECTED, ERROR_PIPE_LISTENING, GENERIC_READ, GENERIC_WRITE,
-                GetLastError, HANDLE, HLOCAL, HWND, LPARAM, LRESULT, LocalFree, POINT,
-                WAIT_OBJECT_0, WAIT_TIMEOUT, WPARAM,
+                CloseHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_IO_PENDING,
+                ERROR_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ,
+                GENERIC_WRITE, GetLastError, HANDLE, HLOCAL, HWND, LPARAM, LRESULT, LocalFree,
+                POINT, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT, WPARAM,
             },
             Security::{
                 Authorization::{
@@ -212,17 +212,18 @@ mod windows_tray {
                 TOKEN_QUERY, TokenElevation,
             },
             Storage::FileSystem::{
-                CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_SHARE_MODE,
+                CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, FILE_SHARE_MODE,
                 MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING,
                 PIPE_ACCESS_DUPLEX, ReadFile, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
                 WriteFile,
             },
             System::{
                 Com::CoTaskMemFree,
+                IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
                 LibraryLoader::GetModuleHandleW,
                 Pipes::{
-                    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, PIPE_NOWAIT,
-                    PIPE_REJECT_REMOTE_CLIENTS, PIPE_WAIT, SetNamedPipeHandleState, WaitNamedPipeW,
+                    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId,
+                    PIPE_REJECT_REMOTE_CLIENTS, PIPE_WAIT, WaitNamedPipeW,
                 },
                 Recovery::RegisterApplicationRestart,
                 Services::{
@@ -235,7 +236,8 @@ mod windows_tray {
                 SystemInformation::GetWindowsDirectoryW,
                 Threading::{
                     CreateEventW, CreateMutexW, GetCurrentProcess, GetExitCodeProcess,
-                    GetProcessId, OpenProcessToken, SetEvent, WaitForSingleObject,
+                    GetProcessId, OpenProcessToken, SetEvent, WaitForMultipleObjects,
+                    WaitForSingleObject,
                 },
             },
             UI::{

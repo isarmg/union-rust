@@ -179,8 +179,8 @@ impl PairIpcServer {
         let pipe = unsafe {
             CreateNamedPipeW(
                 PCWSTR(name.as_ptr()),
-                PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
-                PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED,
+                PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
                 1,
                 MAX_LOCAL_HTTP_BODY_BYTES as u32,
                 MAX_LOCAL_HTTP_BODY_BYTES as u32,
@@ -212,33 +212,7 @@ impl PairIpcServer {
             "failed to identify the elevated pairing broker"
         );
         let deadline = Instant::now() + PAIR_OPERATION_TIMEOUT;
-        loop {
-            match unsafe { ConnectNamedPipe(pipe.0, None) } {
-                Ok(()) => break,
-                Err(_) => match unsafe { GetLastError() } {
-                    ERROR_PIPE_CONNECTED => break,
-                    ERROR_PIPE_LISTENING => {}
-                    error => bail!("protected pairing pipe connection failed: {error:?}"),
-                },
-            }
-            match unsafe { WaitForSingleObject(process.0, 0) } {
-                WAIT_TIMEOUT => {}
-                WAIT_OBJECT_0 => {
-                    let mut exit_code = u32::MAX;
-                    unsafe { GetExitCodeProcess(process.0, &mut exit_code) }
-                        .context("failed to inspect the elevated pairing broker")?;
-                    bail!(
-                        "the elevated pairing broker exited before requesting the authorization key (exit code {exit_code})"
-                    );
-                }
-                result => bail!("failed to wait for the elevated pairing broker: {result:?}"),
-            }
-            ensure!(
-                Instant::now() < deadline,
-                "timed out waiting for the elevated pairing broker"
-            );
-            thread::sleep(Duration::from_millis(100));
-        }
+        connect_pipe_with_deadline(pipe.0, process.0, deadline)?;
 
         let mut client_pid = 0_u32;
         unsafe { GetNamedPipeClientProcessId(pipe.0, &mut client_pid) }
@@ -247,14 +221,21 @@ impl PairIpcServer {
             client_pid == expected_pid,
             "pairing pipe client is not the broker launched by this tray"
         );
-        let mode = PIPE_WAIT;
-        unsafe { SetNamedPipeHandleState(pipe.0, Some(&mode), None, None) }
-            .context("failed to enter blocking pairing pipe mode")?;
-        let message = read_pipe_frame(pipe.0, MAX_LOCAL_HTTP_BODY_BYTES)?;
+        let message = read_pipe_frame(
+            pipe.0,
+            MAX_LOCAL_HTTP_BODY_BYTES,
+            deadline,
+            Some(process.0),
+        )?;
         let message: PairIpcMessage =
             serde_json::from_slice(&message).context("invalid pairing pipe message")?;
         validate_pair_ipc_message(&message, server)?;
-        write_pipe_frame(pipe.0, activation_code.as_bytes())?;
+        write_pipe_frame(
+            pipe.0,
+            activation_code.as_bytes(),
+            deadline,
+            Some(process.0),
+        )?;
         // The pipe and Agent stdin now own the transient transport copies;
         // erase the standard tray's retained allocation before the long
         // activation/poll wait.
