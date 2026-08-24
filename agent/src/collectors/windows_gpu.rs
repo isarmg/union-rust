@@ -95,6 +95,59 @@ fn aggregate_engine_utilization(samples: &[(String, f64)]) -> Option<f64> {
         .map(|value| value.clamp(0.0, 100.0))
 }
 
+#[derive(Debug, Default)]
+struct FormattedValuesSummary {
+    total_item_count: usize,
+    samples: Vec<(String, f64)>,
+    invalid_status_count: usize,
+    nonfinite_value_count: usize,
+}
+
+fn finish_formatted_values(summary: &FormattedValuesSummary) -> (Option<f64>, Capability) {
+    if summary.total_item_count == 0 {
+        return (
+            None,
+            Capability::unavailable(
+                "gpu.windows.wddm",
+                "windows-pdh",
+                CapabilityErrorKind::NotPresent,
+                "WDDM exposed no GPU Engine instances",
+            ),
+        );
+    }
+
+    let utilization = aggregate_engine_utilization(&summary.samples);
+    let rejected_count = summary
+        .invalid_status_count
+        .saturating_add(summary.nonfinite_value_count);
+    if rejected_count == 0 && summary.samples.len() == summary.total_item_count {
+        return (
+            utilization,
+            Capability::available("gpu.windows.wddm", "windows-pdh"),
+        );
+    }
+
+    let accounted_count = summary.samples.len().saturating_add(rejected_count);
+    let unclassified_count = summary.total_item_count.saturating_sub(accounted_count);
+    let message = format!(
+        "WDDM returned {} GPU Engine instances: {} valid, {} invalid counter status, {} non-finite value, {} unclassified",
+        summary.total_item_count,
+        summary.samples.len(),
+        summary.invalid_status_count,
+        summary.nonfinite_value_count,
+        unclassified_count,
+    );
+    (
+        utilization,
+        Capability::unavailable(
+            "gpu.windows.wddm",
+            "windows-pdh",
+            CapabilityErrorKind::InvalidData,
+            message,
+        ),
+    )
+}
+
 fn read_pdh_instance_name(
     name: PWSTR,
     buffer_base: *const u8,
@@ -196,11 +249,10 @@ impl WindowsGpuCollector {
         }
 
         match formatted_values(counter) {
-            Ok(values) if !values.is_empty() => {
-                let utilization = aggregate_engine_utilization(&values)
-                    .expect("checked that the named engine value list is non-empty");
-                (
-                    vec![GpuSnapshot {
+            Ok(summary) => {
+                let (utilization, capability) = finish_formatted_values(&summary);
+                let snapshots = utilization
+                    .map(|utilization| GpuSnapshot {
                         id: "windows-wddm".into(),
                         vendor: "unknown".into(),
                         name: "Windows WDDM GPU".into(),
@@ -214,19 +266,11 @@ impl WindowsGpuCollector {
                         pcie_rx_bytes_per_second: None,
                         pcie_tx_bytes_per_second: None,
                         source: "windows-pdh-gpu-engine".into(),
-                    }],
-                    Capability::available("gpu.windows.wddm", "windows-pdh"),
-                )
+                    })
+                    .into_iter()
+                    .collect();
+                (snapshots, capability)
             }
-            Ok(_) => (
-                Vec::new(),
-                Capability::unavailable(
-                    "gpu.windows.wddm",
-                    "windows-pdh",
-                    CapabilityErrorKind::NotPresent,
-                    "WDDM exposed no active GPU Engine instances",
-                ),
-            ),
             Err(error) => {
                 let message = error.to_string();
                 if error.status.is_some_and(should_rebuild_pdh_query) {
@@ -321,7 +365,7 @@ impl fmt::Display for PdhReadError {
     }
 }
 
-fn formatted_values(counter: PDH_HCOUNTER) -> Result<Vec<(String, f64)>, PdhReadError> {
+fn formatted_values(counter: PDH_HCOUNTER) -> Result<FormattedValuesSummary, PdhReadError> {
     let mut byte_len = 0_u32;
     let mut item_count = 0_u32;
     // SAFETY: the first call intentionally passes no output buffer to obtain its size.
@@ -336,7 +380,14 @@ fn formatted_values(counter: PDH_HCOUNTER) -> Result<Vec<(String, f64)>, PdhRead
     };
     if size_result != PDH_MORE_DATA || byte_len == 0 {
         return if size_result == ERROR_SUCCESS {
-            Ok(Vec::new())
+            Ok(FormattedValuesSummary {
+                total_item_count: usize::try_from(item_count).map_err(|_| {
+                    PdhReadError::message(
+                        "PDH empty array item count does not fit this platform".into(),
+                    )
+                })?,
+                ..FormattedValuesSummary::default()
+            })
         } else {
             Err(PdhReadError::status("PDH array sizing", size_result))
         };
@@ -383,16 +434,22 @@ fn formatted_values(counter: PDH_HCOUNTER) -> Result<Vec<(String, f64)>, PdhRead
     // SAFETY: a successful PDH call initialized item_count complete entries, and the checked
     // returned byte count proves that those entries fit inside the still-live typed allocation.
     let items = unsafe { std::slice::from_raw_parts(pointer, item_count) };
-    let mut values = Vec::new();
-    for item in items.iter().filter(|item| {
-        matches!(
+    let mut summary = FormattedValuesSummary {
+        total_item_count: item_count,
+        ..FormattedValuesSummary::default()
+    };
+    for item in items {
+        if !matches!(
             item.FmtValue.CStatus,
             PDH_CSTATUS_VALID_DATA | PDH_CSTATUS_NEW_DATA
-        )
-    }) {
+        ) {
+            summary.invalid_status_count += 1;
+            continue;
+        }
         // SAFETY: PDH_FMT_DOUBLE requests the doubleValue union member.
         let value = unsafe { item.FmtValue.Anonymous.doubleValue };
         if !value.is_finite() {
+            summary.nonfinite_value_count += 1;
             continue;
         }
         let name = read_pdh_instance_name(
@@ -402,11 +459,11 @@ fn formatted_values(counter: PDH_HCOUNTER) -> Result<Vec<(String, f64)>, PdhRead
             layout.capacity_bytes,
             minimum_name_offset,
         )?;
-        values.push((name, value));
+        summary.samples.push((name, value));
     }
     // Keep the backing allocation alive until after all item values have been copied.
     drop(buffer);
-    Ok(values)
+    Ok(summary)
 }
 
 #[cfg(test)]
@@ -415,6 +472,97 @@ mod tests {
 
     fn sample(instance: &str, utilization: f64) -> (String, f64) {
         (instance.to_string(), utilization)
+    }
+
+    fn summary(
+        total_item_count: usize,
+        samples: Vec<(String, f64)>,
+        invalid_status_count: usize,
+        nonfinite_value_count: usize,
+    ) -> FormattedValuesSummary {
+        FormattedValuesSummary {
+            total_item_count,
+            samples,
+            invalid_status_count,
+            nonfinite_value_count,
+        }
+    }
+
+    #[test]
+    fn empty_formatted_array_is_not_present() {
+        let (utilization, capability) = finish_formatted_values(&FormattedValuesSummary::default());
+
+        assert_eq!(utilization, None);
+        assert!(!capability.available);
+        assert_eq!(capability.error_kind, Some(CapabilityErrorKind::NotPresent));
+    }
+
+    #[test]
+    fn all_invalid_statuses_are_invalid_data_not_absent() {
+        let (utilization, capability) = finish_formatted_values(&summary(2, Vec::new(), 2, 0));
+
+        assert_eq!(utilization, None);
+        assert!(!capability.available);
+        assert_eq!(
+            capability.error_kind,
+            Some(CapabilityErrorKind::InvalidData)
+        );
+        assert!(
+            capability
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("0 valid, 2 invalid counter status"))
+        );
+    }
+
+    #[test]
+    fn all_nonfinite_values_are_invalid_data_not_absent() {
+        let (utilization, capability) = finish_formatted_values(&summary(2, Vec::new(), 0, 2));
+
+        assert_eq!(utilization, None);
+        assert!(!capability.available);
+        assert_eq!(
+            capability.error_kind,
+            Some(CapabilityErrorKind::InvalidData)
+        );
+        assert!(
+            capability
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("2 non-finite value"))
+        );
+    }
+
+    #[test]
+    fn partial_values_keep_the_snapshot_but_not_full_availability() {
+        let valid = sample("pid_1_luid_0x0_0x1_phys_0_eng_0_engtype_3D", 42.0);
+        let (utilization, capability) = finish_formatted_values(&summary(3, vec![valid], 1, 1));
+
+        assert_eq!(utilization, Some(42.0));
+        assert!(!capability.available);
+        assert_eq!(
+            capability.error_kind,
+            Some(CapabilityErrorKind::InvalidData)
+        );
+        assert!(
+            capability
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("1 valid"))
+        );
+    }
+
+    #[test]
+    fn complete_values_are_fully_available() {
+        let samples = vec![
+            sample("pid_1_luid_0x0_0x1_phys_0_eng_0_engtype_3D", 20.0),
+            sample("pid_2_luid_0x0_0x1_phys_0_eng_0_engtype_3D", 30.0),
+        ];
+        let (utilization, capability) = finish_formatted_values(&summary(2, samples, 0, 0));
+
+        assert_eq!(utilization, Some(50.0));
+        assert!(capability.available);
+        assert_eq!(capability.error_kind, None);
     }
 
     #[test]
