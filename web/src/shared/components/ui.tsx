@@ -175,13 +175,27 @@ export function Sparkline({
       aria-hidden="true"
     >
       {segments.map((segment, index) => {
+        if (segment.length === 1) {
+          const [{ index: pointIndex, value }] = segment;
+          return (
+            <line
+              key={`${pointIndex}-${index}`}
+              x1={tx(pointIndex)}
+              x2={tx(pointIndex)}
+              y1={ty(value)}
+              y2={ty(value)}
+              stroke={color}
+              strokeWidth={4}
+              strokeLinecap="round"
+              vectorEffect="non-scaling-stroke"
+            />
+          );
+        }
         const path = pathFor(segment);
-        const fillPath = segment.length > 1
-          ? `${path} L ${tx(segment.at(-1)!.index)} ${H} L ${tx(segment[0].index)} ${H} Z`
-          : "";
+        const fillPath = `${path} L ${tx(segment.at(-1)!.index)} ${H} L ${tx(segment[0].index)} ${H} Z`;
         return (
           <g key={`${segment[0].index}-${index}`}>
-            {fillPath ? <path d={fillPath} style={{ fill: color, fillOpacity: 0.12 }} /> : null}
+            <path d={fillPath} style={{ fill: color, fillOpacity: 0.12 }} />
             <path d={path} style={{ fill: "none", stroke: color, strokeWidth: 2 }} vectorEffect="non-scaling-stroke" />
           </g>
         );
