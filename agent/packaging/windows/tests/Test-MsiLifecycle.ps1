@@ -98,7 +98,18 @@ function Invoke-Msi {
         throw "MSI operation '$Name' unexpectedly succeeded. Log: $log"
     }
     if (-not $ExpectFailure -and -not $succeeded) {
-        Get-Content -LiteralPath $log -Tail 120
+        $failureContext = @(Select-String -LiteralPath $log `
+            -SimpleMatch "Return value 3" -Context 80, 20)
+        if ($failureContext.Count -eq 0) {
+            Get-Content -LiteralPath $log -Tail 240
+        }
+        else {
+            foreach ($match in $failureContext) {
+                $match.Context.PreContext
+                $match.Line
+                $match.Context.PostContext
+            }
+        }
         throw "MSI operation '$Name' failed with exit code $($process.ExitCode). Log: $log"
     }
 }
