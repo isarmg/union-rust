@@ -35,16 +35,6 @@
     grid-template-columns: 1fr;
   }
 
-  .content-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-}
-
-/* 中等屏幕（≤ 960px）：所有内容块从 4 列降为 3 列。 */
-@media (max-width: 960px) {
-  .content-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
 }
 
 /* 手机宽度（≤ 760px）：导航栏允许换行，间距收紧。 */
@@ -87,10 +77,6 @@
     font-size: 28px;
   }
 
-  .card-actions {
-    width: 100%;
-  }
-
   .disk-row {
     grid-template-columns: 1fr;
   }
@@ -98,20 +84,6 @@
   .search-box,
   .search-box input {
     width: 100%;
-  }
-}
-
-/* 窄屏（≤ 640px）：3 列降为 2 列。 */
-@media (max-width: 640px) {
-  .content-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-/* 极窄屏（≤ 480px）：降为单列。 */
-@media (max-width: 480px) {
-  .content-grid {
-    grid-template-columns: 1fr;
   }
 }
 

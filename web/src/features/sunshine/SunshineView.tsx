@@ -261,7 +261,7 @@ export function SunshineView({
         {hostsQuery.isLoading ? <LoadingBlock label="读取主机" /> : null}
         <div className="instance-list-title"><ContentTitle icon={Boxes} title="实例" /></div>
         <div className="sunshine-master-detail">
-          <div className="content-grid sunshine-host-grid" ref={hostGridRef}>
+          <div className="sarmg-grid sunshine-host-grid" ref={hostGridRef}>
             {hosts.map((host) => (
               <HostCard
                 key={host.id}

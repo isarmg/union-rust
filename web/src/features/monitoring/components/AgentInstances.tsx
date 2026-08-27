@@ -93,7 +93,7 @@ export function HostRegistration({
   return (
     <div className="monitoring-host-entry">
       <article
-        className="content-card monitoring-host-card"
+        className="sarmg-card monitoring-host-card"
         aria-label={`${host.name}，${status.label}`}
         aria-busy={controlsBusy}
         aria-current={selected ? "true" : undefined}
@@ -117,7 +117,7 @@ export function HostRegistration({
           </CardRow>
           <CardActions>
             <button
-              className="card-action-button"
+              className="sarmg-card__action"
               type="button"
               disabled={controlsBusy}
               onClick={(event) => onOpenDetails(event.currentTarget)}
@@ -125,7 +125,7 @@ export function HostRegistration({
               <Info size={12} /><span>{selected ? "收起详情" : "详情"}</span>
             </button>
             <button
-              className="card-action-button danger"
+              className="sarmg-card__action sarmg-action-danger"
               type="button"
               disabled={controlsBusy}
               onClick={(event) => {

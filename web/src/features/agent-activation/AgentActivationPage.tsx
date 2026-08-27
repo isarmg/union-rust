@@ -56,7 +56,7 @@ export function AgentActivationPage({ requestId }: { requestId: string | null })
 
   if (activationMutation.data) {
     return (
-      <main className="app-shell activation-screen">
+      <main className="app-shell sarmg-theme activation-screen" data-sarmg-scope data-sarmg-theme="system">
         <section className="activation-card" aria-labelledby="agent-activation-title">
           <div className="activation-heading success">
             <CheckCircle2 size={30} aria-hidden="true" />
@@ -81,7 +81,7 @@ export function AgentActivationPage({ requestId }: { requestId: string | null })
   }
 
   return (
-    <main className="app-shell activation-screen">
+    <main className="app-shell sarmg-theme activation-screen" data-sarmg-scope data-sarmg-theme="system">
       <section className="activation-card" aria-labelledby="agent-activation-title">
         <div className="activation-heading">
           <MonitorCog size={30} aria-hidden="true" />

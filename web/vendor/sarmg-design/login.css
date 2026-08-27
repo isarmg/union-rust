@@ -1,0 +1,81 @@
+.sarmg-login {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 24px;
+  overflow-y: auto;
+  color: var(--sarmg-text);
+  background: var(--sarmg-background);
+}
+
+.sarmg-login__card {
+  width: min(380px, 100%);
+  flex: 0 0 auto;
+}
+
+.sarmg-login__input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  color: var(--sarmg-text);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  outline: 0;
+}
+
+.sarmg-login__input:focus {
+  border-bottom-color: var(--sarmg-primary);
+}
+
+.sarmg-login__input-row,
+.sarmg-login__error-row,
+.sarmg-login__card .sarmg-card__row:has(.sarmg-login__input),
+.sarmg-login__card .sarmg-card__inner > .sarmg-card__row:nth-child(5) {
+  grid-template-columns: minmax(0, 1fr);
+  column-gap: 0;
+}
+
+.sarmg-login__card .sarmg-card__row:has(.sarmg-login__input) > .sarmg-card__label,
+.sarmg-login__card .sarmg-card__inner > .sarmg-card__row:nth-child(5) > .sarmg-card__label {
+  display: none;
+}
+
+.sarmg-login__label-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 1em;
+  height: 1em;
+  flex: 0 0 1em;
+  border: 1px solid currentcolor;
+  border-radius: 0.25em;
+}
+
+.sarmg-login__label-icon svg {
+  width: 0.65em;
+  height: 0.65em;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.75;
+}
+
+.sarmg-login__error {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--sarmg-danger);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sarmg-login .sarmg-card__label:has(.sarmg-login__label-icon) {
+  gap: 1ch;
+}
+
+.sarmg-login .sarmg-card__actions {
+  display: grid;
+  grid-template-columns: 1fr;
+}

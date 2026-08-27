@@ -51,7 +51,7 @@ export function TickerText({ children }: { children: string }) {
 
 /** 等边距内容框：使用内容块短边计算四边间距，内部等分六行 */
 export function CardInner({ children }: { children: React.ReactNode }) {
-  return <div className="card-inner">{children}</div>;
+  return <div className="sarmg-card__inner">{children}</div>;
 }
 
 /** 标准内容行：左列标题 + 2ch 间距 + 右列内容 */
@@ -71,11 +71,11 @@ export function CardRow({
   const gridRow = row ? String(row) : span ? `span ${span}` : undefined;
   return (
     <div
-      className={`card-row${chart ? " card-row-chart" : ""}`}
+      className={`sarmg-card__row${chart ? " sarmg-card__row-chart" : ""}`}
       style={gridRow ? { gridRow } : undefined}
     >
-      <span className="card-row-label">{label}</span>
-      <div className="card-row-content">{children}</div>
+      <span className="sarmg-card__label">{label}</span>
+      <div className="sarmg-card__content">{children}</div>
     </div>
   );
 }
@@ -92,9 +92,9 @@ export function TruncatedText({
   grow?: boolean;
 }) {
   const classes = [
-    "truncate-text",
-    muted ? "muted-text" : "",
-    grow ? "grow" : "",
+    "sarmg-truncate",
+    muted ? "sarmg-muted" : "",
+    grow ? "sarmg-grow" : "",
     className
   ].filter(Boolean).join(" ");
   return <span {...spanProps} className={classes}>{children}</span>;
@@ -114,7 +114,7 @@ export function CardActions({
 }) {
   return (
     <CardRow label={label} row={6}>
-      <div className={`card-actions${className ? ` ${className}` : ""}`} onClick={onClick}>{children}</div>
+      <div className={`sarmg-card__actions${className ? ` ${className}` : ""}`} onClick={onClick}>{children}</div>
     </CardRow>
   );
 }
@@ -225,7 +225,7 @@ export function Metric({
 }) {
   const hasChart = sparkData && sparkData.filter((value) => typeof value === "number" && Number.isFinite(value)).length >= 2;
   return (
-    <article className={`content-card metric ${tone}`} title={title}>
+    <article className={`sarmg-card metric ${tone}`} title={title}>
       <CardInner>
         <CardRow label={label}>
           <strong className="metric-row-value">{value}</strong>
@@ -316,7 +316,7 @@ export function ContentTitle({ icon: Icon, title, description }: {
 
 /** 圆形 LED 状态指示灯：green=正常，yellow=繁忙/检测中，red=错误/离线 */
 export function StatusLed({ tone }: { tone: "good" | "warn" | "danger" }) {
-  return <span className={`status-led ${tone}`} aria-hidden="true" />;
+  return <span className={`sarmg-status-led sarmg-status-${tone}`} aria-hidden="true" />;
 }
 
 // ─── 通知与错误 ───────────────────────────────────────────────────────────────

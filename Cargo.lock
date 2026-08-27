@@ -1883,6 +1883,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sarmg-platform-axum"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "sarmg-platform-core",
+]
+
+[[package]]
+name = "sarmg-platform-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2519,6 +2535,8 @@ dependencies = [
  "mime",
  "reqwest",
  "rustix",
+ "sarmg-platform-axum",
+ "sarmg-platform-core",
  "serde",
  "serde_json",
  "sha2",

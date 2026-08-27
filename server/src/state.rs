@@ -1,7 +1,7 @@
 //! Axum 路由共享状态。
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::{
-    config::{LocalConfig, Settings, SunshineHostConfig},
+    config::{LocalConfig, Settings},
     infra::database::{DatabaseIdentity, DbPool},
 };
 
@@ -24,152 +24,14 @@ pub struct AppState {
     /// Monotonic process start marker. Wall-clock adjustments must never make
     /// a liveness uptime negative or jump it forwards.
     pub started_at: Instant,
-    pub hosts: HostState,
+    pub sunshine: crate::sunshine::SunshineState,
     pub auth: AuthenticationState,
-    pub agents: AgentAuthenticationState,
+    pub monitoring: crate::monitoring::MonitoringState,
     pub services: ServiceStatusState,
+    /// Product-neutral module catalog and external service adapter snapshots.
+    pub platform: crate::platform::PlatformState,
     /// 系统资源快照。与 `services` 同一个模式：唯一的后台任务采样，读路径只读快照。
     pub resources: crate::system::ResourceMonitor,
-}
-
-#[derive(Clone)]
-pub struct AgentAuthenticationState {
-    /// Browser-pairing creation/inspection/activation requests use a separate
-    /// anonymous quota from high-frequency report polling.
-    pub pairing_attempts: Arc<Mutex<VecDeque<Instant>>>,
-    pub pairing_attempts_by_ip: Arc<Mutex<HashMap<std::net::IpAddr, VecDeque<Instant>>>>,
-    /// 认证前的上报请求全局配额，避免随机 token 无限触发数据库查询。
-    pub report_auth_attempts: Arc<Mutex<VecDeque<Instant>>>,
-    /// 认证前的上报请求按来源 IP 配额。
-    pub report_auth_attempts_by_ip: Arc<Mutex<HashMap<std::net::IpAddr, VecDeque<Instant>>>>,
-    /// 按主机的上报令牌桶，防止单个（或凭据泄露的）主机打满数据库写入。
-    pub report_buckets: Arc<Mutex<HashMap<String, TokenBucket>>>,
-}
-
-/// 令牌桶限流。
-///
-/// 之所以用令牌桶而非固定窗口计数：Agent 在断线恢复时会一次补传最多 32 个批次
-/// （见 `agent/src/agent_app/delivery/spool.rs` 的 `flush_spool`），固定窗口会把这种
-/// **合法**的突发
-/// 误判为滥用。令牌桶允许攒下额度应对突发，同时约束长期平均速率。
-#[derive(Debug)]
-pub struct TokenBucket {
-    tokens: f64,
-    last_refill: Instant,
-}
-
-impl TokenBucket {
-    /// 桶容量，即允许的最大突发量。取补传批量（32）的两倍留出余量。
-    pub const CAPACITY: f64 = 64.0;
-    /// 每秒补充的令牌数。必须**高于**合法 Agent 的最快上报速率：
-    /// `AgentReport::validate()` 允许的最小间隔是 0.1 秒，即 10 次/秒。
-    /// 取 16 保证正常配置永远不会被限流，同时把单主机写入封顶在 16 次/秒。
-    pub const REFILL_PER_SECOND: f64 = 16.0;
-
-    fn new() -> Self {
-        Self {
-            tokens: Self::CAPACITY,
-            last_refill: Instant::now(),
-        }
-    }
-
-    /// 取走一个令牌。返回 `false` 表示超出配额。
-    fn try_take(&mut self, now: Instant) -> bool {
-        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
-        self.tokens = (self.tokens + elapsed * Self::REFILL_PER_SECOND).min(Self::CAPACITY);
-        self.last_refill = now;
-        if self.tokens < 1.0 {
-            return false;
-        }
-        self.tokens -= 1.0;
-        true
-    }
-
-    /// 桶是否已回满。回满意味着该主机近期没有上报，条目可以回收。
-    fn is_idle(&self, now: Instant) -> bool {
-        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
-        self.tokens + elapsed * Self::REFILL_PER_SECOND >= Self::CAPACITY
-    }
-}
-
-impl AgentAuthenticationState {
-    /// 记录一次上报并判断是否超出该主机的配额。
-    ///
-    /// # 为什么这里不做回收
-    ///
-    /// 在**每一次上报**里都 `retain()` 一遍全部主机桶，等于在单一全局锁内做
-    /// O(主机数) 的扫描。上报是全系统频率最高的写路径，那会给它挂上一个随部署
-    /// 规模线性增长的串行段——恰恰在规模变大时最先劣化。
-    ///
-    /// 回收本身并不紧急（一个空闲桶只占几十字节），因此移交给
-    /// `startup::start_memory_gc` 周期性执行，热路径只保留一次哈希查找。
-    pub async fn allow_report(&self, host_id: &str, now: Instant) -> bool {
-        self.report_buckets
-            .lock()
-            .await
-            .entry(host_id.to_string())
-            .or_insert_with(TokenBucket::new)
-            .try_take(now)
-    }
-
-    /// 回收长期无上报的主机条目，避免 HashMap 随历史主机数无限增长。
-    /// 由后台维护任务周期性调用，返回被回收的条目数。
-    pub async fn prune_report_buckets(&self, now: Instant) -> usize {
-        let mut buckets = self.report_buckets.lock().await;
-        let before = buckets.len();
-        buckets.retain(|_, bucket| !bucket.is_idle(now));
-        before - buckets.len()
-    }
-
-    /// 主机注销后立即丢弃其限流桶。
-    pub async fn forget_host(&self, host_id: &str) {
-        self.report_buckets.lock().await.remove(host_id);
-    }
-}
-
-#[derive(Clone)]
-pub struct HostState {
-    pub sunshine: Arc<RwLock<Vec<SunshineHostConfig>>>,
-    /// 最近一次由后台任务完成的 Sunshine 连通性/认证探测。
-    ///
-    /// HTTP 列表与配置写入路径只读取这份快照，绝不直接访问 Sunshine。否则一个
-    /// 接受 TCP 连接但不响应 HTTP 的主机会让新增、删除后的页面刷新卡满上游的
-    /// 15 秒超时。主机配置变更时对应条目会先被替换为 `pending`，所以旧配置的
-    /// “绿色”结果不会被沿用。
-    pub sunshine_health: Arc<RwLock<HashMap<String, SunshineHostHealth>>>,
-    /// 配置变更时唤醒唯一的后台探测任务；`Notify` 会保留一个 permit，因此即使
-    /// 变更发生在一轮慢探测期间，完成后也会立即再跑一轮，不必等待定时周期。
-    pub sunshine_health_refresh: Arc<tokio::sync::Notify>,
-    pub settings_lock: Arc<Mutex<()>>,
-}
-
-/// 一台 Sunshine 主机的内存健康快照。
-///
-/// `None` 严格表示尚未完成当前配置的探测，而不是“不可达”。探测完成后两个布尔值
-/// 都是 `Some`；当 TCP 不可达时 `connected` 固定为 `Some(false)`。
-#[derive(Clone)]
-pub struct SunshineHostHealth {
-    pub reachable: Option<bool>,
-    pub connected: Option<bool>,
-    pub connection_error: Option<String>,
-}
-
-impl SunshineHostHealth {
-    pub fn pending() -> Self {
-        Self {
-            reachable: None,
-            connected: None,
-            connection_error: Some("连接状态正在后台检测".to_string()),
-        }
-    }
-
-    pub fn completed(reachable: bool, connection: &Result<(), String>) -> SunshineHostHealth {
-        Self {
-            reachable: Some(reachable),
-            connected: Some(reachable && connection.is_ok()),
-            connection_error: connection.as_ref().err().cloned(),
-        }
-    }
 }
 
 /// 服务状态的**唯一**探测结果，由后台任务单独维护。
@@ -180,8 +42,8 @@ impl SunshineHostHealth {
 /// 降为 O(主机数)。
 #[derive(Clone)]
 pub struct ServiceStatusState {
-    /// 最近一次探测结果。新建立的 SSE 连接先读它，避免等待下一个探测周期。
-    pub snapshot: Arc<RwLock<Vec<crate::system::ServiceStatus>>>,
+    /// 每个模块独立发布贡献，避免 Sunshine 或外部服务探测互相覆盖。
+    contributions: Arc<RwLock<BTreeMap<String, Vec<crate::system::ServiceStatus>>>>,
     /// 广播通道。容量很小即可：订阅者只关心最新状态，落后的直接跳到最新。
     pub events: tokio::sync::broadcast::Sender<Vec<crate::system::ServiceStatus>>,
 }
@@ -190,9 +52,32 @@ impl ServiceStatusState {
     fn new() -> Self {
         let (events, _) = tokio::sync::broadcast::channel(4);
         Self {
-            snapshot: Arc::new(RwLock::new(Vec::new())),
+            contributions: Arc::new(RwLock::new(BTreeMap::new())),
             events,
         }
+    }
+
+    pub async fn snapshot(&self) -> Vec<crate::system::ServiceStatus> {
+        self.contributions
+            .read()
+            .await
+            .values()
+            .flatten()
+            .cloned()
+            .collect()
+    }
+
+    pub async fn publish(&self, source: &str, statuses: Vec<crate::system::ServiceStatus>) {
+        let snapshot = {
+            let mut contributions = self.contributions.write().await;
+            contributions.insert(source.to_string(), statuses);
+            contributions
+                .values()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let _ = self.events.send(snapshot);
     }
 }
 
@@ -340,6 +225,7 @@ impl AppState {
         resources: crate::system::ResourceMonitor,
     ) -> anyhow::Result<Self> {
         let database_identity = DatabaseIdentity::capture(&settings)?;
+        let platform = crate::platform::PlatformState::new(&settings.platform)?;
         let sunshine_hosts = settings.sunshine.hosts.clone();
         let (shutdown, _) = tokio::sync::watch::channel(false);
         Ok(Self {
@@ -349,12 +235,7 @@ impl AppState {
             shutdown,
             database_health: Arc::new(Mutex::new(None)),
             started_at: Instant::now(),
-            hosts: HostState {
-                sunshine: Arc::new(RwLock::new(sunshine_hosts)),
-                sunshine_health: Arc::new(RwLock::new(HashMap::new())),
-                sunshine_health_refresh: Arc::new(tokio::sync::Notify::new()),
-                settings_lock: Arc::new(Mutex::new(())),
-            },
+            sunshine: crate::sunshine::SunshineState::new(sunshine_hosts),
             auth: AuthenticationState {
                 sse_tickets: Arc::new(Mutex::new(HashMap::new())),
                 session_revocations: Arc::new(Mutex::new(HashMap::new())),
@@ -366,14 +247,9 @@ impl AppState {
                 local_config: Arc::new(RwLock::new(local_config)),
                 sessions: Arc::new(RwLock::new(HashMap::new())),
             },
-            agents: AgentAuthenticationState {
-                pairing_attempts: Arc::new(Mutex::new(VecDeque::new())),
-                pairing_attempts_by_ip: Arc::new(Mutex::new(HashMap::new())),
-                report_auth_attempts: Arc::new(Mutex::new(VecDeque::new())),
-                report_auth_attempts_by_ip: Arc::new(Mutex::new(HashMap::new())),
-                report_buckets: Arc::new(Mutex::new(HashMap::new())),
-            },
+            monitoring: crate::monitoring::MonitoringState::new(),
             services: ServiceStatusState::new(),
+            platform,
             resources,
         })
     }

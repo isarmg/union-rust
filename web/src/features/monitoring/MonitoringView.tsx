@@ -161,7 +161,7 @@ export function MonitoringView({
         {total > HOST_PAGE_SIZE ? (
           <div className="button-row" aria-label="监控主机分页">
             <button
-              className="card-action-button"
+              className="sarmg-card__action"
               type="button"
               disabled={!hasPreviousPage}
               onClick={() => changePage(Math.max(0, offset - HOST_PAGE_SIZE))}
@@ -170,7 +170,7 @@ export function MonitoringView({
               {offset + 1}–{Math.min(offset + hosts.length, total)} / {total}
             </span>
             <button
-              className="card-action-button"
+              className="sarmg-card__action"
               type="button"
               disabled={!hasNextPage}
               onClick={() => changePage(offset + HOST_PAGE_SIZE)}
@@ -178,7 +178,7 @@ export function MonitoringView({
           </div>
         ) : null}
         <div className="monitoring-master-detail">
-          <div className="content-grid monitoring-host-grid" ref={hostGridRef}>
+          <div className="sarmg-grid monitoring-host-grid" ref={hostGridRef}>
             {hosts.map((host) => (
               <HostRegistration
                 key={host.id}

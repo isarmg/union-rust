@@ -13,6 +13,67 @@ import { monitoringApi } from "../features/monitoring/api";
 import type { CreatedAgentInstance } from "../features/monitoring/types";
 import { ApiError, request } from "../shared/api/client";
 import { realtimeApi } from "./realtimeApi";
+import { platformApi } from "../features/platform/api";
+import type { PlatformModule } from "../features/platform/types";
+
+const platformModules: PlatformModule[] = [
+  {
+    schema_version: 1,
+    id: "host-monitoring",
+    display_name: "主机",
+    description: "主机监控",
+    version: "0.1.0",
+    execution: "in_process",
+    ui: { kind: "embedded", route: "/modules/host-monitoring" },
+    capabilities: [],
+    service: null,
+    database: {},
+    configured: true,
+    health: "available",
+    health_message: "已编译到当前发行版",
+    launch_url: null,
+    checked_at: null,
+  },
+  {
+    schema_version: 1,
+    id: "sunshine",
+    display_name: "Sunshine",
+    description: "Sunshine 管理",
+    version: "0.1.0",
+    execution: "in_process",
+    ui: { kind: "embedded", route: "/modules/sunshine" },
+    capabilities: [],
+    service: null,
+    database: {},
+    configured: true,
+    health: "available",
+    health_message: "已编译到当前发行版",
+    launch_url: null,
+    checked_at: null,
+  },
+];
+
+const sentinelModule: PlatformModule = {
+  schema_version: 1,
+  id: "sentinel-monitor",
+  display_name: "Sentinel",
+  description: "摄像头监控",
+  version: "0.1.0",
+  execution: "service",
+  ui: { kind: "external", public_url_env: "SARMG_SENTINEL_URL" },
+  capabilities: [],
+  service: {
+    base_url_env: "SARMG_SENTINEL_URL",
+    liveness_path: "/health/live",
+    readiness_path: "/health/ready",
+  },
+  database: {},
+  configured: true,
+  health: "available",
+  health_message: "公开存活探测通过",
+  launch_url: "https://sentinel.example.test/",
+  checked_at: "2026-08-27T00:00:00Z",
+};
 
 function renderApp() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -29,6 +90,7 @@ function mockAuthenticatedApp() {
   const services = vi.spyOn(overviewApi, "services").mockReturnValue(new Promise(() => {}));
   vi.spyOn(overviewApi, "systemResources").mockReturnValue(new Promise(() => {}));
   vi.spyOn(realtimeApi, "issueSseTicket").mockReturnValue(new Promise(() => {}));
+  vi.spyOn(platformApi, "modules").mockResolvedValue(platformModules);
   Object.defineProperty(window, "matchMedia", {
     configurable: true,
     value: vi.fn().mockReturnValue({ matches: false }),
@@ -202,6 +264,17 @@ describe("session verification", () => {
     expect(await screen.findByRole("form", { name: "登录 UnionC 管理中心" })).toBeTruthy();
     expect(changePassword).toHaveBeenCalledWith("current-password", "replacement-password");
     expect(logout).not.toHaveBeenCalled();
+  });
+
+  it("opens configured service modules without forwarding the platform session", async () => {
+    mockAuthenticatedApp();
+    vi.mocked(platformApi.modules).mockResolvedValue([...platformModules, sentinelModule]);
+    renderApp();
+
+    const link = await screen.findByRole("link", { name: "Sentinel" });
+    expect(link.getAttribute("href")).toBe("https://sentinel.example.test/");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toContain("noreferrer");
   });
 
   it("does not replay a consumed Agent creation request after returning to the host page", async () => {

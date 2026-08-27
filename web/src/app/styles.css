@@ -1,6 +1,9 @@
 /* 样式入口只声明加载顺序；具体规则按职责放在 styles/ 下。 */
+@import "../../vendor/sarmg-design/reset.css";
 @import "../shared/styles/tokens.css";
 @import "../shared/styles/content-cards.css";
+@import "../../vendor/sarmg-design/login.css";
+@import "../../vendor/sarmg-design/accessibility.css";
 @import "../shared/styles/foundation.css";
 @import "../shared/styles/responsive.css";
 @import "../features/settings/settings.css";

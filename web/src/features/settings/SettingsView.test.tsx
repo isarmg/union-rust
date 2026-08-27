@@ -26,7 +26,7 @@ describe("administrator password mutation lifetime", () => {
     );
 
     const form = await screen.findByRole("form", { name: "修改管理员密码" });
-    const rows = form.querySelectorAll(".card-row");
+    const rows = form.querySelectorAll(".sarmg-card__row");
     expect(rows).toHaveLength(6);
     expect(rows[0].textContent).toContain("用户");
     expect(within(rows[1] as HTMLElement).getByLabelText("原密码")).toBeTruthy();

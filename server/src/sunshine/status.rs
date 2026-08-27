@@ -2,18 +2,7 @@ use std::future::Future;
 
 use crate::sunshine::SunshineStatus;
 use crate::system::ServiceStatus;
-use crate::{
-    config::SunshineHostConfig,
-    state::{AppState, SunshineHostHealth},
-};
-
-/// 读取最近一次探测结果。**不发起任何网络请求。**
-///
-/// 探测由 `startup::start_service_status_probe` 启动的后台 worker 负责；
-/// HTTP 与 SSE 两条读路径都只消费快照，因此增加客户端不会增加对被监控主机的探测。
-pub async fn all_services(state: &AppState) -> Vec<ServiceStatus> {
-    state.services.snapshot.read().await.clone()
-}
+use crate::{config::SunshineHostConfig, state::AppState, sunshine::SunshineHostHealth};
 
 #[derive(Clone)]
 pub(crate) struct ServiceProbeBatch {
@@ -39,7 +28,7 @@ pub(crate) async fn probe_and_publish_services(state: &AppState) -> Option<Servi
 }
 
 async fn probe_services(state: &AppState) -> ServiceProbeBatch {
-    let hosts = state.hosts.sunshine.read().await.clone();
+    let hosts = state.sunshine.hosts.read().await.clone();
     let results = probe_hosts_with(hosts, |host| async move {
         let reachable = crate::sunshine::client::check_reachable(&host).await;
         (host, reachable)
@@ -107,7 +96,7 @@ pub(crate) async fn probe_and_publish_health(state: &AppState, batch: ServicePro
 }
 
 async fn publish_service_batch_if_current(state: &AppState, batch: &ServiceProbeBatch) -> bool {
-    let current = state.hosts.sunshine.read().await;
+    let current = state.sunshine.hosts.read().await;
     if current.len() != batch.hosts.len()
         || !current
             .iter()
@@ -121,8 +110,10 @@ async fn publish_service_batch_if_current(state: &AppState, batch: &ServiceProbe
     // cannot change the host list between the equality check and snapshot/SSE
     // publication, so a result accepted here was produced for exactly the
     // configuration visible at the publication instant.
-    *state.services.snapshot.write().await = batch.statuses.clone();
-    let _ = state.services.events.send(batch.statuses.clone());
+    state
+        .services
+        .publish("sunshine", batch.statuses.clone())
+        .await;
     true
 }
 
@@ -135,7 +126,7 @@ async fn publish_health_if_current(
     probed_host: &SunshineHostConfig,
     snapshot: SunshineHostHealth,
 ) -> bool {
-    let hosts = state.hosts.sunshine.read().await;
+    let hosts = state.sunshine.hosts.read().await;
     let Some(current) = hosts.iter().find(|host| host.id == probed_host.id) else {
         return false;
     };
@@ -146,8 +137,8 @@ async fn publish_health_if_current(
     // 保持 hosts 读锁直到健康快照写入完成。配置更新必须先拿 hosts 写锁，因此这里的
     // “确认仍是当前配置 + 发布结果”对更新操作而言是一个原子步骤。
     state
-        .hosts
-        .sunshine_health
+        .sunshine
+        .health
         .write()
         .await
         .insert(probed_host.id.clone(), snapshot);
@@ -243,8 +234,8 @@ mod health_snapshot_tests {
         let state = state_with_host(original.clone());
 
         {
-            let mut hosts = state.hosts.sunshine.write().await;
-            let mut health = state.hosts.sunshine_health.write().await;
+            let mut hosts = state.sunshine.hosts.write().await;
+            let mut health = state.sunshine.health.write().await;
             hosts[0].host = "new.example.test".into();
             hosts[0].password = "new-secret".into();
             health.insert(original.id.clone(), SunshineHostHealth::pending());
@@ -252,7 +243,7 @@ mod health_snapshot_tests {
 
         let old_success = SunshineHostHealth::completed(true, &Ok(()));
         assert!(!publish_health_if_current(&state, &original, old_success).await);
-        let health = state.hosts.sunshine_health.read().await;
+        let health = state.sunshine.health.read().await;
         let current = health.get(&original.id).expect("pending snapshot");
         assert_eq!(current.reachable, None);
         assert_eq!(current.connected, None);
@@ -265,19 +256,12 @@ mod health_snapshot_tests {
             ..SunshineHostConfig::default()
         };
         let state = state_with_host(host.clone());
-        state.hosts.sunshine.write().await.clear();
-        state.hosts.sunshine_health.write().await.remove(&host.id);
+        state.sunshine.hosts.write().await.clear();
+        state.sunshine.health.write().await.remove(&host.id);
 
         let success = SunshineHostHealth::completed(true, &Ok(()));
         assert!(!publish_health_if_current(&state, &host, success).await);
-        assert!(
-            !state
-                .hosts
-                .sunshine_health
-                .read()
-                .await
-                .contains_key(&host.id)
-        );
+        assert!(!state.sunshine.health.read().await.contains_key(&host.id));
     }
 
     #[tokio::test]
@@ -296,10 +280,10 @@ mod health_snapshot_tests {
             statuses: vec![stale_status],
         };
 
-        state.hosts.sunshine.write().await[0].host = "new.example.test".into();
+        state.sunshine.hosts.write().await[0].host = "new.example.test".into();
 
         assert!(!publish_service_batch_if_current(&state, &stale_batch).await);
-        assert!(state.services.snapshot.read().await.is_empty());
+        assert!(state.services.snapshot().await.is_empty());
     }
 
     #[tokio::test]
@@ -351,7 +335,7 @@ mod health_snapshot_tests {
 
         probe_and_publish_health(&state, batch).await;
 
-        let health = state.hosts.sunshine_health.read().await;
+        let health = state.sunshine.health.read().await;
         let snapshot = health.get(&host.id).expect("completed health snapshot");
         assert_eq!(snapshot.reachable, Some(false));
         assert_eq!(snapshot.connected, Some(false));

@@ -1,103 +1,12 @@
-/* 统一内容块系统：网格、卡片、六行内容区和通用文字/操作结构。 */
+/* Shared primitives come from the vendored upstream artifact. */
+@import "../../../vendor/sarmg-design/content-card.css";
 
-.content-grid {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: var(--content-block-gap);
-}
-
-.content-card {
-  /*
-   * 六等分后首、末行中心分别位于卡高的 1/12 和 11/12。
-   * 3:2 卡片使用对应的 1/18 卡宽，使圆角保持为正圆四分之一弧。
-   */
-  --content-card-radius-x: 5.5556%;
-  --content-card-radius-y: 8.3333%;
-  --content-card-row-height: calc(100cqh / 6);
-  --content-card-font-size: calc(var(--content-card-row-height) * 0.5);
-  --content-card-glyph-half: calc(var(--content-card-font-size) * 0.5);
-  --content-card-text-start: calc(
-    var(--content-card-radius-x) - var(--content-card-glyph-half)
-  );
-  position: relative;
-  container-type: size;
-  aspect-ratio: 3 / 2;
-  overflow: hidden;
-  background: var(--surface-strong);
-  border: none;
-  border-radius: var(--content-card-radius-x) / var(--content-card-radius-y);
-}
-
-/*
- * 内容框与卡片边框重合并等分六行。字号取单行高度的 1/2，
- * 文字行盒由 grid 对齐到每行内容框的垂直中心。
- * 第一行首字虚拟正方形中心与左上圆角圆心重合，第六行首字
- * 虚拟正方形中心与左下圆角圆心重合。其余行使用同一水平起点。
- */
-.card-inner {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  grid-template-rows: repeat(6, minmax(0, 1fr));
-  grid-auto-rows: 0;
-  gap: 0;
-  padding-inline-start: var(--content-card-text-start);
-  padding-inline-end: var(--content-card-text-start);
-  min-width: 0;
-  min-height: 0;
-  font-size: var(--content-card-font-size);
-  /* 为英文下行字母保留完整字形空间，字号仍为单行高度的 1/2。 */
-  line-height: 1.2;
-}
-
-.card-row {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  column-gap: 2ch;
-  align-items: center;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.card-row-label {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-  gap: 3px;
-  color: var(--muted);
-  white-space: nowrap;
-}
-
-.card-row-content {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  overflow: hidden;
-  gap: 4px;
-}
-
-.truncate-text {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.truncate-text.grow {
-  flex: 1;
-}
-
-.muted-text {
-  color: var(--muted);
-}
-
-.card-row-content > .status-led {
+/* Union-specific card extensions. */
+.sarmg-card__content > .sarmg-status-led {
   flex-shrink: 0;
   margin-left: auto;
 }
 
-/* 主机地址按实际文本长度排列，端口紧跟 IP/域名。 */
 .card-address-inline {
   display: flex;
   align-items: center;
@@ -118,38 +27,26 @@
   max-width: 100%;
 }
 
-/* 支持由 title 包裹 LED 的主机卡结构。 */
-.card-row-content > :has(> .status-led) {
+.sarmg-card__content > :has(> .sarmg-status-led) {
   display: inline-flex;
   flex-shrink: 0;
   margin-left: auto;
 }
 
-/*
- * 第一行 LED 保持右上圆角圆心的水平坐标，圆心的纵坐标
- * 与第一行文本框的高度中心对齐。
- */
-.card-inner > .card-row:first-child,
-.card-inner > .card-row:first-child > .card-row-content {
-  overflow: visible;
+.sarmg-card__inner > .sarmg-card__row:first-child .sarmg-card__content > :has(> .sarmg-status-led) {
+  margin-inline-end: calc(var(--sarmg-card-glyph-half) - 0.4em);
 }
 
-.card-inner > .card-row:first-child .card-row-content > .status-led,
-.card-inner > .card-row:first-child .card-row-content > :has(> .status-led) {
-  /* 补偿右侧位移，使 LED 对齐圆角圆心。 */
-  margin-inline-end: calc(var(--content-card-glyph-half) - 0.4em);
-}
-
-.card-row-chart {
+.sarmg-card__row-chart {
   align-items: stretch;
 }
 
-.card-row-chart .card-row-label {
+.sarmg-card__row-chart .sarmg-card__label {
   align-self: flex-start;
   padding-top: 3px;
 }
 
-.card-row-chart .card-row-content {
+.sarmg-card__row-chart .sarmg-card__content {
   position: relative;
   align-items: stretch;
 }
@@ -162,43 +59,16 @@
 
 .metric-chart-slot {
   grid-row: span 4;
-  /* 抵消文字起点留白，使图表水平方向与内容卡边框对齐。 */
-  margin-inline-start: calc(-1 * var(--content-card-text-start));
-  margin-inline-end: calc(-1 * var(--content-card-text-start));
-  margin-bottom: 0;
+  margin-inline: calc(-1 * var(--sarmg-card-text-start));
 }
 
-.card-row-content .card-action-button,
-.card-row-content a.card-action-button {
-  min-width: 0;
-  min-height: 0;
-  padding: 0;
-  gap: 0;
-  background: transparent;
-  border: none;
-  border-radius: 0;
-}
-
-.card-row-content .card-action-button svg,
-.card-row-content a.card-action-button svg {
+.sarmg-card__content .sarmg-card__action svg,
+.sarmg-card__content a.sarmg-card__action svg {
   display: none;
 }
 
-.card-row-content > .card-actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  width: 100%;
-  gap: 0.5em;
-}
-
-/* 内容块按产品规则统一使用常规字重。 */
-.content-card,
-.content-card strong,
-.content-card b,
-.content-card .metric-row-value,
-.content-card .card-action-button,
-.content-card .tag-chip span,
-.content-card .inline-field span {
+.sarmg-card .metric-row-value,
+.sarmg-card .tag-chip span,
+.sarmg-card .inline-field span {
   font-weight: 400;
 }

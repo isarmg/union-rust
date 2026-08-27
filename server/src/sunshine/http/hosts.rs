@@ -15,8 +15,8 @@ pub(crate) async fn list_hosts(
     // Hold both guards in the canonical host -> health order while composing
     // one response. Releasing the host guard before reading health allowed a
     // concurrent PATCH/DELETE to pair old hosts with a new health snapshot.
-    let hosts = state.hosts.sunshine.read().await;
-    let health = state.hosts.sunshine_health.read().await;
+    let hosts = state.sunshine.hosts.read().await;
+    let health = state.sunshine.health.read().await;
     let infos = hosts
         .iter()
         .map(|host| host_info(host, health.get(&host.id)))
@@ -53,8 +53,8 @@ async fn create_host_and_publish(
     new_host: SunshineHostConfig,
     after_database_commit: impl std::future::Future<Output = ()> + Send,
 ) -> AppResult<SunshineHostInfo> {
-    let _settings_guard = state.hosts.settings_lock.lock().await;
-    let mut hosts = state.hosts.sunshine.read().await.clone();
+    let _settings_guard = state.sunshine.settings_lock.lock().await;
+    let mut hosts = state.sunshine.hosts.read().await.clone();
     hosts.push(new_host.clone());
     let audit_detail = format!(
         "name={} host={} port={} verify_tls={}",
@@ -63,19 +63,19 @@ async fn create_host_and_publish(
     // The whole mutation runs in a detached task. The database helper commits
     // internally, so request cancellation must not be allowed to stop this
     // task between that commit and publishing the matching memory snapshot.
-    let mut stored_hosts = state.hosts.sunshine.write().await;
-    let mut health = state.hosts.sunshine_health.write().await;
+    let mut stored_hosts = state.sunshine.hosts.write().await;
+    let mut health = state.sunshine.health.write().await;
     database::insert_sunshine_host(state.db().as_ref(), &new_host, &audit_detail).await?;
     after_database_commit.await;
     *stored_hosts = hosts;
     health.insert(
         new_host.id.clone(),
-        crate::state::SunshineHostHealth::pending(),
+        crate::sunshine::SunshineHostHealth::pending(),
     );
     drop(health);
     drop(stored_hosts);
     drop(_settings_guard);
-    state.hosts.sunshine_health_refresh.notify_one();
+    state.sunshine.health_refresh.notify_one();
     Ok(host_info(&new_host, None))
 }
 
@@ -110,8 +110,8 @@ async fn update_host_and_publish(
     after_database_commit: impl std::future::Future<Output = ()> + Send,
 ) -> AppResult<SunshineHostInfo> {
     let update_password = req.password.is_some();
-    let _settings_guard = state.hosts.settings_lock.lock().await;
-    let mut hosts = state.hosts.sunshine.read().await.clone();
+    let _settings_guard = state.sunshine.settings_lock.lock().await;
+    let mut hosts = state.sunshine.hosts.read().await.clone();
     let host = hosts
         .iter_mut()
         .find(|h| h.id == id)
@@ -150,8 +150,8 @@ async fn update_host_and_publish(
         "name={} host={} port={} verify_tls={}",
         host_clone.name, host_clone.host, host_clone.web_port, host_clone.verify_tls
     );
-    let mut stored_hosts = state.hosts.sunshine.write().await;
-    let mut health = state.hosts.sunshine_health.write().await;
+    let mut stored_hosts = state.sunshine.hosts.write().await;
+    let mut health = state.sunshine.health.write().await;
     let found = database::update_sunshine_host(
         state.db().as_ref(),
         &host_clone,
@@ -166,12 +166,12 @@ async fn update_host_and_publish(
     *stored_hosts = hosts;
     health.insert(
         host_clone.id.clone(),
-        crate::state::SunshineHostHealth::pending(),
+        crate::sunshine::SunshineHostHealth::pending(),
     );
     drop(health);
     drop(stored_hosts);
     drop(_settings_guard);
-    state.hosts.sunshine_health_refresh.notify_one();
+    state.sunshine.health_refresh.notify_one();
     Ok(host_info(&host_clone, None))
 }
 
@@ -191,13 +191,13 @@ async fn delete_host_and_publish(
     id: String,
     after_database_commit: impl std::future::Future<Output = ()> + Send,
 ) -> AppResult<StatusCode> {
-    let _settings_guard = state.hosts.settings_lock.lock().await;
-    let mut hosts = state.hosts.sunshine.read().await.clone();
+    let _settings_guard = state.sunshine.settings_lock.lock().await;
+    let mut hosts = state.sunshine.hosts.read().await.clone();
     if !hosts.iter().any(|host| host.id == id) {
         return Err(AppError::NotFound(format!("Sunshine 主机 '{id}' 不存在")));
     }
-    let mut stored_hosts = state.hosts.sunshine.write().await;
-    let mut health = state.hosts.sunshine_health.write().await;
+    let mut stored_hosts = state.sunshine.hosts.write().await;
+    let mut health = state.sunshine.health.write().await;
     let found = database::delete_sunshine_host(state.db().as_ref(), &id).await?;
     if !found {
         return Err(AppError::NotFound(format!("Sunshine 主机 '{id}' 不存在")));
@@ -209,7 +209,7 @@ async fn delete_host_and_publish(
     drop(health);
     drop(stored_hosts);
     drop(_settings_guard);
-    state.hosts.sunshine_health_refresh.notify_one();
+    state.sunshine.health_refresh.notify_one();
     Ok(axum::http::StatusCode::NO_CONTENT) // 删除成功返回 204 No Content
 }
 
@@ -220,7 +220,7 @@ pub(crate) async fn host_status(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> AppResult<Json<SunshineStatus>> {
-    let hosts = state.hosts.sunshine.read().await;
+    let hosts = state.sunshine.hosts.read().await;
     let host = hosts
         .iter()
         .find(|host| host.id == id)
@@ -231,7 +231,7 @@ pub(crate) async fn host_status(
             "该 Sunshine 主机已禁用 TLS 验证；请先编辑配置并启用验证".to_string(),
         ));
     }
-    let health = state.hosts.sunshine_health.read().await;
+    let health = state.sunshine.health.read().await;
     let status = crate::sunshine::status::sunshine_host_status(&host, health.get(&id));
     // Make the consistency scope explicit; both guards cover response assembly.
     drop(health);
@@ -344,7 +344,7 @@ mod tests {
             .expect("detached mutation stopped when its waiter was cancelled");
         tokio::time::timeout(
             Duration::from_secs(2),
-            state.hosts.sunshine_health_refresh.notified(),
+            state.sunshine.health_refresh.notified(),
         )
         .await
         .expect("detached mutation did not publish its memory snapshot");
@@ -399,8 +399,8 @@ mod tests {
         cancel_waiter_after_commit(&state, create_waiter, committed, release).await;
         assert!(
             state
-                .hosts
                 .sunshine
+                .hosts
                 .read()
                 .await
                 .iter()
@@ -415,9 +415,9 @@ mod tests {
             1
         );
 
-        state.hosts.sunshine_health.write().await.insert(
+        state.sunshine.health.write().await.insert(
             host.id.clone(),
-            crate::state::SunshineHostHealth::completed(true, &Ok(())),
+            crate::sunshine::SunshineHostHealth::completed(true, &Ok(())),
         );
         let (pause, committed, release) = commit_pause();
         let update_waiter = request_waiter(
@@ -433,13 +433,13 @@ mod tests {
             ),
         );
         cancel_waiter_after_commit(&state, update_waiter, committed, release).await;
-        let memory_name = state.hosts.sunshine.read().await[0].name.clone();
+        let memory_name = state.sunshine.hosts.read().await[0].name.clone();
         let stored = database::load_sunshine_hosts(state.db().as_ref())
             .await
             .expect("reload updated host");
         assert_eq!(memory_name, "after-update");
         assert_eq!(stored[0].name, memory_name);
-        let health = state.hosts.sunshine_health.read().await;
+        let health = state.sunshine.health.read().await;
         assert_eq!(health[&host.id].reachable, None);
         drop(health);
 
@@ -449,8 +449,8 @@ mod tests {
             delete_host_and_publish(state.clone(), host.id.clone(), pause),
         );
         cancel_waiter_after_commit(&state, delete_waiter, committed, release).await;
-        assert!(state.hosts.sunshine.read().await.is_empty());
-        assert!(state.hosts.sunshine_health.read().await.is_empty());
+        assert!(state.sunshine.hosts.read().await.is_empty());
+        assert!(state.sunshine.health.read().await.is_empty());
         assert!(
             database::load_sunshine_hosts(state.db().as_ref())
                 .await

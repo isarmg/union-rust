@@ -46,6 +46,8 @@ unionc-protocol.workspace = true
 uuid.workspace = true
 # 0.13: rustls 成为默认 TLS 后端，feature 名从 rustls-tls 改为 rustls
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+sarmg-platform-axum = { path = "../../platform/crates/axum" }
+sarmg-platform-core = { path = "../../platform/crates/core" }
 
 [dev-dependencies]
 tempfile = "3"

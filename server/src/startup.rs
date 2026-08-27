@@ -51,6 +51,7 @@ pub async fn initialize() -> anyhow::Result<InitializedApp> {
     let resources = crate::system::ResourceMonitor::start().await;
     let state = AppState::new(settings, db, dummy_password_hash, local_config, resources)?;
     start_service_status_probe(state.clone());
+    crate::platform::start_external_service_probes(state.clone());
     // 内存态和持久历史分别回收；SQLite 在 HTTP 服务启动前已经完成打开与校验，因此
     // 保留期任务在每次正常启动中都存在，不会出现“配置数据库后忘记重启而不清理”的窗口。
     start_memory_gc(state.clone());
@@ -245,7 +246,7 @@ fn start_service_status_probe(state: AppState) {
         loop {
             let configuration_changed = tokio::select! {
                 biased;
-                () = status_state.hosts.sunshine_health_refresh.notified() => true,
+                () = status_state.sunshine.health_refresh.notified() => true,
                 _ = ticker.tick() => false,
             };
             if configuration_changed {
@@ -358,7 +359,7 @@ fn start_memory_gc(state: AppState) {
                 tracing::info!("maintenance: removed {expired} expired sessions");
             }
             let buckets = state
-                .agents
+                .monitoring
                 .prune_report_buckets(std::time::Instant::now())
                 .await;
             if buckets > 0 {

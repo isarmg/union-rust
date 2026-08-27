@@ -494,7 +494,7 @@ async fn delete_host(
     {
         return Err(AppError::NotFound("monitored host not found".to_string()));
     }
-    state.agents.forget_host(&host_id).await;
+    state.monitoring.forget_host(&host_id).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

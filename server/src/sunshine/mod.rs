@@ -5,6 +5,9 @@
 pub mod client;
 pub mod http;
 pub mod model;
+mod state;
 pub mod status;
+
+pub use state::{SunshineHostHealth, SunshineState};
 
 pub use model::*;

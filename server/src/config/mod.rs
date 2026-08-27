@@ -1,5 +1,7 @@
 //! UnionC 控制台配置模型。
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -43,6 +45,14 @@ pub struct Settings {
     pub server: ServerSettings,
     pub database: DatabaseSettings,
     pub sunshine: SunshineSettings,
+    pub platform: PlatformSettings,
+}
+
+#[derive(Clone, Default)]
+pub struct PlatformSettings {
+    /// Browser-visible and server-probeable base URLs, indexed by stable module id.
+    /// Values are deployment configuration and are never persisted in a business database.
+    pub service_urls: BTreeMap<String, String>,
 }
 
 #[derive(Clone)]

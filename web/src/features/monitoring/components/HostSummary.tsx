@@ -22,7 +22,7 @@ export function LiveMetrics({ host, report }: {
   const disk = sumNullable(host.disk_read_bytes_per_second, host.disk_written_bytes_per_second);
   const memory = report?.system.memory;
   return (
-    <div className="content-grid metric-grid">
+    <div className="sarmg-grid metric-grid">
       <Metric
         label="CPU"
         value={formatPercent(host.cpu_usage_percent)}

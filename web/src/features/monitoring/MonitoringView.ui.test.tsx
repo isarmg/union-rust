@@ -197,8 +197,8 @@ describe("monitoring host detail panel", () => {
 
     await user.click(within(dialog).getByRole("tab", { name: "历史" }));
     await waitFor(() => expect(api.monitoringHistory).toHaveBeenCalledWith(host.id));
-    expect(container.querySelector(".monitoring-history-panel .content-grid.metric-grid")).toBeTruthy();
-    expect(container.querySelectorAll(".monitoring-history-panel article.content-card.metric")).toHaveLength(6);
+    expect(container.querySelector(".monitoring-history-panel .sarmg-grid.metric-grid")).toBeTruthy();
+    expect(container.querySelectorAll(".monitoring-history-panel article.sarmg-card.metric")).toHaveLength(6);
 
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "书房主机 详情面板" })).toBeNull();

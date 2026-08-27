@@ -28,7 +28,7 @@ export function HistoryMetrics({ points }: { points: MonitoringHistoryPoint[] })
   const detail = points.length ? `${points.length} 个采样点` : NA;
 
   return (
-    <div className="content-grid metric-grid">
+    <div className="sarmg-grid metric-grid">
       <Metric label="CPU" value={formatPercent(latestHistoryValue(cpu))} detail={detail} tone={metricTone(latestHistoryValue(cpu))} sparkData={cpu} sparkMax={100} />
       <Metric label="内存" value={formatPercent(latestHistoryValue(memory))} detail={detail} tone={metricTone(latestHistoryValue(memory))} sparkData={memory} sparkMax={100} sparkColor="var(--warn)" />
       <Metric label="GPU" value={formatPercent(latestHistoryValue(gpu))} detail={detail} tone={metricTone(latestHistoryValue(gpu))} sparkData={gpu} sparkMax={100} sparkColor="var(--accent)" />

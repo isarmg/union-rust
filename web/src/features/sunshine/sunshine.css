@@ -68,7 +68,7 @@
 
 /* ─── Sunshine 主机卡片 ────────────────────────────────────────────────────── */
 
-/* 卡片本体：card-inner 处理内部布局 */
+/* 卡片本体：sarmg-card__inner 处理内部布局 */
 .sunshine-host-card {
   cursor: default;
 }
@@ -510,14 +510,14 @@ button.icon-button.danger:hover {
  * var(--surface-dark, rgba(255,255,255,0.04)) 中第二个参数是"回退值"：
  * 如果 --surface-dark 变量未定义，就使用 rgba(255,255,255,0.04)（4% 白色透明叠加），
  * 在深色背景上产生轻微分层感。 */
-[data-theme="dark"] .sunshine-app-item,
-[data-theme="dark"] .sunshine-client-item,
-[data-theme="dark"] .sunshine-config-row:nth-child(even) {
+[data-sarmg-theme="dark"] .sunshine-app-item,
+[data-sarmg-theme="dark"] .sunshine-client-item,
+[data-sarmg-theme="dark"] .sunshine-config-row:nth-child(even) {
   background: var(--surface-dark, rgba(255,255,255,0.04));
 }
 
-[data-theme="dark"] .sunshine-system-card,
-[data-theme="dark"] .sunshine-app-form {
+[data-sarmg-theme="dark"] .sunshine-system-card,
+[data-sarmg-theme="dark"] .sunshine-app-form {
   background: var(--panel-dark, rgba(255,255,255,0.06));
 }
 

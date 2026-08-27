@@ -36,7 +36,7 @@ export function OverviewView({
     <section className="view-stack">
       <section className="section-band metric-section">
         <SectionHeader icon={MonitorDot} title="监控" />
-        <div className="content-grid metric-grid">
+        <div className="sarmg-grid metric-grid">
           <Metric
             label="服务"
             value={`${healthyCount}/${services.length}`}
@@ -97,7 +97,7 @@ export function OverviewView({
       <section className="section-band">
         <SectionHeader icon={Server} title="服务概览" />
         {loading ? <LoadingBlock label="正在读取服务状态" /> : null}
-        <div className="content-grid service-grid">
+        <div className="sarmg-grid service-grid">
           {services.map((service) => (
             <ServiceCard key={service.name} service={service} compact />
           ))}
@@ -106,11 +106,11 @@ export function OverviewView({
 
       <section className="section-band">
         <SectionHeader icon={HardDrive} title="磁盘" />
-        <div className="content-grid disk-list">
+        <div className="sarmg-grid disk-list">
           {(resources ? resources.disks : []).map((disk) => {
             const used = disk.total_bytes - disk.available_bytes;
             return (
-              <div className="content-card disk-card" key={`${disk.name}-${disk.mount_point}`}>
+              <div className="sarmg-card disk-card" key={`${disk.name}-${disk.mount_point}`}>
                 <CardInner>
                   <CardRow label="设备">
                     <TruncatedText>

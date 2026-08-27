@@ -56,9 +56,9 @@ function AccountSection({ onPasswordChanged }: { onPasswordChanged: () => void }
     <section className="section-band">
       <SectionHeader icon={KeyRound} title="账号管理" />
       {meQuery.error ? <InlineNotice tone="danger" text={`账号信息读取失败：${meQuery.error.message}`} /> : null}
-      <div className="content-grid settings-grid">
+      <div className="sarmg-grid settings-grid">
         <form
-          className="content-card setting-item account-card-form"
+          className="sarmg-card setting-item account-card-form"
           aria-label="修改管理员密码"
           onSubmit={(event) => {
             event.preventDefault();
@@ -117,7 +117,7 @@ function AccountSection({ onPasswordChanged }: { onPasswordChanged: () => void }
             <CardActions>
               <button
                 type="submit"
-                className="card-action-button primary"
+                className="sarmg-card__action sarmg-action-primary"
                 disabled={!canSubmit}
               >
                 {changeMutation.isPending

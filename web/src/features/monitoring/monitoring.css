@@ -20,8 +20,8 @@
   background: var(--surface);
 }
 
-.monitoring-view .inline-notice + .content-grid,
-.monitoring-view .loading-block + .content-grid {
+.monitoring-view .inline-notice + .sarmg-grid,
+.monitoring-view .loading-block + .sarmg-grid {
   margin-top: var(--content-block-gap);
 }
 

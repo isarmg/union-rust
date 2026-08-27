@@ -137,7 +137,7 @@ pub(crate) async fn ready(
 
 /// 返回所有受管 Sunshine 主机的当前运行状态列表。
 pub(crate) async fn services(State(state): State<AppState>) -> Json<Vec<ServiceStatus>> {
-    Json(crate::sunshine::status::all_services(&state).await)
+    Json(state.services.snapshot().await)
 }
 
 /// 返回最近一次系统资源快照（CPU、内存、磁盘、网络吞吐）。
@@ -221,7 +221,7 @@ pub(crate) async fn events(
             return;
         }
         // 先立即推送当前快照，新连接无需等待下一个探测周期。
-        let initial = crate::sunshine::status::all_services(&state).await;
+        let initial = state.services.snapshot().await;
         if *shutdown.borrow() || session_cancellation.is_cancelled() {
             return;
         }
@@ -241,7 +241,7 @@ pub(crate) async fn events(
                     // 本连接消费过慢被落下：直接跳到最新状态即可，状态推送没有补发意义。
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
                         tracing::debug!("SSE 客户端落后 {skipped} 条状态更新，已跳到最新");
-                        let latest = crate::sunshine::status::all_services(&state).await;
+                        let latest = state.services.snapshot().await;
                         yield Ok(sse_event(latest));
                     }
                     // 所有发送端都已释放时结束本流。

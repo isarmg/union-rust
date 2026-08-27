@@ -40,8 +40,7 @@ fn console_routes() -> Router<AppState> {
     Router::new()
         .merge(crate::auth::http::router())
         .merge(crate::system::http::router())
-        .merge(crate::monitoring::http::console_router())
-        .merge(crate::sunshine::http::router())
+        .merge(crate::platform::console_router())
 }
 
 /// 构造整个 HTTP API 路由树。
@@ -57,7 +56,7 @@ fn router_with_body_deadline(state: AppState, body_deadline: std::time::Duration
     Router::new()
         .merge(console)
         // Agent 路由分别使用 Bearer、Pairing secret 或短时 capability，不套会话中间件。
-        .merge(crate::monitoring::http::agent_router())
+        .merge(crate::platform::public_router())
         // Defensive fallback for any route that does not declare a smaller
         // contract. The largest supported console payload is Sunshine config
         // at 1 MiB; auth and Agent routers override this with tighter limits.

@@ -7,86 +7,42 @@
  * 3. 后面的 class 基本和 App.tsx 里的组件同名，可以一边看组件一边找样式。
  * 4. CSS 里大量使用 CSS 变量，例如 --text、--surface，方便浅色/深色主题切换。
  */
-/* 全局盒模型修正。
- * 默认的 box-sizing: content-box 会让 padding 和 border "向外"撑大元素：
- *   你写 width: 100px; padding: 10px，实际占用宽度会变成 120px，布局容易出错。
- * border-box 则把 padding 和 border "算进" width 里：
- *   写 width: 100px，实际占用就是 100px，内容区缩小但外框不变，更符合直觉。
- * * 选择器匹配所有元素，一次性统一修改，是现代 CSS 的标准起手式。 */
-* {
-  box-sizing: border-box;
-}
-
-html {
-  /* 禁止浏览器（尤其是移动端 Safari）在横屏时自动放大字体。
-     移动浏览器会在页面宽度不足时自动放大字号，可能破坏精心设计的布局，
-     设为 100% 表示"不自动调整，尊重 CSS 里写的字号"。 */
-  text-size-adjust: 100%;
-}
-
 body {
-  margin: 0;          /* 浏览器默认给 body 加了 8px 外边距，这里清除掉，避免出现意外空白 */
-  min-width: 320px;   /* 最窄不低于 320px（iPhone SE 的宽度），防止内容被挤得无法阅读 */
-  min-height: 100vh;  /* vh = viewport height，100vh 等于屏幕高度，确保背景色铺满全屏 */
-  font-family: var(--font-sans);
-  line-height: 1.5;
-  /* overflow-wrap: anywhere 允许浏览器在任意字符处换行（包括中文、长URL、哈希值等）。
-     没有这条规则，超长的不带空格文字（如 https://very-long-url.com/...）会撑破容器，
-     出现横向滚动条。anywhere 比 break-word 更激进，连单词中间也可以断行。 */
-  overflow-wrap: anywhere;
-}
-
-/* 表单元素字体重置。
- * 浏览器对 button/input/select/textarea 有自己的默认字体（通常是系统 UI 字体），
- * 不会自动继承父元素的 font-family。
- * font: inherit 是简写，同时继承字体族、字号、字重等，让表单元素与正文保持一致。 */
-button,
-input,
-select,
-textarea {
-  font: inherit;
-  line-height: inherit;
-}
-
-h1,
-h2,
-h3 {
-  line-height: 1.2;  /* 标题行高比正文更紧，视觉上更紧凑有力 */
-  /* text-wrap: balance 让多行标题换行更均衡，避免最后一行只剩一两个字（孤行）。
-     浏览器会自动调整每行的断行位置，让各行长度尽量接近。
-     只对标题等少量文字有效，长段落不建议使用（性能较差）。 */
-  text-wrap: balance;
-  overflow-wrap: anywhere; /* 同 body，防止长单词/URL 撑破标题区域 */
-}
-
-p,
-li,
-dt,
-dd,
-label,
-button,
-input,
-select,
-textarea,
-th,
-td,
-a {
-  overflow-wrap: anywhere;
-}
-
-button {
-  cursor: pointer;
-}
-
-button:disabled {
-  cursor: not-allowed; /* 鼠标悬停时显示"禁止"图标，提示用户按钮不可点击 */
-  opacity: 0.58;       /* 半透明表示禁用状态，比直接隐藏更友好，让用户知道按钮存在但不可用 */
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
 }
 
 /* 应用主容器：使用 grid 把左侧导航和右侧内容区分成两列。
  * min-width 确保内容块不会因视口过窄而被压缩；
  * 窄屏时页面横向滚动，而不是缩小卡片。 */
 .app-shell {
+  /* Temporary product aliases keep existing feature CSS independent of the package internals. */
+  --content-block-gap: var(--sarmg-content-gap);
+  --theme-block-gap: var(--sarmg-theme-gap);
+  --theme-title-size: calc(var(--sarmg-content-gap) * 4 / 3);
+  --bg: var(--sarmg-background);
+  --surface: var(--sarmg-surface);
+  --surface-strong: var(--sarmg-surface-strong);
+  --border: var(--sarmg-border);
+  --text: var(--sarmg-text);
+  --muted: var(--sarmg-muted);
+  --subtle: var(--sarmg-subtle);
+  --primary: var(--sarmg-primary);
+  --primary-strong: var(--sarmg-primary-strong);
+  --danger: var(--sarmg-danger);
+  --danger-soft: var(--sarmg-danger-soft);
+  --good: var(--sarmg-success);
+  --good-soft: var(--sarmg-success-soft);
+  --warn: var(--sarmg-warning);
+  --warn-soft: var(--sarmg-warning-soft);
+  --accent: var(--sarmg-accent);
+  --radius-control: var(--sarmg-radius-control);
+  --radius-card: var(--sarmg-radius-card);
+  --radius-panel: var(--sarmg-radius-panel);
+  --radius: var(--sarmg-radius-control);
+  --shadow: var(--sarmg-shadow);
+  --card-width: calc((100vw - 144px) / 6);
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -94,6 +50,10 @@ button:disabled {
   padding: 16px;
   color: var(--text);
   background: var(--bg);
+}
+
+.app-shell.sarmg-login {
+  padding: 24px;
 }
 
 /* 顶部横向导航栏：品牌 + 导航项 + 右侧状态工具。 */
@@ -146,6 +106,7 @@ button:disabled {
   text-align: left;
   line-height: 1.25;
   white-space: nowrap;
+  text-decoration: none;
 }
 
 .nav-item svg {
@@ -374,20 +335,6 @@ h1 {
   border-color: var(--border);
 }
 
-/* 圆形 LED 状态指示灯：直径 = 0.8em（与当前字体等高），纯色圆，无文字 */
-.status-led {
-  display: inline-block;
-  width: 0.8em;
-  height: 0.8em;
-  border-radius: 50%;
-  flex-shrink: 0;
-  vertical-align: middle;
-}
-
-.status-led.good   { background: var(--good); }
-.status-led.warn   { background: var(--warn); }
-.status-led.danger { background: var(--danger); }
-
 .inline-notice {
   display: flex;
   align-items: center;
@@ -415,13 +362,13 @@ h1 {
 }
 
 /* 内容块内所有子组件继承统一字体大小 */
-.card-inner .tag-chip,
-.card-inner .muted-inline {
+.sarmg-card__inner .tag-chip,
+.sarmg-card__inner .muted-inline {
   font-size: inherit;
   min-height: unset;
 }
 
-.card-inner .tag-chip {
+.sarmg-card__inner .tag-chip {
   padding: 1px 5px;
 }
 
@@ -661,7 +608,7 @@ dd {
   height: var(--nav-icon-size);
 }
 
-/* 卡片宽度由 content-grid 的列数决定。 */
+/* 卡片宽度由 sarmg-grid 的列数决定。 */
 .service-action-row > .service-card {
   width: auto;
 }
@@ -688,7 +635,7 @@ dd {
   gap: 16px;
 }
 
-/* 磁盘卡片外观由统一规则提供，内部布局由 card-inner 处理 */
+/* 磁盘卡片外观由统一规则提供，内部布局由 sarmg-card__inner 处理 */
 
 .progress {
   height: 8px;
@@ -780,83 +727,6 @@ pre {
 .search-box.full-width,
 .search-box.full-width input {
   width: 100%;
-}
-
-/* 独立登录页使用应用会话完成认证。 */
-.login-screen {
-  min-height: 100vh;
-  min-height: 100dvh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow-y: auto;
-  padding: 24px;
-  background: var(--bg);
-  color: var(--text);
-}
-
-.login-card {
-  width: min(380px, 100%);
-  flex: 0 0 auto;
-  color: var(--text);
-}
-
-.login-card .login-input {
-  width: 100%;
-  min-width: 0;
-  padding: 0;
-  color: var(--text);
-  background: transparent;
-  border: 0;
-  border-bottom: 1px solid transparent;
-  outline: 0;
-}
-
-.login-card .card-row:has(.login-input),
-.login-card .card-inner > .card-row:nth-child(5) {
-  grid-template-columns: minmax(0, 1fr);
-  column-gap: 0;
-}
-
-.login-card .card-row:has(.login-input) > .card-row-label,
-.login-card .card-inner > .card-row:nth-child(5) > .card-row-label {
-  display: none;
-}
-
-.login-card .login-label-icon {
-  display: inline-grid;
-  place-items: center;
-  width: 1em;
-  height: 1em;
-  border: 1px solid currentColor;
-  border-radius: 0.25em;
-  flex: 0 0 1em;
-}
-
-.login-card .card-row-label:has(.login-label-icon) {
-  gap: 1ch;
-}
-
-.login-card .login-label-icon svg {
-  width: 0.65em;
-  height: 0.65em;
-  stroke-width: 1.75;
-}
-
-.login-card .login-input:focus {
-  border-bottom-color: var(--primary);
-}
-
-.login-card .login-error {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--danger);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.login-card .card-actions {
-  grid-template-columns: 1fr;
 }
 
 .settings-panel-actions {

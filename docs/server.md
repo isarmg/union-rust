@@ -98,6 +98,9 @@ sudo systemctl start unionc
 - 首次部署：`UNIONC_ALLOW_BOOTSTRAP=1` + `UNIONC_BOOTSTRAP_PASSWORD`（至少 12 个字符），
   管理员配置和数据库创建完成后应移除这两项
 - 可选 `UNIONC_SERVER_BIND`、`UNIONC_SERVER_PORT`（适合容器和测试覆盖）
+- 可选服务模块入口 `SARMG_SENTINEL_URL`、`SARMG_PHOTO_BACKUP_URL`、`SARMG_DUFS_URL`；
+  值必须是不带凭据、query 或 fragment 的 HTTP(S) base URL。UnionC 只做公开 liveness 探测并
+  在新标签页打开服务，不转发 UnionC Cookie 或充当通用反向代理
 - 可选 `UNIONC_SECRET_KEY_ID`、`UNIONC_SECRET_KEY_PREVIOUS`、`UNIONC_RETENTION_DAYS`、
   `UNIONC_TELEMETRY_RETENTION_DAYS`（审计/遥测分别默认 90/30 天）
 

@@ -50,7 +50,7 @@ export function HostCard({ host, selected, updating, onOpen, onDelete, onInlineU
 
   return (
     <article
-      className={`content-card service-card sunshine-host-card${selected ? " active" : ""}`}
+      className={`sarmg-card service-card sunshine-host-card${selected ? " active" : ""}`}
       aria-busy={controlsDisabled}
       aria-label={`${host.name}，${connectionLabel}`}
     >
@@ -119,7 +119,7 @@ export function HostCard({ host, selected, updating, onOpen, onDelete, onInlineU
           {host.password_set ? (
             <button
               type="button"
-              className="card-action-button danger"
+              className="sarmg-card__action sarmg-action-danger"
               disabled={controlsDisabled}
               aria-label={`清空 ${host.name} 的 Sunshine 密码`}
               title="清空密码"
@@ -134,7 +134,7 @@ export function HostCard({ host, selected, updating, onOpen, onDelete, onInlineU
         <CardRow label="TLS">
           <button
             type="button"
-            className="card-action-button"
+            className="sarmg-card__action"
             disabled={controlsDisabled}
             title={controlsDisabled ? "正在保存主机，请稍候" : "仅开发模式允许关闭证书验证；生产模式会拒绝此操作"}
             onClick={() => {
@@ -149,20 +149,20 @@ export function HostCard({ host, selected, updating, onOpen, onDelete, onInlineU
         <CardActions>
           <button
             type="button"
-            className="card-action-button"
+            className="sarmg-card__action"
             disabled={controlsDisabled}
             onClick={(event) => onOpen(event.currentTarget)}
           >
             <Edit2 size={12} /><span>{selected ? "收起管理" : "管理"}</span>
           </button>
-          <button type="button" className="card-action-button danger" disabled={controlsDisabled} onClick={onDelete}>
+          <button type="button" className="sarmg-card__action sarmg-action-danger" disabled={controlsDisabled} onClick={onDelete}>
             <Trash2 size={12} /><span>删除</span>
           </button>
           <a
             href={controlsDisabled ? undefined : host.web_url}
             target="_blank"
             rel="noopener noreferrer"
-            className="card-action-button primary"
+            className="sarmg-card__action sarmg-action-primary"
             aria-disabled={controlsDisabled}
             tabIndex={controlsDisabled ? -1 : undefined}
             onClick={(event) => { if (controlsDisabled) event.preventDefault(); }}

@@ -1,7 +1,7 @@
-import { FormEvent, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Check, Gamepad2, LayoutDashboard, Lock, LogIn, MonitorCog, Moon, Plus, Power,
-  RefreshCw, Settings, Sun, Terminal, User, X,
+  Camera, Check, ExternalLink, FolderOpen, Images, LayoutDashboard, Lock, LogIn, Moon,
+  Plus, Power, RefreshCw, Settings, Sun, Terminal, User, X,
 } from "lucide-react";
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -17,23 +17,22 @@ import { parseAgentActivationRoute } from "../features/agent-activation/route";
 import { useEventStream, useMetricHistory } from "./hooks";
 import { OverviewView } from "../features/overview/OverviewView";
 import { AgentActivationPage } from "../features/agent-activation/AgentActivationPage";
-// 其余功能按视图懒加载；只看总览的用户无需下载 Sunshine、监控、日志和设置代码。
-const SunshineView = lazy(() => import("../features/sunshine/SunshineView").then((m) => ({ default: m.SunshineView })));
+// 产品内置视图按需加载；业务模块自身的懒加载入口集中在 moduleRegistry。
 const LogsView = lazy(() => import("../features/logs/LogsView").then((m) => ({ default: m.LogsView })));
 const SettingsView = lazy(() => import("../features/settings/SettingsView").then((m) => ({ default: m.SettingsView })));
-const MonitoringView = lazy(() => import("../features/monitoring/MonitoringView").then((m) => ({ default: m.MonitoringView })));
+import { embeddedModuleById, embeddedModules } from "./moduleRegistry";
+import { platformApi } from "../features/platform/api";
+import { platformQueryKeys } from "../features/platform/queryKeys";
+import type { PlatformModule } from "../features/platform/types";
 import { CardActions, CardInner, CardRow, InlineNotice, LoadingBlock } from "../shared/components/ui";
 
-const navItems = [
+const coreNavItems = [
   { key: "overview", label: "总览", icon: LayoutDashboard },
-  { key: "monitoring", label: "主机", icon: MonitorCog },
-  { key: "sunshine", label: "Sunshine", icon: Gamepad2 },
   { key: "logs", label: "日志", icon: Terminal },
   { key: "settings", label: "设置", icon: Settings },
 ] as const satisfies ReadonlyArray<{
   key: string; label: string; icon: React.ComponentType<{ size?: number }>;
 }>;
-type ViewKey = (typeof navItems)[number]["key"];
 type Theme = "light" | "dark";
 const THEME_STORAGE_KEY = "unionc-theme";
 
@@ -52,19 +51,19 @@ function AuthedApp({
   onLogout: () => Promise<void>;
   onPasswordChanged: () => void;
 }) {
-  const [view, setView] = useState<ViewKey>("overview");
+  const [view, setView] = useState("overview");
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
-  const monitoringAddSequenceRef = useRef(0);
-  const sunshineAddSequenceRef = useRef(0);
-  const [monitoringAddTrigger, setMonitoringAddTrigger] = useState<number | null>(null);
-  const [sunshineAddTrigger, setSunshineAddTrigger] = useState<number | null>(null);
+  const addSequencesRef = useRef<Record<string, number>>({});
+  const [addTriggers, setAddTriggers] = useState<Record<string, number>>({});
   const queryClient = useQueryClient();
   const eventStream = useEventStream();
-  const handleMonitoringAddTrigger = useCallback((trigger: number) => {
-    setMonitoringAddTrigger((current) => current === trigger ? null : current);
-  }, []);
-  const handleSunshineAddTrigger = useCallback((trigger: number) => {
-    setSunshineAddTrigger((current) => current === trigger ? null : current);
+  const handleAddTrigger = useCallback((moduleId: string, trigger: number) => {
+    setAddTriggers((current) => {
+      if (current[moduleId] !== trigger) return current;
+      const next = { ...current };
+      delete next[moduleId];
+      return next;
+    });
   }, []);
 
   useEffect(() => {
@@ -83,14 +82,90 @@ function AuthedApp({
     refetchInterval: 20_000,
   });
   const history = useMetricHistory(resourcesQuery.data);
+  const modulesQuery = useQuery({
+    queryKey: platformQueryKeys.modules,
+    queryFn: platformApi.modules,
+  });
+  const installedModules = useMemo(() => {
+    if (modulesQuery.data) return modulesQuery.data;
+    return embeddedModules.map((module): PlatformModule => ({
+      schema_version: 1,
+      id: module.id,
+      display_name: module.fallbackLabel,
+      description: "内置模块",
+      version: "bundled",
+      execution: "in_process",
+      ui: { kind: "embedded", route: `/modules/${module.id}` },
+      capabilities: [],
+      service: null,
+      database: {},
+      configured: true,
+      health: "available",
+      health_message: "已编译到当前发行版",
+      launch_url: null,
+      checked_at: null,
+    }));
+  }, [modulesQuery.data]);
+  const embeddedNavigation = installedModules.filter((module) => (
+    module.configured && module.ui.kind === "embedded" && embeddedModuleById.has(module.id)
+  ));
+  const externalNavigation = installedModules.filter((module) => (
+    module.configured && module.ui.kind === "external" && module.launch_url
+  ));
+  const activeModule = embeddedModuleById.get(view);
   const services = servicesQuery.data ?? [];
   const unhealthy = services.filter((service) => !service.healthy);
 
   return (
-    <div className="app-shell" data-theme={theme}>
+    <div className="app-shell sarmg-theme" data-sarmg-scope data-sarmg-theme={theme}>
       <aside className="sidebar">
         <nav className="nav-list" aria-label="UnionC 导航">
-          {navItems.map(({ key, label, icon: Icon }) => (
+          {coreNavItems.slice(0, 1).map(({ key, label, icon: Icon }) => (
+            <button
+              key={key}
+              className={view === key ? "nav-item active" : "nav-item"}
+              aria-current={view === key ? "page" : undefined}
+              type="button"
+              onClick={() => setView(key)}
+              title={label}
+            >
+              <Icon size={18} /><span>{label}</span>
+            </button>
+          ))}
+          {embeddedNavigation.map((module) => {
+            const definition = embeddedModuleById.get(module.id)!;
+            const Icon = definition.icon;
+            return (
+              <button
+                key={module.id}
+                className={view === module.id ? "nav-item active" : "nav-item"}
+                aria-current={view === module.id ? "page" : undefined}
+                type="button"
+                onClick={() => setView(module.id)}
+                title={module.description}
+              >
+                <Icon size={18} /><span>{module.display_name}</span>
+              </button>
+            );
+          })}
+          {externalNavigation.map((module) => {
+            const Icon = module.id === "sentinel-monitor"
+              ? Camera
+              : module.id === "photo-backup" ? Images : module.id === "dufs" ? FolderOpen : ExternalLink;
+            return (
+              <a
+                key={module.id}
+                className="nav-item"
+                href={module.launch_url!}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={`${module.description}（在新标签页打开）`}
+              >
+                <Icon size={18} /><span>{module.display_name}</span>
+              </a>
+            );
+          })}
+          {coreNavItems.slice(1).map(({ key, label, icon: Icon }) => (
             <button
               key={key}
               className={view === key ? "nav-item active" : "nav-item"}
@@ -104,20 +179,16 @@ function AuthedApp({
           ))}
         </nav>
         <div className="sidebar-footer">
-          {(view === "sunshine" || view === "monitoring") && (
+          {activeModule && (
             <button
               className="icon-button"
               type="button"
-              title={view === "sunshine" ? "新建 Sunshine 实例" : "创建 Agent"}
-              aria-label={view === "sunshine" ? "新建 Sunshine 实例" : "创建 Agent"}
+              title={activeModule.createLabel}
+              aria-label={activeModule.createLabel}
               onClick={() => {
-                if (view === "sunshine") {
-                  sunshineAddSequenceRef.current += 1;
-                  setSunshineAddTrigger(sunshineAddSequenceRef.current);
-                } else {
-                  monitoringAddSequenceRef.current += 1;
-                  setMonitoringAddTrigger(monitoringAddSequenceRef.current);
-                }
+                const next = (addSequencesRef.current[activeModule.id] ?? 0) + 1;
+                addSequencesRef.current[activeModule.id] = next;
+                setAddTriggers((current) => ({ ...current, [activeModule.id]: next }));
               }}
             >
               <Plus size={18} />
@@ -144,6 +215,7 @@ function AuthedApp({
       </aside>
       <main className="main">
         {eventStream.error && <InlineNotice tone="warn" text={eventStream.error} />}
+        {modulesQuery.error && <InlineNotice tone="warn" text={`模块目录读取失败，正在使用内置目录：${modulesQuery.error.message}`} />}
         {servicesQuery.error && <InlineNotice tone="danger" text={`服务状态读取失败：${servicesQuery.error.message}`} />}
         {resourcesQuery.error && <InlineNotice tone="danger" text={`系统资源读取失败：${resourcesQuery.error.message}`} />}
         {view === "overview" && (
@@ -157,18 +229,10 @@ function AuthedApp({
         )}
         {/* 懒加载的分块在切换视图时才请求，用 Suspense 兜住这段空窗。 */}
         <Suspense fallback={<LoadingBlock label="正在加载视图…" />}>
-          {view === "monitoring" && (
-            <MonitoringView
-              addTrigger={monitoringAddTrigger ?? 0}
-              onAddTriggerHandled={handleMonitoringAddTrigger}
-            />
-          )}
-          {view === "sunshine" && (
-            <SunshineView
-              addTrigger={sunshineAddTrigger ?? 0}
-              onAddTriggerHandled={handleSunshineAddTrigger}
-            />
-          )}
+          {activeModule && activeModule.render({
+            addTrigger: addTriggers[activeModule.id] ?? 0,
+            onAddTriggerHandled: (trigger) => handleAddTrigger(activeModule.id, trigger),
+          })}
           {view === "logs" && <LogsView />}
           {view === "settings" && <SettingsView onPasswordChanged={onPasswordChanged} />}
         </Suspense>
@@ -197,16 +261,16 @@ function LoginScreen({
     finally { setSubmitting(false); }
   };
   return (
-    <main className="app-shell login-screen">
-      <form className="content-card login-card" onSubmit={submit} aria-label="登录 UnionC 管理中心">
+    <main className="app-shell sarmg-theme sarmg-login" data-sarmg-scope data-sarmg-theme="system">
+      <form className="sarmg-card sarmg-login__card" onSubmit={submit} aria-label="登录 UnionC 管理中心">
         <CardInner>
-          <CardRow label={<><span className="login-label-icon"><User /></span>账号</>} />
-          <CardRow label=""><input className="login-input" aria-label="账号" value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" autoFocus required /></CardRow>
-          <CardRow label={<><span className="login-label-icon"><Lock /></span>密码</>} />
-          <CardRow label=""><input className="login-input" aria-label="密码" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /></CardRow>
-          <CardRow label="" row={5}>{error ? <span className="login-error" role="alert">{error}</span> : null}</CardRow>
-          <CardActions label={<><span className="login-label-icon"><LogIn /></span>操作</>}>
-            <button className="card-action-button primary" type="submit" disabled={loginBlocked || submitting || !username.trim() || !password}>
+          <CardRow label={<><span className="sarmg-login__label-icon"><User /></span>账号</>} />
+          <CardRow label=""><input className="sarmg-login__input" aria-label="账号" value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" autoFocus required /></CardRow>
+          <CardRow label={<><span className="sarmg-login__label-icon"><Lock /></span>密码</>} />
+          <CardRow label=""><input className="sarmg-login__input" aria-label="密码" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /></CardRow>
+          <CardRow label="" row={5}>{error ? <span className="sarmg-login__error" role="alert">{error}</span> : null}</CardRow>
+          <CardActions label={<><span className="sarmg-login__label-icon"><LogIn /></span>操作</>}>
+            <button className="sarmg-card__action sarmg-action-primary" type="submit" disabled={loginBlocked || submitting || !username.trim() || !password}>
               <span>{loginBlocked ? "正在退出…" : submitting ? "正在登录…" : "登录"}</span>
             </button>
           </CardActions>
@@ -226,13 +290,13 @@ function SessionBoundary({
   onPasswordChanged: () => void;
 }) {
   const meQuery = useQuery({ queryKey: authQueryKeys.me, queryFn: authApi.authenticate, retry: false });
-  if (meQuery.isPending) return <main className="app-shell login-screen"><LoadingBlock label="正在验证会话" /></main>;
+  if (meQuery.isPending) return <main className="app-shell sarmg-theme sarmg-login" data-sarmg-scope data-sarmg-theme="system"><LoadingBlock label="正在验证会话" /></main>;
   if (meQuery.isError) {
     if (meQuery.error instanceof ApiError && meQuery.error.status === 401) {
       return <LoginScreen onLogin={onLogin} />;
     }
     return (
-      <main className="app-shell login-screen">
+      <main className="app-shell sarmg-theme sarmg-login" data-sarmg-scope data-sarmg-theme="system">
         <section className="session-error-card" role="alert">
           <h1>无法验证会话</h1>
           <p>{meQuery.error.message}</p>

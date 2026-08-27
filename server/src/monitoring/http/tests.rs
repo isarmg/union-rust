@@ -308,7 +308,7 @@ mod tests {
         }
 
         let quota_state = state();
-        *quota_state.agents.pairing_attempts.lock().await =
+        *quota_state.monitoring.pairing_attempts.lock().await =
             std::iter::repeat_n(Instant::now(), MAX_PAIRING_GLOBAL).collect();
         let quota_app = agent_router().with_state(quota_state);
         for path in PATHS {
@@ -433,11 +433,11 @@ mod tests {
         let attacker = "203.0.113.9".parse().unwrap();
         let other = "198.51.100.20".parse().unwrap();
         let now = Instant::now();
-        state.agents.report_auth_attempts_by_ip.lock().await.insert(
+        state.monitoring.report_auth_attempts_by_ip.lock().await.insert(
             attacker,
             std::iter::repeat_n(now, MAX_REPORT_AUTH_PER_IP).collect(),
         );
-        *state.agents.report_auth_attempts.lock().await =
+        *state.monitoring.report_auth_attempts.lock().await =
             std::iter::repeat_n(now, MAX_REPORT_AUTH_PER_IP).collect();
 
         assert!(matches!(
@@ -453,7 +453,7 @@ mod tests {
     #[tokio::test]
     async fn unauthenticated_report_global_flood_is_bounded() {
         let state = state();
-        *state.agents.report_auth_attempts.lock().await =
+        *state.monitoring.report_auth_attempts.lock().await =
             std::iter::repeat_n(Instant::now(), MAX_REPORT_AUTH_GLOBAL).collect();
         assert!(matches!(
             check_report_auth_rate(&state, None).await,
@@ -467,17 +467,17 @@ mod tests {
         let source = "2001:db8::1".parse().unwrap();
         let now = Instant::now();
 
-        *state.agents.pairing_attempts.lock().await =
+        *state.monitoring.pairing_attempts.lock().await =
             std::iter::repeat_n(now, MAX_PAIRING_GLOBAL).collect();
         assert!(check_pairing_rate(&state, Some(source)).await.is_err());
-        assert!(state.agents.pairing_attempts_by_ip.lock().await.is_empty());
+        assert!(state.monitoring.pairing_attempts_by_ip.lock().await.is_empty());
 
-        *state.agents.report_auth_attempts.lock().await =
+        *state.monitoring.report_auth_attempts.lock().await =
             std::iter::repeat_n(now, MAX_REPORT_AUTH_GLOBAL).collect();
         assert!(check_report_auth_rate(&state, Some(source)).await.is_err());
         assert!(
             state
-                .agents
+                .monitoring
                 .report_auth_attempts_by_ip
                 .lock()
                 .await

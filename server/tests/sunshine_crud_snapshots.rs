@@ -15,7 +15,8 @@ use unionc::{
     config::{LocalConfig, Settings},
     http,
     infra::database,
-    state::{AppState, LocalSession, SunshineHostHealth},
+    state::{AppState, LocalSession},
+    sunshine::SunshineHostHealth,
     system::ResourceMonitor,
 };
 
@@ -128,7 +129,7 @@ async fn crud_returns_pending_snapshots_without_waiting_for_health_probe() {
     assert!(listed[0]["reachable"].is_null());
 
     // 模拟当前配置曾经是绿色；任何配置修改都必须立即覆盖为 pending，而不是沿用。
-    state.hosts.sunshine_health.write().await.insert(
+    state.sunshine.health.write().await.insert(
         host_id.clone(),
         SunshineHostHealth::completed(true, &Ok(())),
     );
@@ -166,12 +167,7 @@ async fn crud_returns_pending_snapshots_without_waiting_for_health_probe() {
     .expect("delete response");
     assert_eq!(delete.status(), StatusCode::NO_CONTENT);
     assert!(
-        !state
-            .hosts
-            .sunshine_health
-            .read()
-            .await
-            .contains_key(&host_id),
+        !state.sunshine.health.read().await.contains_key(&host_id),
         "删除主机必须同步清掉健康快照"
     );
 }

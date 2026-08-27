@@ -21,7 +21,7 @@ export function ServiceCard({
   compact?: boolean;
 }) {
   return (
-    <article className={compact ? "content-card service-card compact" : "content-card service-card"}>
+    <article className={compact ? "sarmg-card service-card compact" : "sarmg-card service-card"}>
       <CardInner>
         <CardRow label="名称">
           <TruncatedText grow><TickerText>{service.name}</TickerText></TruncatedText>

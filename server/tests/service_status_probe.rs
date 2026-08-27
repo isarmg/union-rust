@@ -1,7 +1,7 @@
 //! 服务状态探测的读写分离。
 //!
 //! 回归目标：
-//! 1. `all_services`（HTTP `/api/services` 与 SSE 两条读路径共用）过去会**自己发起
+//! 1. `ServiceStatusState::snapshot`（HTTP `/api/services` 与 SSE 两条读路径共用）过去会**自己发起
 //!    探测**，导致每个 SSE 连接各跑一遍，对被监控主机的压力随客户端数放大；
 //! 2. 并发上限和快/慢探测解耦在 `sunshine::status` 的单元测试中用可控
 //!    future 覆盖，不依赖公网路由、TCP 超时或 CI 机器的墙钟负载。
@@ -10,7 +10,6 @@ use unionc::{
     config::{LocalConfig, Settings, SunshineHostConfig},
     infra::database,
     state::AppState,
-    sunshine::status::all_services,
     system::ServiceStatus,
 };
 
@@ -61,9 +60,9 @@ async fn reading_statuses_never_probes_the_network() {
         message: "must be returned verbatim".into(),
         updated_at: "fixed-test-time".into(),
     };
-    *state.services.snapshot.write().await = vec![sentinel];
+    state.services.publish("test", vec![sentinel]).await;
 
-    let statuses = all_services(&state).await;
+    let statuses = state.services.snapshot().await;
 
     assert_eq!(statuses.len(), 1);
     assert_eq!(statuses[0].name, "cached-sentinel");

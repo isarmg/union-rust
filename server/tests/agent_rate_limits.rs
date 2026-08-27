@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 use unionc::{
     config::{LocalConfig, Settings},
     infra::database,
-    state::{AppState, TokenBucket},
+    monitoring::{REPORT_BUCKET_CAPACITY, REPORT_BUCKET_REFILL_PER_SECOND},
+    state::AppState,
 };
 use uuid::Uuid;
 
@@ -19,12 +20,12 @@ use uuid::Uuid;
 
 /// `AgentReport::validate()` 允许的最小上报间隔是 0.1 秒，即 10 次/秒。
 /// 补充速率必须高于它，否则配置合法的 Agent 会被自家限流挡住。
-const _: () = assert!(TokenBucket::REFILL_PER_SECOND > 10.0);
+const _: () = assert!(REPORT_BUCKET_REFILL_PER_SECOND > 10.0);
 
 /// Agent 断线恢复时一轮最多补传 32 个批次
 /// （见 agent/src/agent_app/delivery/spool.rs 的 flush_spool）。
 /// 桶容量小于这个数，恢复过程就会被限流打断。
-const _: () = assert!(TokenBucket::CAPACITY >= 32.0);
+const _: () = assert!(REPORT_BUCKET_CAPACITY >= 32.0);
 
 fn state() -> AppState {
     let mut settings = Settings::default();
@@ -58,7 +59,7 @@ async fn the_fastest_legitimate_reporting_rate_is_never_throttled() {
     for tick in 0..300 {
         let now = start + Duration::from_millis(tick * 100);
         assert!(
-            state.agents.allow_report(&host, now).await,
+            state.monitoring.allow_report(&host, now).await,
             "第 {tick} 次上报被限流——最快合法速率不应触发限流"
         );
     }
@@ -72,7 +73,7 @@ async fn a_spool_recovery_burst_passes_in_one_round() {
     let now = Instant::now();
     for index in 0..32 {
         assert!(
-            state.agents.allow_report(&host, now).await,
+            state.monitoring.allow_report(&host, now).await,
             "补传第 {index} 个批次被限流"
         );
     }
@@ -88,17 +89,16 @@ async fn an_abusive_burst_is_throttled_once_the_bucket_empties() {
     // 同一瞬间狂发：先耗尽容量，随后必被拒绝。
     let mut allowed = 0;
     for _ in 0..1000 {
-        if state.agents.allow_report(&host, now).await {
+        if state.monitoring.allow_report(&host, now).await {
             allowed += 1;
         }
     }
     assert_eq!(
-        allowed,
-        TokenBucket::CAPACITY as usize,
+        allowed, REPORT_BUCKET_CAPACITY as usize,
         "瞬时放行量应恰为桶容量"
     );
     assert!(
-        !state.agents.allow_report(&host, now).await,
+        !state.monitoring.allow_report(&host, now).await,
         "桶耗尽后必须继续拒绝"
     );
 }
@@ -111,10 +111,10 @@ async fn throttling_one_host_does_not_affect_others() {
     let quiet = Uuid::new_v4().to_string();
     let now = Instant::now();
 
-    while state.agents.allow_report(&noisy, now).await {}
+    while state.monitoring.allow_report(&noisy, now).await {}
 
     assert!(
-        state.agents.allow_report(&quiet, now).await,
+        state.monitoring.allow_report(&quiet, now).await,
         "一台主机耗尽配额后，其他主机被连带限流了"
     );
 }
@@ -126,18 +126,18 @@ async fn the_bucket_refills_over_time() {
     let host = Uuid::new_v4().to_string();
     let now = Instant::now();
 
-    while state.agents.allow_report(&host, now).await {}
-    assert!(!state.agents.allow_report(&host, now).await);
+    while state.monitoring.allow_report(&host, now).await {}
+    assert!(!state.monitoring.allow_report(&host, now).await);
 
     // 一秒后应至少回填 REFILL_PER_SECOND 个令牌。
     let later = now + Duration::from_secs(1);
     let mut refilled = 0;
-    while state.agents.allow_report(&host, later).await {
+    while state.monitoring.allow_report(&host, later).await {
         refilled += 1;
     }
     assert!(
-        refilled >= TokenBucket::REFILL_PER_SECOND as usize - 1,
+        refilled >= REPORT_BUCKET_REFILL_PER_SECOND as usize - 1,
         "一秒后仅回填 {refilled} 个令牌，低于预期的 {}",
-        TokenBucket::REFILL_PER_SECOND
+        REPORT_BUCKET_REFILL_PER_SECOND
     );
 }

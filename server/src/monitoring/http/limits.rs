@@ -17,7 +17,7 @@ pub(super) async fn check_pairing_rate(
     client: Option<std::net::IpAddr>,
 ) -> AppResult<()> {
     let now = Instant::now();
-    let mut global = state.agents.pairing_attempts.lock().await;
+    let mut global = state.monitoring.pairing_attempts.lock().await;
     prune_pairing_attempts(&mut global, now);
     if global.len() >= MAX_PAIRING_GLOBAL {
         return Err(AppError::TooManyRequests(
@@ -25,7 +25,7 @@ pub(super) async fn check_pairing_rate(
         ));
     }
     if let Some(address) = client {
-        let mut by_ip = state.agents.pairing_attempts_by_ip.lock().await;
+        let mut by_ip = state.monitoring.pairing_attempts_by_ip.lock().await;
         if by_ip.len() >= MAX_PAIRING_GLOBAL * 2 {
             by_ip.retain(|_, attempts| {
                 prune_pairing_attempts(attempts, now);
@@ -63,7 +63,7 @@ pub(super) async fn check_report_auth_rate(
     client: Option<std::net::IpAddr>,
 ) -> AppResult<()> {
     let now = Instant::now();
-    let mut global = state.agents.report_auth_attempts.lock().await;
+    let mut global = state.monitoring.report_auth_attempts.lock().await;
     prune_report_auth_attempts(&mut global, now);
     if global.len() >= MAX_REPORT_AUTH_GLOBAL {
         return Err(AppError::TooManyRequests(
@@ -71,7 +71,7 @@ pub(super) async fn check_report_auth_rate(
         ));
     }
     if let Some(address) = client {
-        let mut by_ip = state.agents.report_auth_attempts_by_ip.lock().await;
+        let mut by_ip = state.monitoring.report_auth_attempts_by_ip.lock().await;
         if by_ip.len() >= MAX_REPORT_AUTH_GLOBAL * 2 {
             by_ip.retain(|_, attempts| {
                 prune_report_auth_attempts(attempts, now);
@@ -105,7 +105,7 @@ pub(super) fn prune_report_auth_attempts(
 
 /// Authenticated report quota, keyed by host identity.
 pub(super) async fn check_report_rate(state: &AppState, host_id: &str) -> AppResult<()> {
-    if state.agents.allow_report(host_id, Instant::now()).await {
+    if state.monitoring.allow_report(host_id, Instant::now()).await {
         return Ok(());
     }
     Err(AppError::TooManyRequests(

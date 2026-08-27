@@ -34,6 +34,7 @@ pub mod error;
 pub mod http;
 pub mod infra;
 pub mod monitoring;
+pub mod platform;
 pub mod startup;
 pub mod state;
 pub mod sunshine;

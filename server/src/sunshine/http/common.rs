@@ -135,12 +135,12 @@ fn validate_opaque_string<'a>(label: &str, value: &'a str, max_chars: usize) -> 
 
 /// 按主机 ID 查找 Sunshine 主机配置，找不到则返回 404 错误。
 ///
-/// `state.hosts.sunshine` 是 `RwLock<Vec<SunshineHostConfig>>`：
+/// `state.sunshine.hosts` 是 `RwLock<Vec<SunshineHostConfig>>`：
 /// - `RwLock` 允许多个读者同时访问，但写者独占
 /// - `.read().await` 获取读锁（等待写锁释放后才能获取）
 /// - 此处只需要读取，所以用读锁（性能更好）
 pub(crate) async fn find_host(state: &AppState, id: &str) -> AppResult<SunshineHostConfig> {
-    let hosts = state.hosts.sunshine.read().await;
+    let hosts = state.sunshine.hosts.read().await;
     let host = hosts
         .iter()
         .find(|h| h.id == id) // 线性搜索（主机数量通常很少，无需索引）
@@ -230,9 +230,9 @@ pub(crate) async fn audit_best_effort(
 /// 不需要（也不应该）知道密码内容。这是 API 设计的安全最佳实践。
 pub(crate) fn host_info(
     host: &SunshineHostConfig,
-    health: Option<&crate::state::SunshineHostHealth>,
+    health: Option<&crate::sunshine::SunshineHostHealth>,
 ) -> SunshineHostInfo {
-    let pending = crate::state::SunshineHostHealth::pending();
+    let pending = crate::sunshine::SunshineHostHealth::pending();
     let health = health.unwrap_or(&pending);
     let probe_status = if health.reachable.is_some() && health.connected.is_some() {
         SunshineProbeStatus::Complete
@@ -364,7 +364,7 @@ mod tests {
         assert!(pending.connection_error.is_some());
 
         let failure = Err("Sunshine Web 端口不可达".to_string());
-        let unreachable = crate::state::SunshineHostHealth::completed(false, &failure);
+        let unreachable = crate::sunshine::SunshineHostHealth::completed(false, &failure);
         let complete = host_info(&host, Some(&unreachable));
         assert_eq!(complete.probe_status, SunshineProbeStatus::Complete);
         assert_eq!(complete.reachable, Some(false));
