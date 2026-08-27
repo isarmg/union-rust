@@ -33,6 +33,12 @@ pub(super) async fn enforce(
     request: Request,
     next: Next,
 ) -> Response {
+    // Photo/Dufs uploads have their own durable chunking, byte limits and idle/total deadlines.
+    // Applying the console's 30-second whole-body deadline outside the streaming gateway would
+    // abort valid large uploads before the worker contract can account for them.
+    if crate::platform::is_compiled_gateway_path(request.uri().path()) {
+        return next.run(request).await;
+    }
     // Empty request bodies cannot hold the server open. Avoid allocating a channel and timer for
     // the overwhelmingly common GET/HEAD requests and body-less mutations.
     if request.body().is_end_stream() {

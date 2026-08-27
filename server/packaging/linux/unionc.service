@@ -1,5 +1,5 @@
 [Unit]
-Description=UnionC console backend
+Description=Union service and private module supervisor
 Documentation=https://github.com/isarmg/union-rust
 After=network-online.target
 Wants=network-online.target
@@ -10,10 +10,10 @@ NotifyAccess=main
 TimeoutStartSec=60s
 User=unionc
 Group=unionc
-ExecStart=/usr/bin/unionc
+ExecStart=/opt/union/current/bin/unionc
 
-# 数据目录必须显式声明。UnionC 的 SQLite、管理员配置与开发主密钥都落在这里；
-# 早期版本用相对路径，工作目录一变就会"找不到配置"并静默新建一个管理员账号。
+# 数据目录必须显式声明；它包含核心私有状态与 modules/<id> 数据目录。
+# PostgreSQL 连接由环境文件提供，Dufs 的 SQLite 只存在于它自己的模块目录。
 Environment=UNIONC_DATA_DIR=/var/lib/unionc
 WorkingDirectory=/var/lib/unionc
 EnvironmentFile=-/etc/unionc/unionc.env

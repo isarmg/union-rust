@@ -207,11 +207,7 @@ fn is_state_changing(method: &Method) -> bool {
 }
 
 fn requires_database(path: &str) -> bool {
-    path == "/api/audit-logs"
-        || path == "/api/events"
-        || path == "/api/events/ticket"
-        || path.starts_with("/api/services")
-        || path.starts_with("/api/monitoring")
+    path == "/api/audit-logs" || path == "/api/events" || path == "/api/events/ticket"
 }
 
 #[cfg(test)]

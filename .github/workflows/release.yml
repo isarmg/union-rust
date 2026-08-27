@@ -1,4 +1,4 @@
-name: UnionC release artifacts
+name: Union release
 
 on:
   workflow_dispatch:
@@ -12,9 +12,6 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   verify-release-ref:
     name: verify release source
@@ -23,16 +20,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-      - name: Require version tags to belong to main
+          persist-credentials: false
+      - name: Require strict release tags from main
         shell: bash
         run: |
           set -euo pipefail
           if [[ "$GITHUB_REF" != refs/tags/* ]]; then
-            echo "Development artifact run; no release tag ancestry check is required."
+            echo "Manual validation build: no GitHub Release will be created."
             exit 0
           fi
           if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Release tag must be strict vMAJOR.MINOR.PATCH: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          workspace_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [[ "$GITHUB_REF_NAME" != "v$workspace_version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match workspace version $workspace_version" >&2
             exit 1
           fi
           git fetch --no-tags origin \
@@ -45,363 +48,132 @@ jobs:
           fi
 
   full-ci:
-    name: required full CI
+    name: required repository CI
     needs: verify-release-ref
     uses: ./.github/workflows/ci.yml
 
-  server-linux:
-    name: server (linux x86_64)
+  build-union:
+    name: build official full distribution
     needs: [verify-release-ref, full-ci]
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-        with:
-          toolchain: 1.98.0
-          targets: x86_64-unknown-linux-musl
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version: '1.26.7'
-          cache: false
-      - name: Install static Linux build toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes musl-tools
-      - name: Resolve and verify Server version
-        id: server_version
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo_version="$(
-            cargo metadata --locked --no-deps --format-version 1 \
-              | jq -r '.packages[] | select(.name == "unionc") | .version'
-          )"
-          if [[ ! "$cargo_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Server Cargo version is not strict MAJOR.MINOR.PATCH: $cargo_version" >&2
-            exit 1
-          fi
-          version="$cargo_version"
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            version="${GITHUB_REF_NAME#v}"
-            if [[ "$version" != "$cargo_version" ]]; then
-              echo "Tag version $version must match Server Cargo version $cargo_version" >&2
-              exit 1
-            fi
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - name: Validate Linux Server packaging lifecycle
-        run: sh server/packaging/linux/tests/test-lifecycle.sh
-      - name: Build release Server binary
-        run: cargo build --locked --release -p unionc --target x86_64-unknown-linux-musl
-      - name: Install pinned nFPM
-        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
-      - name: Build Server binary, DEB, and RPM artifacts
-        shell: bash
-        env:
-          SERVER_VERSION: ${{ steps.server_version.outputs.version }}
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          server_binary=target/x86_64-unknown-linux-musl/release/unionc
-          test -x "$server_binary"
-          if readelf -l "$server_binary" | grep -q 'Requesting program interpreter'; then
-            echo "Server release binary must be statically linked for cross-distribution packaging" >&2
-            exit 1
-          fi
-          install -Dm755 "$server_binary" \
-            "dist/unionc-server-${SERVER_VERSION}-linux-x86_64"
-
-          # nFPM's source path is intentionally fixed. Stage the already
-          # verified musl binary there instead of rebuilding a glibc binary.
-          install -Dm755 "$server_binary" target/release/unionc
-
-          nfpm_bin="$(go env GOPATH)/bin/nfpm"
-          NFPM_BIN="$nfpm_bin" NFPM_ARCH=amd64 \
-            server/packaging/linux/build-packages.sh
-
-          test -x "dist/unionc-server-${SERVER_VERSION}-linux-x86_64"
-          deb_dependencies="$(
-            dpkg-deb --field "dist/unionc_${SERVER_VERSION}_amd64.deb" Depends
-          )"
-          grep -Eq '(^|, )passwd($|,)' <<<"$deb_dependencies"
-          grep -Eq '(^|, )systemd($|,)' <<<"$deb_dependencies"
-          if grep -Eq '(^|, )adduser($|,)' <<<"$deb_dependencies"; then
-            echo "Server DEB must depend on passwd, not adduser" >&2
-            exit 1
-          fi
-
-          current_control="$RUNNER_TEMP/unionc-server-current-control"
-          mkdir -p "$current_control"
-          dpkg-deb --control \
-            "dist/unionc_${SERVER_VERSION}_amd64.deb" "$current_control"
-          test ! -e "$current_control/preinst"
-          grep -Fx 'service_name=unionc.service' "$current_control/postinst"
-          grep -F 'systemctl restart "$service_name"' "$current_control/postinst"
-          grep -F 'systemctl daemon-reload' "$current_control/postrm"
-          dpkg-deb --info "dist/unionc_${SERVER_VERSION}_amd64.deb"
-          dpkg-deb --contents "dist/unionc_${SERVER_VERSION}_amd64.deb"
-      - name: Smoke test Server DEB, fresh SQLite, same-version reinstall, backup, and restore
-        shell: bash
-        run: bash server/packaging/linux/tests/smoke-deb.sh --allow-system-changes
-      - name: Smoke test Server RPM dependencies, fresh SQLite, and same-version reinstall
-        shell: bash
-        run: bash server/packaging/linux/tests/smoke-rpm.sh
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: unionc-server-linux
-          path: |
-            dist/unionc-server-*-linux-x86_64
-            dist/unionc_*.deb
-            dist/unionc-*.rpm
-
-  linux:
-    needs: [verify-release-ref, full-ci]
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-        with:
-          toolchain: 1.98.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version: '1.26.7'
-          cache: false
-      - name: Resolve and verify Agent version
-        id: agent_version
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo_version="$(
-            cargo metadata --locked --no-deps --format-version 1 \
-              | jq -r '.packages[] | select(.name == "unionc-agent") | .version'
-          )"
-          if [[ ! "$cargo_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Agent Cargo version is not strict MAJOR.MINOR.PATCH: $cargo_version" >&2
-            exit 1
-          fi
-          version="$cargo_version"
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            version="${GITHUB_REF_NAME#v}"
-            if [[ "$version" != "$cargo_version" ]]; then
-              echo "Tag version $version must match Agent Cargo version $cargo_version" >&2
-              exit 1
-            fi
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - run: cargo build --locked --release -p unionc-agent
-      - name: Install pinned nFPM
-        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
-      - name: Build portable, DEB, and RPM artifacts from one package definition
-        shell: bash
-        env:
-          AGENT_VERSION: ${{ steps.agent_version.outputs.version }}
-        run: |
-          set -euo pipefail
-          version="$AGENT_VERSION"
-          bundle="dist/unionc-agent-linux-x86_64"
-          install -Dm755 target/release/unionc-agent "$bundle/unionc-agent"
-          install -Dm600 agent/config.example.json "$bundle/config.example.json"
-          install -Dm644 agent/packaging/linux/unionc-agent.service "$bundle/unionc-agent.service"
-          install -Dm644 agent/packaging/linux/unionc-agent-gpu.conf "$bundle/unionc-agent-gpu.conf"
-          install -Dm644 agent/packaging/linux/PORTABLE-README.md "$bundle/README.md"
-          source_date_epoch="$(git show -s --format=%ct "${GITHUB_SHA}^{commit}")"
-          bash .github/scripts/create-reproducible-tar.sh \
-            "$bundle" \
-            dist/unionc-agent-linux-x86_64.tar.gz \
-            "$source_date_epoch"
-
-          nfpm_bin="$(go env GOPATH)/bin/nfpm"
-          NFPM_BIN="$nfpm_bin" NFPM_ARCH=amd64 \
-            agent/packaging/linux/build-packages.sh
-
-          dpkg-deb --info "dist/unionc-agent_${version}_amd64.deb"
-          dpkg-deb --contents "dist/unionc-agent_${version}_amd64.deb"
-      - name: Test Linux packaging lifecycle helpers
-        run: sh agent/packaging/linux/tests/test-lifecycle.sh
-      - name: Smoke test DEB fresh install, ordinary remove, same-version reinstall, and purge
-        shell: bash
-        run: bash agent/packaging/linux/tests/smoke-deb.sh --allow-system-changes
-      - name: Smoke test RPM fresh install, ordinary remove, same-version reinstall, and purge
-        shell: bash
-        run: bash agent/packaging/linux/tests/smoke-rpm.sh
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: unionc-agent-linux
-          path: |
-            dist/*.deb
-            dist/*.rpm
-            dist/*.tar.gz
-
-  windows:
-    needs: [verify-release-ref, full-ci]
-    runs-on: windows-2025
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-        with:
-          toolchain: 1.98.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - name: Resolve MSI version
-        id: version
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0) { throw "cargo metadata failed." }
-          $agentPackage = @($metadata.packages | Where-Object name -eq "unionc-agent")
-          if ($agentPackage.Count -ne 1) {
-              throw "cargo metadata did not contain exactly one unionc-agent package."
-          }
-          $version = $agentPackage[0].version
-          if ($env:GITHUB_REF -like "refs/tags/v*") {
-              $version = $env:GITHUB_REF_NAME.Substring(1)
-          }
-          if ($version -notmatch '^\d+\.\d+\.\d+$') {
-              throw "Windows MSI releases require a strict vMAJOR.MINOR.PATCH tag; found '$version'."
-          }
-          if ($agentPackage[0].version -ne $version) {
-              throw "MSI version $version must exactly match the unionc-agent Cargo package version."
-          }
-          "version=$version" >> $env:GITHUB_OUTPUT
-      - name: Build native Windows service, tray companion, and maintenance helper
-        run: >-
-          cargo build --locked --release -p unionc-agent --target x86_64-pc-windows-msvc
-          --bin unionc-agent --bin unionc-agent-maintenance --bin unionc-agent-tray
-      - name: Verify native Windows PE subsystems
-        shell: powershell
-        run: agent\packaging\windows\tests\Test-PeSubsystems.ps1
-      - name: Validate WiX MSI authoring
-        shell: powershell
-        run: agent\packaging\windows\tests\Test-WixAuthoring.ps1
-      - name: Build unsigned MSI
-        shell: pwsh
-        env:
-          PRODUCT_VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $agent = Join-Path $env:GITHUB_WORKSPACE "target\x86_64-pc-windows-msvc\release\unionc-agent.exe"
-          $helper = Join-Path $env:GITHUB_WORKSPACE "target\x86_64-pc-windows-msvc\release\unionc-agent-maintenance.exe"
-          $tray = Join-Path $env:GITHUB_WORKSPACE "target\x86_64-pc-windows-msvc\release\unionc-agent-tray.exe"
-          & agent\packaging\windows\wix\build-msi.cmd $env:PRODUCT_VERSION $agent $helper $tray
-          if ($LASTEXITCODE -ne 0) { throw "WiX MSI build failed with exit code $LASTEXITCODE." }
-
-          $built = Join-Path $env:GITHUB_WORKSPACE (
-              "agent\packaging\windows\wix\bin\x64\Release\UnionC-Agent-{0}-x64.msi" -f $env:PRODUCT_VERSION
-          )
-          if (-not (Test-Path -LiteralPath $built -PathType Leaf)) {
-              throw "WiX did not create the expected MSI: $built"
-          }
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item -LiteralPath $built -Destination (
-              "dist\UnionC-Agent-{0}-x64-unsigned.msi" -f $env:PRODUCT_VERSION
-          )
-      - name: Smoke test native Windows MSI lifecycle
-        shell: pwsh
-        run: >-
-          agent\packaging\windows\tests\Test-MsiLifecycle.ps1
-          -ProductVersion "${{ steps.version.outputs.version }}"
-          -ArtifactDirectory dist
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: unionc-agent-windows
-          path: dist/*.msi
-
-  macos:
-    needs: [verify-release-ref, full-ci]
-    runs-on: macos-26
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-        with:
-          toolchain: 1.98.0
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - name: Resolve and verify Agent version
-        id: agent_version
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo_version="$(
-            cargo metadata --locked --no-deps --format-version 1 \
-              | jq -r '.packages[] | select(.name == "unionc-agent") | .version'
-          )"
-          if [[ ! "$cargo_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Agent Cargo version is not strict MAJOR.MINOR.PATCH: $cargo_version" >&2
-            exit 1
-          fi
-          version="$cargo_version"
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            version="${GITHUB_REF_NAME#v}"
-            if [[ "$version" != "$cargo_version" ]]; then
-              echo "Tag version $version must match Agent Cargo version $cargo_version" >&2
-              exit 1
-            fi
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - name: Build universal Agent binary
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo build --locked --release -p unionc-agent --no-default-features --features otlp \
-            --target aarch64-apple-darwin
-          cargo build --locked --release -p unionc-agent --no-default-features --features otlp \
-            --target x86_64-apple-darwin
-          lipo -create \
-            target/aarch64-apple-darwin/release/unionc-agent \
-            target/x86_64-apple-darwin/release/unionc-agent \
-            -output target/unionc-agent-universal
-      - name: Validate macOS packaging files
-        shell: bash
-        run: sh agent/packaging/macos/tests/validate-packaging.sh
-      - name: Build unsigned pkg
-        shell: bash
-        env:
-          AGENT_VERSION: ${{ steps.agent_version.outputs.version }}
-        run: |
-          set -euo pipefail
-          version="$AGENT_VERSION"
-          mkdir -p dist
-          BINARY="$GITHUB_WORKSPACE/target/unionc-agent-universal" \
-            VERSION="$version" \
-            OUTPUT="$GITHUB_WORKSPACE/dist/unionc-agent-$version-unsigned.pkg" \
-            agent/packaging/macos/build-pkg.sh
-      - name: Smoke test macOS fresh install, same-version reinstall, preserve uninstall, and purge
-        shell: bash
-        run: bash agent/packaging/macos/tests/smoke-pkg.sh --allow-system-changes
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: unionc-agent-macos
-          path: dist/*.pkg
+    permissions:
+      contents: read
+    uses: isarmg/union-builder/.github/workflows/build-union.yml@v1.0.0
+    with:
+      # Select Builder's versioned official graph instead of duplicating it here.
+      profile: full
+      artifact-name: union-distribution
 
   release:
+    name: publish one Union distribution
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [server-linux, linux, windows, macos]
+    needs: build-union
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          path: dist
-          merge-multiple: true
-      - name: Generate checksums
-        working-directory: dist
+          name: union-distribution
+          path: dist/builder-artifact
+      - name: Extract the mode-preserving Builder payload
         shell: bash
         run: |
           set -euo pipefail
-          find . -maxdepth 1 -type f ! -name 'SHA256SUMS*' -printf '%f\0' \
-            | sort -z \
-            | xargs -0 sha256sum > SHA256SUMS
-      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
-        with:
-          files: dist/*
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          prerelease: true
-          body: |
-            > [!WARNING]
-            > This prerelease intentionally contains unsigned artifacts.
-            > Windows Authenticode signing, macOS Developer ID signing/notarization,
-            > GPG manifest signing, and provenance attestation were not performed.
+          archive=dist/builder-artifact/union-distribution.tar
+          test -f "$archive"
+          test ! -L "$archive"
+          tar -tf "$archive" | while IFS= read -r entry; do
+            case "$entry" in
+              union-distribution|union-distribution/*) ;;
+              *) echo "unsafe Builder archive entry: $entry" >&2; exit 1 ;;
+            esac
+            case "/$entry/" in
+              */../*) echo "parent traversal in Builder archive: $entry" >&2; exit 1 ;;
+            esac
+          done
+          tar --extract --file "$archive" --directory dist --no-same-owner
+      - name: Validate manifest, version, and distribution checksums
+        id: release_metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          distribution=dist/union-distribution
+          manifest="$distribution/union-release.json"
+          test -f "$manifest"
+          test -f "$distribution/SHA256SUMS"
+          test -x "$distribution/bin/unionc"
+          if find "$distribution" ! -type f ! -type d -print -quit | grep -q .; then
+            echo "Builder distribution contains a symlink or special file" >&2
+            exit 1
+          fi
+          find "$distribution" -type f ! -name SHA256SUMS -printf '%P\n' \
+            | LC_ALL=C sort > "$RUNNER_TEMP/actual-files"
+          sed 's/^[0-9a-f]\{64\}  //' "$distribution/SHA256SUMS" \
+            | LC_ALL=C sort > "$RUNNER_TEMP/checksummed-files"
+          cmp "$RUNNER_TEMP/actual-files" "$RUNNER_TEMP/checksummed-files"
+
+          version="${GITHUB_REF_NAME#v}"
+          manifest_version="$(jq -er '.distribution.version' "$manifest")"
+          manifest_name="$(jq -er '.distribution.name' "$manifest")"
+          manifest_revision="$(jq -er '.distribution.revision' "$manifest")"
+          release_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          if [[ "$manifest_name" != "unionc" ]]; then
+            echo "Expected Union distribution name unionc, found $manifest_name" >&2
+            exit 1
+          fi
+          if [[ "$manifest_version" != "$version" ]]; then
+            echo "Tag version $version does not match union-release.json version $manifest_version" >&2
+            exit 1
+          fi
+          if [[ "$manifest_revision" != "$release_commit" ]]; then
+            echo "Manifest revision $manifest_revision does not match tag commit $release_commit" >&2
+            exit 1
+          fi
+          jq -e '
+            .schema_version == 1 and
+            ([.modules[].id] | sort) ==
+              ["dufs", "host-monitoring", "photo-backup", "sentinel-monitor", "sunshine"]
+          ' "$manifest" >/dev/null
+          jq -er '.modules[].executable' "$manifest" | while IFS= read -r executable; do
+            test -x "$distribution/$executable"
+          done
+          (
+            cd "$distribution"
+            sha256sum --check SHA256SUMS
+          )
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Create reproducible Union archive and outer checksum
+        shell: bash
+        env:
+          VERSION: ${{ steps.release_metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          archive_dir="union-${VERSION}-full-linux-x86_64"
+          mv dist/union-distribution "dist/$archive_dir"
+          source_date_epoch="$(git show -s --format=%ct "${GITHUB_SHA}^{commit}")"
+          bash .github/scripts/create-reproducible-tar.sh \
+            "dist/$archive_dir" \
+            "dist/$archive_dir.tar.gz" \
+            "$source_date_epoch"
+          (
+            cd dist
+            sha256sum "$archive_dir.tar.gz" > SHA256SUMS
+          )
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release_metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          archive="dist/union-${VERSION}-full-linux-x86_64.tar.gz"
+          gh release create "$GITHUB_REF_NAME" \
+            "$archive" \
+            dist/SHA256SUMS \
+            --verify-tag \
+            --title "Union ${VERSION}" \
+            --generate-notes

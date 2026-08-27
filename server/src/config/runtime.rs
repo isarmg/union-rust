@@ -1,7 +1,6 @@
 //! 启动环境覆盖、本地私有配置和目录初始化。
 
 use std::{
-    collections::BTreeMap,
     env::VarError,
     fs,
     io::Write,
@@ -20,8 +19,6 @@ type LocalConfigResult<T> = Result<T, LocalConfigError>;
 
 const DEFAULT_AUDIT_RETENTION_DAYS: i64 = 90;
 const MIN_AUDIT_RETENTION_DAYS: i64 = 7;
-const DEFAULT_TELEMETRY_RETENTION_DAYS: i64 = 30;
-const MIN_TELEMETRY_RETENTION_DAYS: i64 = 1;
 const MAX_RETENTION_DAYS: i64 = 3650;
 
 /// Process security mode, parsed exactly once before any mode-sensitive work.
@@ -62,11 +59,10 @@ impl FromStr for RuntimeMode {
     }
 }
 
-/// Validated retention policy used by the two database maintenance jobs.
+/// Validated retention policy used by the control-plane audit maintenance job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetentionSettings {
     pub audit_days: i64,
-    pub telemetry_days: i64,
 }
 
 /// Snapshot of every environment override used by `Settings` and startup.
@@ -80,7 +76,6 @@ pub struct RuntimeEnvironment {
     server_bind: Option<String>,
     server_port: Option<u16>,
     proxy_secret: Option<String>,
-    module_urls: BTreeMap<String, String>,
 }
 
 impl RuntimeEnvironment {
@@ -95,15 +90,12 @@ impl RuntimeEnvironment {
         let proxy_secret = unicode_environment_variable("UNIONC_PROXY_SECRET")?
             .map(|value| parse_proxy_secret(&value))
             .transpose()?;
-        let mut module_urls = BTreeMap::new();
-        for (module, variable) in [
-            ("sentinel-monitor", "SARMG_SENTINEL_URL"),
-            ("photo-backup", "SARMG_PHOTO_BACKUP_URL"),
-            ("dufs", "SARMG_DUFS_URL"),
+        for variable in [
+            "SARMG_SENTINEL_URL",
+            "SARMG_PHOTO_BACKUP_URL",
+            "SARMG_DUFS_URL",
         ] {
-            if let Some(value) = unicode_environment_variable(variable)? {
-                module_urls.insert(module.to_string(), parse_module_base_url(variable, &value)?);
-            }
+            reject_legacy_module_url(variable, unicode_environment_variable(variable)?)?;
         }
         let retention = RetentionSettings {
             audit_days: parse_retention_days(
@@ -112,12 +104,6 @@ impl RuntimeEnvironment {
                 DEFAULT_AUDIT_RETENTION_DAYS,
                 MIN_AUDIT_RETENTION_DAYS,
             )?,
-            telemetry_days: parse_retention_days(
-                "UNIONC_TELEMETRY_RETENTION_DAYS",
-                unicode_environment_variable("UNIONC_TELEMETRY_RETENTION_DAYS")?.as_deref(),
-                DEFAULT_TELEMETRY_RETENTION_DAYS,
-                MIN_TELEMETRY_RETENTION_DAYS,
-            )?,
         };
         Ok(Self {
             mode,
@@ -125,9 +111,18 @@ impl RuntimeEnvironment {
             server_bind,
             server_port,
             proxy_secret,
-            module_urls,
         })
     }
+}
+
+fn reject_legacy_module_url(name: &str, value: Option<String>) -> anyhow::Result<()> {
+    if value.is_some() {
+        bail!(
+            "{name} is no longer supported: compiled Union modules have a fixed loopback \
+             binding and cannot select an arbitrary runtime upstream"
+        );
+    }
+    Ok(())
 }
 
 impl Settings {
@@ -148,7 +143,6 @@ impl Settings {
         if let Some(secret) = runtime.proxy_secret.as_ref() {
             self.server.proxy_secret.clone_from(secret);
         }
-        self.platform.service_urls.clone_from(&runtime.module_urls);
         if self.production {
             let bind = self
                 .server
@@ -204,26 +198,6 @@ fn parse_proxy_secret(value: &str) -> anyhow::Result<String> {
         bail!("UNIONC_PROXY_SECRET must be exactly 64 lowercase hexadecimal characters");
     }
     Ok(value.to_string())
-}
-
-fn parse_module_base_url(name: &str, value: &str) -> anyhow::Result<String> {
-    let value = value.trim();
-    let mut url = reqwest::Url::parse(value)
-        .map_err(|_| anyhow::anyhow!("{name} must be an absolute HTTP(S) URL"))?;
-    if !matches!(url.scheme(), "http" | "https")
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        bail!("{name} must be an HTTP(S) base URL without credentials, query or fragment");
-    }
-    if !url.path().ends_with('/') {
-        let path = format!("{}/", url.path());
-        url.set_path(&path);
-    }
-    Ok(url.to_string())
 }
 
 fn parse_retention_days(
@@ -412,19 +386,14 @@ mod tests {
     }
 
     #[test]
-    fn module_base_urls_are_absolute_and_never_carry_credentials() {
-        assert_eq!(
-            parse_module_base_url("TEST_URL", "https://apps.example.test/sentinel").unwrap(),
-            "https://apps.example.test/sentinel/"
-        );
-        for invalid in [
-            "relative/path",
-            "ftp://apps.example.test/",
-            "https://user:secret@apps.example.test/",
-            "https://apps.example.test/?token=secret",
-            "https://apps.example.test/#section",
+    fn runtime_module_upstream_urls_are_rejected_even_when_loopback() {
+        assert!(reject_legacy_module_url("SARMG_DUFS_URL", None).is_ok());
+        for value in [
+            "http://127.0.0.1:18103/",
+            "https://remote.example.test/",
+            "",
         ] {
-            assert!(parse_module_base_url("TEST_URL", invalid).is_err());
+            assert!(reject_legacy_module_url("SARMG_DUFS_URL", Some(value.to_string())).is_err());
         }
     }
 

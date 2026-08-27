@@ -1,11 +1,6 @@
 import { lazy } from "react";
 import { Gamepad2, MonitorCog } from "lucide-react";
 
-const SunshineView = lazy(() => import("../features/sunshine/SunshineView")
-  .then((module) => ({ default: module.SunshineView })));
-const MonitoringView = lazy(() => import("../features/monitoring/MonitoringView")
-  .then((module) => ({ default: module.MonitoringView })));
-
 export interface EmbeddedModuleRenderContext {
   addTrigger: number;
   onAddTriggerHandled: (trigger: number) => void;
@@ -19,8 +14,12 @@ export interface EmbeddedModuleDefinition {
   render: (context: EmbeddedModuleRenderContext) => React.ReactNode;
 }
 
-export const embeddedModules: readonly EmbeddedModuleDefinition[] = [
-  {
+const selectedModules: EmbeddedModuleDefinition[] = [];
+
+if (__UNIONC_MODULE_HOST_MONITORING__) {
+  const MonitoringView = lazy(() => import("../features/monitoring/MonitoringView")
+    .then((module) => ({ default: module.MonitoringView })));
+  selectedModules.push({
     id: "host-monitoring",
     fallbackLabel: "主机",
     icon: MonitorCog,
@@ -31,8 +30,13 @@ export const embeddedModules: readonly EmbeddedModuleDefinition[] = [
         onAddTriggerHandled={onAddTriggerHandled}
       />
     ),
-  },
-  {
+  });
+}
+
+if (__UNIONC_MODULE_SUNSHINE__) {
+  const SunshineView = lazy(() => import("../features/sunshine/SunshineView")
+    .then((module) => ({ default: module.SunshineView })));
+  selectedModules.push({
     id: "sunshine",
     fallbackLabel: "Sunshine",
     icon: Gamepad2,
@@ -43,8 +47,10 @@ export const embeddedModules: readonly EmbeddedModuleDefinition[] = [
         onAddTriggerHandled={onAddTriggerHandled}
       />
     ),
-  },
-] as const;
+  });
+}
+
+export const embeddedModules: readonly EmbeddedModuleDefinition[] = selectedModules;
 
 export const embeddedModuleById = new Map(
   embeddedModules.map((module) => [module.id, module] as const),

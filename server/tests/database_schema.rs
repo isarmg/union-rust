@@ -200,12 +200,6 @@ async fn current_schema_is_versioned_and_idempotent() {
         Some(env!("CARGO_PKG_VERSION"))
     );
 
-    let baseline = Settings::default();
-    let loaded = database::load_app_settings(&pool, &baseline)
-        .await
-        .expect("load settings");
-    assert_eq!(loaded.server.port, baseline.server.port);
-    assert_eq!(loaded.sunshine.hosts.len(), baseline.sunshine.hosts.len());
     let obsolete_settings_table: i64 =
         query("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name='settings'")
             .fetch_one(&pool)
@@ -261,6 +255,8 @@ async fn current_schema_is_versioned_and_idempotent() {
         "only Sunshine hosts are accepted"
     );
 
+    // Domain tables remain as a read-only legacy cutover source until the PostgreSQL import
+    // evidence has been accepted. Union no longer has routes or stores that write them.
     let monitoring_tables = query(
         "SELECT COUNT(*) AS count FROM sqlite_schema \
          WHERE type='table' AND name IN ('monitored_hosts','agent_metric_reports')",

@@ -24,9 +24,7 @@ pub struct AppState {
     /// Monotonic process start marker. Wall-clock adjustments must never make
     /// a liveness uptime negative or jump it forwards.
     pub started_at: Instant,
-    pub sunshine: crate::sunshine::SunshineState,
     pub auth: AuthenticationState,
-    pub monitoring: crate::monitoring::MonitoringState,
     pub services: ServiceStatusState,
     /// Product-neutral module catalog and external service adapter snapshots.
     pub platform: crate::platform::PlatformState,
@@ -225,8 +223,7 @@ impl AppState {
         resources: crate::system::ResourceMonitor,
     ) -> anyhow::Result<Self> {
         let database_identity = DatabaseIdentity::capture(&settings)?;
-        let platform = crate::platform::PlatformState::new(&settings.platform)?;
-        let sunshine_hosts = settings.sunshine.hosts.clone();
+        let platform = crate::platform::PlatformState::new()?;
         let (shutdown, _) = tokio::sync::watch::channel(false);
         Ok(Self {
             settings: Arc::new(settings),
@@ -235,7 +232,6 @@ impl AppState {
             shutdown,
             database_health: Arc::new(Mutex::new(None)),
             started_at: Instant::now(),
-            sunshine: crate::sunshine::SunshineState::new(sunshine_hosts),
             auth: AuthenticationState {
                 sse_tickets: Arc::new(Mutex::new(HashMap::new())),
                 session_revocations: Arc::new(Mutex::new(HashMap::new())),
@@ -247,7 +243,6 @@ impl AppState {
                 local_config: Arc::new(RwLock::new(local_config)),
                 sessions: Arc::new(RwLock::new(HashMap::new())),
             },
-            monitoring: crate::monitoring::MonitoringState::new(),
             services: ServiceStatusState::new(),
             platform,
             resources,

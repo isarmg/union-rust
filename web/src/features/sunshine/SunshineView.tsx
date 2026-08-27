@@ -19,6 +19,7 @@ import { sunshineQueryKeys as queryKeys } from "./queryKeys";
 import type { SunshineHostInfo, SunshineHostPatchRequest, SunshineHostSaveRequest } from "./types";
 import { HostCard } from "./components/HostCard";
 import { HostPanel } from "./components/HostPanel";
+import "./sunshine.css";
 
 // Keep the tested feature helpers available from the public view module.
 export { InlineHostField } from "./components/HostCard";

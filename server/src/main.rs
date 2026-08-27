@@ -37,7 +37,6 @@ static LINUX_PACKAGE_VERSION_MARKER: [u8; SERVER_VERSION_OUTPUT.len() + 1] =
 enum Command {
     Serve,
     Version,
-    Rekey,
     ResetAdminPassword,
     Backup {
         output: std::path::PathBuf,
@@ -55,7 +54,6 @@ fn parse_command(arguments: impl IntoIterator<Item = String>) -> anyhow::Result<
     match arguments.as_slice() {
         [] => Ok(Command::Serve),
         [flag] if flag == "--version" => Ok(Command::Version),
-        [command] if command == "rekey" => Ok(Command::Rekey),
         [command] if command == "reset-admin-password" => Ok(Command::ResetAdminPassword),
         [command] if command == "integrity-check" => Ok(Command::IntegrityCheck),
         [command, flag, output]
@@ -83,7 +81,7 @@ fn parse_command(arguments: impl IntoIterator<Item = String>) -> anyhow::Result<
             })
         }
         _ => anyhow::bail!(
-            "invalid arguments; expected one of: --version; rekey; reset-admin-password; \
+            "invalid arguments; expected one of: --version; reset-admin-password; \
              backup --output PATH; restore --input PATH [--force]; integrity-check"
         ),
     }
@@ -106,7 +104,6 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", version_line());
             return Ok(());
         }
-        Command::Rekey => return startup::rekey().await,
         Command::ResetAdminPassword => {
             let (username, password) = startup::reset_admin_password().await?;
             println!("管理员密码已重置：{username} / {password}");
@@ -125,11 +122,13 @@ async fn main() -> anyhow::Result<()> {
     let app = http::router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(initialized.addr).await?;
+    unionc::platform::start_external_modules(state.clone()).await;
     tracing::info!("unionc listening on http://{}", initialized.addr);
     systemd::report_ready()?;
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(state))
+        .with_graceful_shutdown(shutdown_signal(state.clone()))
         .await?;
+    state.platform.stop_workers().await;
 
     Ok(())
 }
@@ -177,7 +176,7 @@ mod tests {
             parse_command(["--version".to_string()]).unwrap(),
             Command::Version
         );
-        assert_eq!(version_line(), "unionc 0.3.6");
+        assert_eq!(version_line(), "unionc 0.4.0");
         assert_eq!(LINUX_PACKAGE_VERSION_MARKER.last(), Some(&0));
         assert!(parse_command(["-V".to_string()]).is_err());
         assert!(parse_command(["--version".to_string(), "extra".to_string()]).is_err());

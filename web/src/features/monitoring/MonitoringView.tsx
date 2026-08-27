@@ -7,6 +7,7 @@ import { monitoringApi as api } from "./api";
 import { AgentInstances, HostRegistration } from "./components/AgentInstances";
 import { MonitoringHostPanel } from "./components/HardwareDetails";
 import { monitoringQueryKeys as queryKeys } from "./queryKeys";
+import "./monitoring.css";
 
 export {
   agentAuthorizationKeyGuidance,

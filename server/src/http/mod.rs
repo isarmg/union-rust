@@ -31,7 +31,10 @@ use axum::{
     middleware::{self, Next},
     response::Response,
 };
-use tower_http::trace::TraceLayer;
+use tower_http::{
+    services::{ServeDir, ServeFile},
+    trace::TraceLayer,
+};
 
 use crate::state::AppState;
 
@@ -41,6 +44,7 @@ fn console_routes() -> Router<AppState> {
         .merge(crate::auth::http::router())
         .merge(crate::system::http::router())
         .merge(crate::platform::console_router())
+        .merge(crate::platform::console_gateway_router())
 }
 
 /// 构造整个 HTTP API 路由树。
@@ -56,7 +60,14 @@ fn router_with_body_deadline(state: AppState, body_deadline: std::time::Duration
     Router::new()
         .merge(console)
         // Agent 路由分别使用 Bearer、Pairing secret 或短时 capability，不套会话中间件。
-        .merge(crate::platform::public_router())
+        .merge(crate::platform::public_worker_router())
+        // 编译期模块网关保留各 worker 自身的用户鉴权；Union 只提供传输边界、固定
+        // upstream 和进程级内部凭据，因此移动端 API 不要求额外携带 Union 管理台会话。
+        .merge(crate::platform::gateway_router())
+        // The only browser application in a release is Union's. Module frontends are either
+        // embedded chunks in this tree or assets reached through a fixed module gateway prefix.
+        .route_service("/", ServeFile::new(web_root().join("index.html")))
+        .nest_service("/assets", ServeDir::new(web_root().join("assets")))
         // Defensive fallback for any route that does not declare a smaller
         // contract. The largest supported console payload is Sunshine config
         // at 1 MiB; auth and Agent routers override this with tighter limits.
@@ -79,6 +90,18 @@ fn router_with_body_deadline(state: AppState, body_deadline: std::time::Duration
         // client forge linkage and amplify the database with oversized ids.
         .layer(middleware::from_fn(assign_request_id))
         .with_state(state)
+}
+
+fn web_root() -> std::path::PathBuf {
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(bin) = executable.parent()
+        && bin.file_name().and_then(|name| name.to_str()) == Some("bin")
+        && let Some(root) = bin.parent()
+    {
+        return root.join("share/union/web");
+    }
+    // Cargo development/test layout. Production never falls back outside the immutable release.
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/dist")
 }
 
 async fn assign_request_id(mut request: Request, next: Next) -> Response {

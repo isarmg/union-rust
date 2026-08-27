@@ -12,7 +12,7 @@ For a managed installation, use the DEB or RPM built from
 - a dedicated non-login account and private state directory;
 - a hardened, enabled systemd service;
 - same-version reinstall-safe configuration and credentials;
-- ordinary uninstall that retains identity for a 0.3.6 reinstall;
+- ordinary uninstall that retains identity for a 0.4.0 reinstall;
 - explicit local purge through `apt purge unionc-agent` (DEB) or
   `sudo unionc-agent-purge --yes` before `dnf remove unionc-agent` (RPM).
 

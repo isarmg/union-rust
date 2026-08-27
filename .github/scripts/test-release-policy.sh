@@ -9,30 +9,20 @@ fail() {
   exit 1
 }
 
-cargo_command_files="
-$ci_workflow
-$release_workflow
-agent/packaging/linux/build-packages.sh
-server/packaging/linux/build-packages.sh
-"
-
-# A release must consume the reviewed lock file. Match only command positions
-# (including shell substitutions) so diagnostic strings such as
-# "cargo metadata failed" are not mistaken for invocations.
-if grep -En '(^[[:space:]]*cargo|run:[[:space:]]+cargo|=[[:space:]]*cargo|\$\(cargo)[[:space:]]+(clippy|test|check|build|metadata|pkgid)([[:space:]]|$)' \
-  $cargo_command_files |
-  grep -Ev 'cargo[[:space:]]+(clippy|test|check|build|metadata|pkgid)[[:space:]]+--locked([[:space:]]|$)'
+# Reviewed Rust commands consume the workspace lock file.
+if grep -En '(^[[:space:]]*cargo|run:[[:space:]]+cargo)[[:space:]]+(clippy|test|check|build|metadata)([[:space:]]|$)' \
+  "$ci_workflow" "$release_workflow" |
+  grep -Ev 'cargo[[:space:]]+(clippy|test|check|build|metadata)[[:space:]]+--locked([[:space:]]|$)'
 then
-  fail 'CI, release, and packaging Cargo commands must use --locked'
+  fail 'CI and release Cargo commands must use --locked'
 fi
 
-# Repository-local reusable workflows are reviewed with this checkout. Every
-# external action must instead use an immutable full commit SHA; the trailing
-# version comment preserves the human-readable upstream release label.
+# Normal actions use immutable commits. The sole tag reference is the explicitly
+# versioned reusable Union Builder release required by the distribution policy.
 if grep -En 'uses:[[:space:]]+[^.[:space:]]' "$ci_workflow" "$release_workflow" |
-  grep -Ev 'uses:[[:space:]]+[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}([[:space:]]+#.*)?$'
+  grep -Ev 'uses:[[:space:]]+[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}([[:space:]]+#.*)?$|uses:[[:space:]]+isarmg/union-builder/\.github/workflows/build-union\.yml@v1\.0\.0$'
 then
-  fail 'external GitHub Actions must use immutable full commit SHAs'
+  fail 'external actions must use immutable commits except the reviewed Builder v1.0.0 workflow'
 fi
 
 if grep -En '^[[:space:]]+image:[[:space:]]+' "$ci_workflow" "$release_workflow" |
@@ -41,119 +31,84 @@ then
   fail 'workflow service images must use immutable sha256 digests'
 fi
 
-if grep -En '(runs-on:|^[[:space:]]+os:[[:space:]]+\[).*-[l]atest' \
-  "$ci_workflow" "$release_workflow"
+if grep -En '(runs-on:|^[[:space:]]+os:[[:space:]]+\[).*-[l]atest' "$ci_workflow" "$release_workflow"
 then
   fail 'workflow runners must not use mutable *-latest labels'
 fi
 if grep -En 'runs-on:[[:space:]]+' "$ci_workflow" "$release_workflow" |
   grep -Ev 'runs-on:[[:space:]]+(ubuntu-24\.04|windows-2025|macos-26|\$\{\{ matrix\.os \}\})$'
 then
-  fail 'workflow runners must use the reviewed concrete runner labels'
-fi
-if grep -En '^[[:space:]]+os:[[:space:]]+\[' "$ci_workflow" "$release_workflow" |
-  grep -Ev 'os:[[:space:]]+\[ubuntu-24\.04, windows-2025, macos-26\]$'
-then
-  fail 'runner matrices must use the reviewed concrete runner labels'
+  fail 'workflow runners must use reviewed concrete labels'
 fi
 
-if grep -En '^[[:space:]]+(toolchain|node-version|go-version):' \
-  "$ci_workflow" "$release_workflow" |
-  grep -Ev '(toolchain:[[:space:]]+1\.98\.0|node-version:[[:space:]]+'"'"'26\.7\.0'"'"'|go-version:[[:space:]]+'"'"'1\.26\.7'"'"')$'
-then
-  fail 'workflow language toolchains must use the reviewed patch versions'
-fi
-
-rust_action_count=$(grep -hF 'uses: dtolnay/rust-toolchain@' \
-  "$ci_workflow" "$release_workflow" | wc -l | tr -d ' ')
-rust_version_count=$(grep -hF 'toolchain: 1.98.0' \
-  "$ci_workflow" "$release_workflow" | wc -l | tr -d ' ')
+rust_action_count=$(grep -hF 'uses: dtolnay/rust-toolchain@' "$ci_workflow" "$release_workflow" | wc -l | tr -d ' ')
+rust_version_count=$(grep -hF 'toolchain: 1.98.0' "$ci_workflow" "$release_workflow" | wc -l | tr -d ' ')
 [ "$rust_action_count" -gt 0 ] && [ "$rust_version_count" = "$rust_action_count" ] ||
-  fail 'every Rust toolchain action must select Rust 1.98.0 explicitly'
-
-node_action_count=$(grep -hF 'uses: actions/setup-node@' \
-  "$ci_workflow" "$release_workflow" | wc -l | tr -d ' ')
-node_version_count=$(grep -hF "node-version: '26.7.0'" \
-  "$ci_workflow" "$release_workflow" | wc -l | tr -d ' ')
-[ "$node_action_count" -gt 0 ] && [ "$node_version_count" = "$node_action_count" ] ||
-  fail 'every Node setup action must select Node 26.7.0 explicitly'
-
-go_action_count=$(grep -hF 'uses: actions/setup-go@' \
-  "$ci_workflow" "$release_workflow" | wc -l | tr -d ' ')
-go_version_count=$(grep -hF "go-version: '1.26.7'" \
-  "$ci_workflow" "$release_workflow" | wc -l | tr -d ' ')
-[ "$go_action_count" -gt 0 ] && [ "$go_version_count" = "$go_action_count" ] ||
-  fail 'every Go setup action must select Go 1.26.7 explicitly'
-
-job_has_line() {
-  job_name=$1
-  expected=$2
-  awk -v header="  $job_name:" -v expected="$expected" '
-    $0 == header { inside = 1; next }
-    inside && /^  [A-Za-z0-9_-]+:$/ { exit }
-    inside && $0 == expected { found = 1 }
-    END { exit(found ? 0 : 1) }
-  ' "$release_workflow"
-}
+  fail 'every Rust toolchain action must select Rust 1.98.0'
 
 grep -Eq '^  workflow_call:[[:space:]]*$' "$ci_workflow" ||
-  fail 'CI is not callable from the release workflow'
-awk '
-  $0 == "concurrency:" {
-    getline
-    group = ($0 == "  group: release-${{ github.ref }}")
-    getline
-    cancel = ($0 == "  cancel-in-progress: false")
-  }
-  END { exit(group && cancel ? 0 : 1) }
-' "$release_workflow" ||
-  fail 'release runs for the same ref are not serialized without cancellation'
-job_has_line full-ci '    uses: ./.github/workflows/ci.yml' ||
-  fail 'release does not invoke the repository CI workflow'
-job_has_line full-ci '    needs: verify-release-ref' ||
-  fail 'full CI can start before release-source verification'
-grep -Fq 'if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then' \
-  "$release_workflow" || fail 'release tags are not restricted to strict semantic versions'
-grep -Fq 'git fetch --no-tags origin' "$release_workflow" ||
-  fail 'release-source verification does not refresh origin/main'
-grep -Fq 'release_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"' "$release_workflow" ||
-  fail 'release-source verification does not peel annotated tags to a commit'
-grep -Fq 'git merge-base --is-ancestor "$release_commit" "$main_commit"' "$release_workflow" ||
-  fail 'release-source verification does not require main ancestry'
+  fail 'CI must be callable from release'
+grep -Fq '  group: release-${{ github.ref }}' "$release_workflow" &&
+  grep -Fq '  cancel-in-progress: false' "$release_workflow" ||
+  fail 'release runs for one ref must be serialized without cancellation'
+grep -Fq '    uses: ./.github/workflows/ci.yml' "$release_workflow" ||
+  fail 'release must reuse repository CI'
+grep -Fq '    needs: verify-release-ref' "$release_workflow" ||
+  fail 'repository CI must follow release-ref verification'
+grep -Fq '    needs: [verify-release-ref, full-ci]' "$release_workflow" ||
+  fail 'Builder must run only after source verification and repository CI'
+grep -Fq '    uses: isarmg/union-builder/.github/workflows/build-union.yml@v1.0.0' "$release_workflow" ||
+  fail 'release must call Union Builder v1.0.0'
+grep -Fq '      profile: full' "$release_workflow" ||
+  fail 'release must select the Builder official full profile'
 
-for artifact_job in server-linux linux windows macos; do
-  job_has_line "$artifact_job" '    needs: [verify-release-ref, full-ci]' ||
-    fail "$artifact_job does not require release-source verification and full CI"
-done
-
-grep -Fq '          prerelease: true' "$release_workflow" ||
-  fail 'unsigned tag releases must be marked as GitHub prereleases'
-grep -Fq 'UnionC-Agent-{0}-x64-unsigned.msi' "$release_workflow" ||
-  fail 'Windows release artifact is not explicitly named as unsigned'
-grep -Fq 'unionc-agent-$version-unsigned.pkg' "$release_workflow" ||
-  fail 'macOS release artifact is not explicitly named as unsigned'
-grep -Fq 'This prerelease intentionally contains unsigned artifacts.' "$release_workflow" ||
-  fail 'unsigned release warning is missing'
-grep -Fq 'xargs -0 sha256sum > SHA256SUMS' "$release_workflow" ||
-  fail 'unsigned release does not generate a checksum manifest'
-grep -Fq 'source_date_epoch="$(git show -s --format=%ct "${GITHUB_SHA}^{commit}")"' \
-  "$release_workflow" ||
-  fail 'portable Linux archive timestamp is not derived from the release commit'
-grep -Fq 'bash .github/scripts/create-reproducible-tar.sh' "$release_workflow" ||
-  fail 'portable Linux archive does not use the reproducible archive helper'
-
-bash .github/scripts/test-reproducible-tar.sh
-
-for forbidden in \
-  Set-AuthenticodeSignature \
-  notarytool \
-  attest-build-provenance \
-  LINUX_SIGNING_KEY_BASE64 \
-  WINDOWS_SIGNING_PFX_BASE64 \
-  MACOS_SIGNING_P12_BASE64 \
-  APPLE_NOTARY_KEY_P8_BASE64
+for required in \
+  'cargo clippy --locked -p unionc-sunshine-worker' \
+  'cargo test --locked -p unionc-sunshine-worker' \
+  'cargo clippy --locked -p union-host-monitoring-worker' \
+  'cargo test --locked -p union-host-monitoring-worker' \
+  'features: module-photo-backup,module-dufs' \
+  'features: module-sentinel-monitor,module-host-monitoring' \
+  'features: module-sentinel-monitor,module-photo-backup,module-dufs,module-sunshine,module-host-monitoring' \
+  'os: [ubuntu-24.04, windows-2025, macos-26]'
 do
-  if grep -Fq "$forbidden" "$release_workflow"; then
-    fail "release workflow must not execute signing, notarization, or attestation: $forbidden"
+  grep -Fq "$required" "$ci_workflow" ||
+    fail "CI is missing required worker/profile/companion coverage: $required"
+done
+if grep -Eiq 'server/packaging|n[Ff]PM' "$ci_workflow"; then
+  fail 'legacy standalone Server packaging must not run in formal CI'
+fi
+
+grep -Fq 'if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then' "$release_workflow" ||
+  fail 'release tags must be strict vMAJOR.MINOR.PATCH'
+grep -Fq 'if [[ "$GITHUB_REF_NAME" != "v$workspace_version" ]]; then' "$release_workflow" ||
+  fail 'release tag must match the workspace Cargo version'
+grep -Fq 'git merge-base --is-ancestor "$release_commit" "$main_commit"' "$release_workflow" ||
+  fail 'release tag must belong to main history'
+grep -Fq "manifest_version=\"\$(jq -er '.distribution.version' \"\$manifest\")\"" "$release_workflow" ||
+  fail 'release must read the version from union-release.json'
+grep -Fq 'if [[ "$manifest_version" != "$version" ]]; then' "$release_workflow" ||
+  fail 'manifest version must match the tag'
+grep -Fq 'if [[ "$manifest_revision" != "$release_commit" ]]; then' "$release_workflow" ||
+  fail 'manifest revision must match the tag commit'
+grep -Fq '["dufs", "host-monitoring", "photo-backup", "sentinel-monitor", "sunshine"]' "$release_workflow" ||
+  fail 'the official full distribution must contain exactly five workers'
+grep -Fq 'sha256sum --check SHA256SUMS' "$release_workflow" ||
+  fail 'Builder distribution checksums must be verified'
+grep -Fq 'union-distribution.tar' "$release_workflow" &&
+  grep -Fq 'test -x "$distribution/bin/unionc"' "$release_workflow" ||
+  fail 'the release must preserve and verify executable modes across artifact transport'
+grep -Fq 'bash .github/scripts/create-reproducible-tar.sh' "$release_workflow" ||
+  fail 'the Union distribution must use the reproducible archive helper'
+grep -Fq 'sha256sum "$archive_dir.tar.gz" > SHA256SUMS' "$release_workflow" ||
+  fail 'the published archive must have an outer SHA256SUMS'
+[ "$(grep -c 'gh release create' "$release_workflow")" -eq 1 ] ||
+  fail 'release must create exactly one GitHub Release'
+
+for forbidden in server-linux unionc-agent nFPM nfpm '\.deb' '\.rpm' '\.msi' '\.pkg'; do
+  if grep -Eiq "$forbidden" "$release_workflow"; then
+    fail "release must not publish a standalone Server, worker, or companion artifact: $forbidden"
   fi
 done
+
+bash .github/scripts/test-reproducible-tar.sh

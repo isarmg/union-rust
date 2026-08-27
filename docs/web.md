@@ -1,33 +1,10 @@
-# 管理前端
+# Union 管理前端
 
-UnionC 的 React 管理前端，提供总览、主机监控、Sunshine、Sunshine 日志和设置页面。
-主机页显示 CPU、内存、GPU、逐接口网络、逐挂载磁盘、温度、采集能力和历史趋势；
-缺失能力显示 `N/A`，不提供任何向 Agent 下发远程命令的能力。
+React 前端是 Union release 的组成部分，不是独立部署物。`union-builder` 在构建同一 profile
+时执行锁定的 `npm ci` 与 `npm run build`，把产物安装到 `share/union/web`；所选模块静态
+资源安装到 `share/union/modules/<id>`。前后端和 worker 必须来自同一 release manifest。
 
-主机页侧栏的“+”预留稳定实例并签发默认 15 分钟有效的一次性激活码。Agent 软件由用户
-通过平台包管理器、MDM 或组织软件中心独立安装；管理台不托管安装包、不识别客户端平台，
-也不生成 shell、PowerShell 或 pkg 安装命令。
-
-已安装的 Agent 会给出 `/agent/activate/{requestId}` 页面。该页面无需管理员会话，只读取
-有限的设备摘要供用户核对，并把一次性激活码提交给 Server。页面永远不会收到长期 Agent
-secret。每个主机内容块可内联改名，并提供“详情”和“删除”操作；卡片本身不触发选择，
-也不显示选中轮廓。“详情”在卡片旁打开与 Sunshine 管理页相同尺寸和定位的面板，概览、
-网络、磁盘、GPU、温度和采集能力以语义表格展示，历史分类仍使用原有趋势卡片。“删除”
-经确认后永久删除该实例、历史、credential 和关联邀请。再次接入必须通过“+”创建新实例
-并配对。
-当前 Windows Agent 中，管理台将该一次性值标为“授权密钥”，并引导用户到目标设备的
-本机配置页同时填写 Server 地址和密钥；`/agent/activate/{request_id}` 仍保留给 CLI 和其他平台。
-管理台不会向目标机器发起 SSH、WinRM 或任何远程命令。
-
-管理员数据按浏览器会话隔离。注销或任一 API 报告 401 时，前端会立即清空并替换整套
-TanStack Query `QueryClient`；旧会话仍在途的 mutation 回调只能写回已经脱离页面的旧 client，
-不会把私有查询快照带入下一次登录。注销请求完成前登录入口保持禁用，避免旧注销响应晚于
-新登录并清掉新会话 Cookie。一次性 Agent 授权密钥在面板关闭、取消邀请、终态或组件卸载时，
-也会从 mutation cache 中删除。
-
-## 开发运行
-
-先启动 UnionC，然后运行：
+本地开发可以单独启动 Vite：
 
 ```bash
 cd web
@@ -35,50 +12,9 @@ npm ci
 npm run dev
 ```
 
-开发服务器先尝试监听 `127.0.0.1:3001`，并把 `/api` 代理到 `127.0.0.1:8081`。当 3001 已被占用时，Vite 默认会尝试后续端口，以终端打印的实际 URL 为准。
-后端使用其他端口时，可通过 `UNIONC_DEV_API_TARGET=http://127.0.0.1:18081 npm run dev`
-覆盖代理目标。
+Vite 只用于开发反馈；正式制品不得把某个开发目录的 `dist` 手工复制到生产。导航由编译期
+catalog 决定，未选择模块不会出现。Agent 激活页属于远端 companion 配对流程；浏览器不会
+接收长期 Agent secret。
 
-## 构建
-
-```bash
-npm run build     # 等价于 tsc -b && vite build && 可恢复地换入 dist/
-```
-
-构建产物位于 `web/dist/`。脚本先在 `dist.next` 上完成结构校验、符号链接拒绝和权限归一化，
-再通过两个同文件系统目录 rename 换入新版本。第二次 rename 的普通失败会恢复上一版本；若进程
-恰好在两次 rename 之间崩溃，下次执行会先从 `dist.previous` 恢复。新版本换入后，旧备份清理
-失败只告警并留待下次清理，不会把已经成功的发布误报为失败。
-
-两个目录 rename **不是**单次 crash-atomic 交换：极短窗口内固定 `dist` 路径会缺失，掉电或
-`SIGKILL` 后要靠上述下次执行恢复。脚本假定同一时间只有一个发布者，且三个目录位于同一文件
-系统。要求严格零缺口的部署应使用不可变版本目录与由部署系统原子替换的 `current` 符号链接，
-而不是把此脚本描述为原子发布。
-
-## 部署
-
-**前端是纯静态产物，由反向代理提供；UnionC 服务端只提供 API，不托管静态文件。**
-
-这不是疏漏而是刻意的边界：服务端在生产环境强制绑定回环、强制经 HTTPS 反代访问，
-反代本来就在链路上，由它直接 `file_server` 比让 API 进程多担一个静态文件服务器更简单，
-也少一类路径穿越风险。
-
-```bash
-cd web && npm ci && npm run build
-sudo rsync -a --delete dist/ /var/www/unionc/
-```
-
-反代配置见 [Caddyfile.console.example](examples/caddy/Caddyfile.console.example)。两个要点：
-
-1. **SPA 回落**：未命中的路径要 `try_files {path} /index.html`，
-   否则刷新子路由会 404；
-2. **SSE 不缓冲**：`/api/events` 是长连接流，反代必须关闭响应缓冲
-   （Caddy 用 `flush_interval -1`，nginx 用 `proxy_buffering off`），
-   否则状态更新会被攒住直到缓冲区满才下发；
-3. **静态文档安全头**：HTML/JS/CSS 由反代直接返回，不经过后端安全中间件，因此
-   CSP、HSTS、`nosniff`、frame 限制等必须在静态文件的 `handle` 中设置。
-
-### 版本匹配
-
-前端与服务端同属一个仓库、同一版本号发布。混用不同版本的前后端不受支持——
-接口契约（如 `MonitoringHostDetailResponse` 的字段）没有版本协商机制。
+公网反代只指向 Union，不能分别反代 worker。SPA、API、SSE 与 `/modules/<id>` 都处于同一
+Union origin。示例见 [Caddyfile.console.example](examples/caddy/Caddyfile.console.example)。

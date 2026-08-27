@@ -1,61 +1,84 @@
-# 平台模块
+# 编译期模块与私有进程
 
-> 目标边界已变更：五个业务模块都必须由编译 profile 选择并以 Union 私有进程运行，Union 是
-> 唯一公共入口和 Release。本文后续“内置/服务模块”的描述是当前迁移状态，不是最终承诺。
-> 完整需求见 sibling `upstream/REQUIREMENTS-AND-BOUNDARIES.md`，迁移门禁见
-> `platform/docs/COMPILED-PROCESS-MIGRATION.md`。
+Union 使用“构建期选能力、运行时隔离故障”的模型：Cargo feature 决定发行包中有哪些 worker，
+Union supervisor 在运行时把每个已选模块作为私有子进程启动。没有动态插件目录、管理台安装
+按钮或运行时下载。
 
-UnionC 是 `sarmg-platform` 的首个发行组装程序。模块目录来自精确 Git revision 依赖导出的
-版本化 manifest，而不是本机兄弟目录或前后端各自维护的名称列表。
+## 固定编译图
 
-## 当前编译图
+| Cargo feature | worker binary | 回环端口 | gateway identity prefix | liveness / readiness |
+|---|---|---:|---|---|
+| `module-sentinel-monitor` | `sentinel-monitor` | 18101 | `/modules/sentinel-monitor` | `/health/live` / `/health/ready` |
+| `module-photo-backup` | `photo-backup` | 18102 | `/modules/photo-backup` | `/health/live` / `/health/ready` |
+| `module-dufs` | `dufs` | 18103 | `/modules/dufs` | `/__dufs__/health` / `/__dufs__/ready` |
+| `module-sunshine` | `sunshine` | 18104 | `/modules/sunshine` | `/health/live` / `/health/ready` |
+| `module-host-monitoring` | `host-monitoring` | 18105 | `/modules/host-monitoring` | `/health/live` / `/health/ready` |
 
-`unionc` 当前定义三个可选 feature：
+正式构建必须使用 `--no-default-features` 再显式传入 profile 中的 feature 集。没有选择的模块
+不会进入 catalog、路由、supervisor 或发行目录；默认 feature 只方便仓库开发。
 
-| Cargo feature | Worker | 默认启用 |
-|---|---|---|
-| `module-sentinel-monitor` | `sentinel-monitor` | 是 |
-| `module-photo-backup` | `photo-backup-server` | 是 |
-| `module-dufs` | `dufs` | 是 |
+Sunshine/Host 的浏览器与 Agent 兼容路由仍固定在
+`/api/services/sunshine/*`、`/api/monitoring/*`、`/api/agent/*`。identity prefix 用于
+证明 worker 实例和资源基址，不意味着绕过 Union 再公开一组 worker URL。
 
-未选择的外部模块不会进入后端 catalog。`union-builder` 总是对 Union 使用
-`--no-default-features`，再按组合清单显式加入 feature，因此 Cargo 的开发默认值不会污染正式
-发行图。无外部模块、每个单模块以及默认三模块组合均由编译/测试覆盖。
+## gateway-v1
 
-Sunshine 与主机监控目前仍无独立 feature：它们总是编入 Union 进程。这是 PostgreSQL 数据迁移
-和进程拆分完成前的明确过渡限制，不是最终模块模型。
+Union 为每个 worker 启动生成独立的 64 位十六进制 token（约 244-bit 随机熵），并通过
+清空后的环境传递：
 
-## 内置模块
+- `UNION_MODULE_PROTOCOL=gateway-v1`
+- `UNION_MODULE_AUDIENCE=<固定模块 id>`
+- `UNION_MODULE_TOKEN=<本次进程生命周期 token>`
+- `UNION_MODULE_PREFIX=<固定公共前缀>`
 
-- `sunshine`：编译期注册 console Router 和 React 视图；运行状态由自己的探测任务贡献。
-- `host-monitoring`：编译期注册 console Router、独立认证的 Agent Router 和 React 视图；
-  Agent 协议继续由 `protocol` crate 所有。
+Union 覆盖这些请求头，worker 在所有网关入口验证四项，并在健康响应回显 protocol、audience
+和 prefix。token 不落盘、不跨重启复用，也不能替代产品层登录、Agent 凭据或模块域认证。
+Union 会移除来自公网的伪造内部头、hop-by-hop 头和不应跨边界的 Cookie。
 
-组装只发生在 `server/src/platform/mod.rs` 和 `web/src/app/moduleRegistry.tsx`。平台核心、认证、
-系统健康和数据库基础设施不得反向导入模块 DTO。
+不再支持 `SARMG_SENTINEL_URL`、`SARMG_PHOTO_BACKUP_URL`、`SARMG_DUFS_URL` 或任何
+管理员指定的模块 URL。可执行文件固定从同一不可变发行目录的
+`libexec/union/modules/<id>` 解析，不能经 `PATH` 替换。
 
-## 服务模块
+## 进程和数据边界
 
-| 模块 | 环境变量 | liveness | 数据所有权 |
-|---|---|---|---|
-| Sentinel | `SARMG_SENTINEL_URL` | `/health/live` | 独立 PostgreSQL database/role |
-| Photo Backup | `SARMG_PHOTO_BACKUP_URL` | `/health/live` | 独立 PostgreSQL database/role + 对象存储 |
-| Dufs | `SARMG_DUFS_URL` | `/__dufs__/health` | 与共享根绑定的本地 SQLite |
+supervisor 负责启动、健康握手、PID/状态、崩溃退避与关机时先 SIGTERM 后强制终止。worker
+不注册 systemd unit、不单独面向公网、不拥有独立 Release。
 
-当前过渡实现中，服务 URL 只来自启动环境，管理员 API 不能修改它，避免把通用模块探测器变成
-SSRF 或开放代理。
-探测客户端使用严格 TLS、三秒超时且不跟随重定向。未配置模块通过
-`GET /api/platform/modules` 显式报告 `unconfigured`，但不会出现在导航。
+| 模块 | 数据边界 |
+|---|---|
+| Sunshine | PostgreSQL schema `sunshine`；凭据用模块专属 key 加密 |
+| Host monitoring | PostgreSQL schema `host_monitoring`；Agent 配对、最新报告和历史均归它所有 |
+| Sentinel | 专用 PostgreSQL database/role；MediaMTX 是其受约束的运行伴随依赖 |
+| Photo | 专用 PostgreSQL database/role；媒体内容保存在模块数据目录且服务端明文 |
+| Dufs | 模块数据目录中的 SQLite 与文件根；这是刻意保留的例外 |
 
-首版不做 SSO：外部模块在新标签页打开并使用自己的登录。后续身份统一必须使用带 audience
-和短有效期的签名票据或 OIDC，不能共享 Cookie、session 表或用户表。
+Sunshine/Host 可以位于同一个 PostgreSQL database，但必须使用各自 role/schema/migration。
+Sentinel/Photo 分别使用专用 database/role。四者都具有独立 migration history 和备份恢复
+单元；禁止跨模块表、外键和事务。
 
-## 添加模块
+## 官方 profiles
 
-1. 在 `platform/modules/` 增加通过 `module-v1` 验证的 manifest。
-2. 在 Union 增加唯一 `module-<id>` feature，并让 catalog、静态路由、前端入口和 supervisor
-   定义都受同一 feature 控制。
-3. 在 `union-builder` profile 固定 worker 仓库、完整 revision、package、binary、回环地址和
-   gateway path；模块不能定义任意构建命令。
-4. 增加 manifest、路由边界、导航、健康、未选择模块缺席和发行目录合规测试。
-5. 明确数据库 profile；禁止跨模块表和外键。
+| profile | 模块 |
+|---|---|
+| `minimal` | 无业务 worker，仅 Union 核心 |
+| `storage` | Photo + Dufs |
+| `monitoring` | Sentinel + Host monitoring |
+| `full` | 五个模块 |
+
+profile 由 `union-builder` v1.0.0 固定完整 Git revision。模块配置只能补充密钥、数据库连接和
+模块业务参数，不能改变 binary、bind、端口、prefix 或网关 audience。
+
+## 远端 companion
+
+Agent 和 Photo 手机客户端在被管理设备上运行，因此不属于上述服务端模块图。它们随 Union
+Release 的兼容矩阵发布/记录；supervisor 从不启动、更新或卸载它们。Agent 仍通过专属设备
+凭据访问固定 Host worker 路由，不能使用 gateway token。
+
+## 明确非目标
+
+- 运行时安装、卸载、下载或热加载模块；
+- 将 worker 当作独立产品暴露、部署或发布；
+- 共享数据库 schema、共享 session 表或共享管理员 Cookie；
+- 任意上游 URL、任意 shell 构建命令或第三方二进制注入；
+- 将 Dufs/Photo 强行合并。二者只共享 blob-transfer 契约和通用错误语义，文件浏览与照片
+  资产管理仍是不同领域。

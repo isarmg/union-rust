@@ -8,8 +8,7 @@
 //!
 //! | 目录 | 内容 |
 //! |---|---|
-//! | `monitoring` | 主机监控：Agent 注册与上报、控制台查询、实例生命周期、遥测持久化 |
-//! | `sunshine`   | Sunshine 主机管理：配置、API 代理、状态探测、日志 |
+//! | `platform`   | 编译期模块目录、私有 worker supervisor 与固定反向网关 |
 //! | `auth`       | 管理员认证、会话、改密 |
 //! | `system`     | 本机资源采样与健康探针 |
 //! | `http`       | 路由装配与全局中间件（鉴权、CSRF、安全响应头） |
@@ -33,9 +32,7 @@ pub mod config;
 pub mod error;
 pub mod http;
 pub mod infra;
-pub mod monitoring;
 pub mod platform;
 pub mod startup;
 pub mod state;
-pub mod sunshine;
 pub mod system;

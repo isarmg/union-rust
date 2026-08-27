@@ -31,7 +31,6 @@ use crate::{error::AppResult, state::AppState};
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
-        .route("/", get(root))
         .route("/api/health", get(health))
         .route("/api/ready", get(ready))
         .route("/api/services", get(services))
@@ -95,11 +94,6 @@ pub(crate) async fn issue_sse_ticket(
         },
     );
     Ok(Json(SseTicketResponse { ticket }))
-}
-
-/// 根路由，返回 API 简介文字（主要用于快速验证服务是否运行）。
-pub(crate) async fn root() -> &'static str {
-    "UnionC API. Try GET /api/health."
 }
 
 /// 返回服务健康状态，包含版本号和运行时长（秒）。

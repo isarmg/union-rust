@@ -7,6 +7,3 @@
 @import "../shared/styles/foundation.css";
 @import "../shared/styles/responsive.css";
 @import "../features/settings/settings.css";
-@import "../features/sunshine/sunshine.css";
-@import "../features/monitoring/monitoring.css";
-@import "../features/agent-activation/activation.css";

@@ -1,39 +1,24 @@
-# Optional dedicated UnionC Agent REPORT hostname. Caddy adds X-Forwarded-Proto
-# and X-Forwarded-For automatically; UnionC also requires the independent proxy
-# proof below in production and answers 421 when any part is missing. UnionC stays
-# bound to 127.0.0.1. Client certificates are recommended
-# for managed fleets in addition to the per-host bearer token.
-#
-# IMPORTANT: do not send first-time browser pairing to this hostname. TLS client
-# authentication happens before HTTP routing, so an unpaired Agent cannot reach
-# any `/api/agent/v2/*` exception placed inside this site block. Keep v2 pairing
-# on the console hostname (or a second bootstrap hostname without client auth),
-# then configure the Agent with, for example:
-#
-#   endpoint:         https://agents.example.com/api/agent/v1/report
-#   pairing_endpoint: https://unionc.example.com/api/agent/v2/pairing-requests
-#
-# Client certificates must be provisioned by the organization's PKI/MDM; the
-# browser-pairing protocol itself does not issue them.
+# 可选的 Agent report 专用域名。它仍然反代 Union，而不是 Host worker 的 18105。
+# 首次 pairing 必须留在无需客户端证书的主 Union 域名。
 agents.example.com {
-    tls {
-        client_auth {
-            mode require_and_verify
-            trust_pool file {
-                pem_file /etc/caddy/unionc-agent-ca.pem
-            }
-        }
-    }
+	tls {
+		client_auth {
+			mode require_and_verify
+			trust_pool file {
+				pem_file /etc/caddy/union-agent-ca.pem
+			}
+		}
+	}
 
-    request_body {
-        max_size 512KB
-    }
+	request_body {
+		max_size 512KB
+	}
 
-    handle /api/agent/v1/report {
-        reverse_proxy 127.0.0.1:8081 {
-            header_up X-UnionC-Proxy-Secret {$UNIONC_PROXY_SECRET}
-        }
-    }
+	handle /api/agent/v1/report {
+		reverse_proxy 127.0.0.1:8081 {
+			header_up X-UnionC-Proxy-Secret {$UNIONC_PROXY_SECRET}
+		}
+	}
 
-    respond 404
+	respond 404
 }

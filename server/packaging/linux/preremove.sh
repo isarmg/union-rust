@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-package_version=0.3.6
+package_version=0.4.0
 
 die() {
   echo "unionc preremove: $*" >&2
@@ -29,7 +29,7 @@ case "${1:-}" in
   *)
     # RPM exposes only the positive remaining-instance count here, not the
     # incoming package version. This hook therefore cannot distinguish a
-    # same-version reinstall; startup still rejects non-0.3.6 config/database
+    # same-version reinstall; startup still rejects non-0.4.0 config/database
     # state before serving requests.
     :
     ;;

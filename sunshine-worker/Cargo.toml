@@ -1,0 +1,45 @@
+[package]
+name = "unionc-sunshine-worker"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Private Sunshine process module compiled and supervised by UnionC"
+publish = false
+
+[dependencies]
+aes-gcm = "0.10"
+anyhow = "1"
+axum = "0.8"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["clock", "serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+hmac = "0.12"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = [
+  "chrono",
+  "derive",
+  "json",
+  "macros",
+  "migrate",
+  "postgres",
+  "runtime-tokio",
+  "sqlite",
+  "tls-rustls-ring",
+  "uuid",
+] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+sarmg-platform-gateway = { git = "https://github.com/isarmg/sarmg-platform.git", rev = "7bf0c3c005c4804373de7c502a52a3dc02490d60" }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

@@ -1,12 +1,7 @@
 //! 全局安全响应头。
 //!
-//! UnionC 只返回 JSON，但它同时是一个**代理**：封面接口会把上游 Sunshine 主机的字节
-//! 转发出来。原样透传上游的 `Content-Type` 的话，一台被攻陷的主机只要回
-//! `text/html` 就能让 UnionC 以自己的源提供任意 HTML——而 CSRF cookie 出于双提交模式
-//! 的要求刻意不是 HttpOnly 的，注入脚本能直接读到它。
-//!
-//! 修复分两层：封面接口收敛 MIME 白名单，以及这里断言的全局头兜底。两层都要在，
-//! 因为将来新增的转发端点未必记得收敛类型。
+//! Union is both a JSON console and a fixed gateway for private workers. Global browser security
+//! headers must therefore wrap local handlers, authentication failures and proxied responses.
 
 use axum::{
     body::Body,

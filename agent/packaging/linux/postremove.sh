@@ -5,7 +5,7 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
 service_name=unionc-agent.service
-package_version=0.3.6
+package_version=0.4.0
 account_state_dir=/var/lib/unionc-agent-package
 config_dir=/etc/unionc-agent
 config_path="$config_dir/config.json"

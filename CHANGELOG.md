@@ -3,6 +3,34 @@
 本文件记录 UnionC 的显著变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.4.0] — 2026-08-27
+
+### 架构
+
+- Union 成为唯一公共服务端产品和 Release；Sunshine、主机监控、Sentinel Monitor、
+  Photo Backup 与 Dufs 由 Cargo feature 在构建期选择，运行时全部作为 Union supervisor
+  管理的回环私有 worker。
+- Sunshine 与主机监控从 Union core 拆为同仓 worker，并分别拥有 PostgreSQL schema；
+  Sentinel 与 Photo 使用各自专用 PostgreSQL database/role；Union core 保留控制面 SQLite，
+  Dufs 保留模块私有 SQLite。旧 Sunshine/Host SQLite 域表只作为只读离线迁移与回滚证据源。
+- 固定 `gateway-v1` protocol、audience、进程 token、前缀、端口和健康握手，移除动态
+  `SARMG_*_URL` 上游与 worker 独立部署边界。
+
+### 发行
+
+- 正式组合、前端构建、完整性校验、不可变安装 slot 和 rollback 统一由
+  `union-builder` v1.0.0 及官方 `minimal`、`storage`、`monitoring`、`full`
+  profile 完成；GitHub Release 只发布一个完整 Union distribution。
+- Agent 与 Photo 手机客户端明确为远端 companion：随 Union compatibility matrix 管理，
+  但不属于服务端模块，也不由 supervisor 启动。
+
+### 安全与数据边界
+
+- Photo 上传与下载要求 HTTPS 传输；服务器端原始内容、缩略图和派生物按需求保持明文，
+  以支持哈希、去重、媒体处理和 Range 下载。静态磁盘与备份加密属于部署责任。
+- PostgreSQL 模块禁止跨 owner 表、外键和事务；gateway token 只证明 Union 到 worker 的
+  私有进程边界，不替代用户会话、CSRF、Agent credential 或模块域授权。
+
 ## [0.3.6] — 2026-08-24
 
 ### 修复

@@ -1,16 +1,24 @@
 [package]
 name = "unionc"
-description = "UnionC console backend — read-only multi-host monitoring"
+description = "UnionC control plane, module gateway, and private worker supervisor"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [features]
-default = ["module-dufs", "module-photo-backup", "module-sentinel-monitor"]
+default = [
+  "module-dufs",
+  "module-host-monitoring",
+  "module-photo-backup",
+  "module-sentinel-monitor",
+  "module-sunshine",
+]
 module-dufs = []
+module-host-monitoring = []
 module-photo-backup = []
 module-sentinel-monitor = []
+module-sunshine = []
 
 [dependencies]
 anyhow.workspace = true
@@ -22,7 +30,6 @@ base64 = "0.22"
 chrono.workspace = true
 futures-util = "0.3"
 http-body = "1"
-mime = "0.3"
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
@@ -39,6 +46,7 @@ sqlx-sqlite = { version = "0.8", default-features = false, features = ["bundled"
 sysinfo.workspace = true
 thiserror.workspace = true
 tokio = { version = "1", features = [
+  "process",
   "macros",
   "net",
   "rt-multi-thread",
@@ -46,15 +54,14 @@ tokio = { version = "1", features = [
   "sync",
   "time",
 ] }
-tower-http = { version = "0.6", features = ["trace"] }
+tower-http = { version = "0.6", features = ["fs", "trace"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 unionc-protocol.workspace = true
 uuid.workspace = true
 # 0.13: rustls 成为默认 TLS 后端，feature 名从 rustls-tls 改为 rustls
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
-sarmg-platform-axum = { git = "https://github.com/isarmg/sarmg-platform.git", rev = "b850394e9fe83f8b3dbbfb6a6cf18ddd5d13d53d" }
-sarmg-platform-core = { git = "https://github.com/isarmg/sarmg-platform.git", rev = "b850394e9fe83f8b3dbbfb6a6cf18ddd5d13d53d" }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
+sarmg-platform-core = { git = "https://github.com/isarmg/sarmg-platform.git", rev = "7bf0c3c005c4804373de7c502a52a3dc02490d60" }
 
 [dev-dependencies]
 tempfile = "3"

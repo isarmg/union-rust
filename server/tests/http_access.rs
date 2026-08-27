@@ -456,7 +456,7 @@ async fn production_accepts_forwarding_headers_from_the_configured_proxy() {
 }
 
 #[tokio::test]
-async fn business_route_uses_the_embedded_database_without_a_bootstrap_gate() {
+async fn compiled_console_module_route_never_falls_back_to_legacy_in_process_storage() {
     let state = test_state().await;
     insert_session(&state, "test-session").await;
     let response = http::router(state)
@@ -468,10 +468,10 @@ async fn business_route_uses_the_embedded_database_without_a_bootstrap_gate() {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let payload: serde_json::Value =
         serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap()).unwrap();
-    assert_eq!(payload, serde_json::json!([]));
+    assert_eq!(payload["code"], "module_gateway_unavailable");
 }
 
 #[tokio::test]
@@ -559,9 +559,13 @@ async fn audit_export_reports_database_outages_as_service_unavailable() {
 }
 
 #[tokio::test]
-async fn audit_uses_a_server_generated_request_id() {
+async fn module_gateway_uses_a_server_generated_request_id_without_core_database_writes() {
     let state = test_state().await;
     insert_session(&state, "test-session").await;
+    *state.database_health.lock().await = Some(unionc::state::DatabaseHealthSnapshot {
+        checked_at: std::time::Instant::now(),
+        available: false,
+    });
     let response = http::router(state.clone())
         .oneshot(
             Request::post("/api/monitoring/agent-instances")
@@ -575,7 +579,9 @@ async fn audit_uses_a_server_generated_request_id() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::CREATED);
+    // The request reaches the module gateway even while the control-plane SQLite database is
+    // unavailable. No worker is running in this unit test, so the gateway fails closed here.
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let response_request_id = response
         .headers()
         .get("x-request-id")
@@ -587,15 +593,10 @@ async fn audit_uses_a_server_generated_request_id() {
 
     let page = database::list_audit_logs(state.db().as_ref(), None, 10)
         .await
-        .expect("read audit row");
-    let entry = page
-        .entries
-        .iter()
-        .find(|entry| entry.action == "monitoring.agent_instance.invite.create")
-        .expect("Agent invite creation audit row");
-    assert_eq!(
-        entry.request_id.as_deref(),
-        Some(response_request_id.as_str())
+        .expect("read audit rows");
+    assert!(
+        page.entries.is_empty(),
+        "module business requests must not write the Union control-plane database"
     );
 }
 

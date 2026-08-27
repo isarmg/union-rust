@@ -6,11 +6,9 @@
 
 mod audit;
 mod maintenance;
-mod settings;
 
 pub use audit::*;
 pub use maintenance::*;
-pub use settings::*;
 
 use std::{
     borrow::Cow,

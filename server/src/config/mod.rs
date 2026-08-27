@@ -1,7 +1,5 @@
 //! UnionC 控制台配置模型。
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -44,16 +42,17 @@ pub struct Settings {
     pub production: bool,
     pub server: ServerSettings,
     pub database: DatabaseSettings,
-    pub sunshine: SunshineSettings,
     pub platform: PlatformSettings,
 }
 
+/// Compile-time module composition has no runtime-selectable upstream URL.
+///
+/// This empty settings node intentionally remains in `Settings` so future product-neutral
+/// platform settings do not require another application-state migration. Worker data, database
+/// and secret configuration use module-scoped inputs; bindings, binary locations and gateway
+/// prefixes are compile-time constants.
 #[derive(Clone, Default)]
-pub struct PlatformSettings {
-    /// Browser-visible and server-probeable base URLs, indexed by stable module id.
-    /// Values are deployment configuration and are never persisted in a business database.
-    pub service_urls: BTreeMap<String, String>,
-}
+pub struct PlatformSettings;
 
 #[derive(Clone)]
 pub struct ServerSettings {
@@ -69,36 +68,6 @@ pub struct DatabaseSettings {
     pub url: String,
 }
 
-#[derive(Clone)]
-pub struct SunshineHostConfig {
-    pub id: String,
-    pub name: String,
-    pub host: String,
-    pub web_port: u16,
-    pub username: String,
-    pub password: String,
-    pub verify_tls: bool,
-}
-
-impl Default for SunshineHostConfig {
-    fn default() -> Self {
-        Self {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: "Sunshine".to_string(),
-            host: "127.0.0.1".to_string(),
-            web_port: 47990,
-            username: "admin".to_string(),
-            password: String::new(),
-            verify_tls: true,
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct SunshineSettings {
-    pub hosts: Vec<SunshineHostConfig>,
-}
-
 impl Default for ServerSettings {
     fn default() -> Self {
         Self {
@@ -106,17 +75,6 @@ impl Default for ServerSettings {
             port: 8081,
             proxy_secret: String::new(),
         }
-    }
-}
-
-/// 全新安装从**空列表**开始。
-///
-/// 不 seed 任何示例主机。一台预置的演示主机（如 127.0.0.1:47990 / admin / 空密码）
-/// 会出现在主机列表里、被后台任务每 5 秒 TCP 探测一次，且是一条谁都能看见的空密码
-/// 配置——正式版不应携带演示数据。
-impl Default for SunshineSettings {
-    fn default() -> Self {
-        Self { hosts: Vec::new() }
     }
 }
 

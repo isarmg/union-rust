@@ -7,6 +7,7 @@ import { InlineNotice, LoadingBlock, MutationError } from "../../shared/componen
 import { agentActivationQueryKeys as queryKeys } from "./queryKeys";
 import { formatDateTime } from "../../shared/lib/format";
 import { removeMutationFromCache } from "../../shared/lib/mutations";
+import "./activation.css";
 
 function activationMutationKey(requestId: string) {
   return ["agent-activation", requestId] as const;

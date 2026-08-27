@@ -23,15 +23,26 @@ const platformModules: PlatformModule[] = [
     display_name: "主机",
     description: "主机监控",
     version: "0.1.0",
-    execution: "in_process",
-    ui: { kind: "embedded", route: "/modules/host-monitoring" },
+    execution: "private_process",
+    ui: { kind: "console", route: "/modules/host-monitoring" },
     capabilities: [],
-    service: null,
-    database: {},
-    configured: true,
+    service: {
+      binary: "host-monitoring",
+      bind: "127.0.0.1:18105",
+      gateway_prefix: "/modules/host-monitoring",
+      liveness_path: "/health/live",
+      readiness_path: "/health/ready",
+    },
+    database: {
+      profile: "postgres_schema",
+      database_env: "UNIONC_HOST_MONITORING_DATABASE_URL",
+      schema: "host_monitoring",
+      role: "host_monitoring_runtime",
+    },
     health: "available",
-    health_message: "已编译到当前发行版",
-    launch_url: null,
+    health_message: "worker ready",
+    pid: 101,
+    restart_count: 0,
     checked_at: null,
   },
   {
@@ -40,15 +51,26 @@ const platformModules: PlatformModule[] = [
     display_name: "Sunshine",
     description: "Sunshine 管理",
     version: "0.1.0",
-    execution: "in_process",
-    ui: { kind: "embedded", route: "/modules/sunshine" },
+    execution: "private_process",
+    ui: { kind: "console", route: "/modules/sunshine" },
     capabilities: [],
-    service: null,
-    database: {},
-    configured: true,
+    service: {
+      binary: "sunshine",
+      bind: "127.0.0.1:18104",
+      gateway_prefix: "/modules/sunshine",
+      liveness_path: "/health/live",
+      readiness_path: "/health/ready",
+    },
+    database: {
+      profile: "postgres_schema",
+      database_env: "UNIONC_SUNSHINE_DATABASE_URL",
+      schema: "sunshine",
+      role: "sunshine_runtime",
+    },
     health: "available",
-    health_message: "已编译到当前发行版",
-    launch_url: null,
+    health_message: "worker ready",
+    pid: 102,
+    restart_count: 0,
     checked_at: null,
   },
 ];
@@ -59,19 +81,25 @@ const sentinelModule: PlatformModule = {
   display_name: "Sentinel",
   description: "摄像头监控",
   version: "0.1.0",
-  execution: "service",
-  ui: { kind: "external", public_url_env: "SARMG_SENTINEL_URL" },
+  execution: "private_process",
+  ui: { kind: "gateway", entry_path: "/" },
   capabilities: [],
   service: {
-    base_url_env: "SARMG_SENTINEL_URL",
+    binary: "sentinel-monitor",
+    bind: "127.0.0.1:18101",
+    gateway_prefix: "/modules/sentinel-monitor",
     liveness_path: "/health/live",
     readiness_path: "/health/ready",
   },
-  database: {},
-  configured: true,
+  database: {
+    profile: "dedicated_postgres",
+    database_env: "UNIONC_SENTINEL_DATABASE_URL",
+    role: "sentinel_monitor_runtime",
+  },
   health: "available",
-  health_message: "公开存活探测通过",
-  launch_url: "https://sentinel.example.test/",
+  health_message: "gateway-v1 ready",
+  pid: 103,
+  restart_count: 2,
   checked_at: "2026-08-27T00:00:00Z",
 };
 
@@ -266,15 +294,50 @@ describe("session verification", () => {
     expect(logout).not.toHaveBeenCalled();
   });
 
-  it("opens configured service modules without forwarding the platform session", async () => {
+  it("opens an available gateway module through its descriptor-derived same-origin path", async () => {
     mockAuthenticatedApp();
     vi.mocked(platformApi.modules).mockResolvedValue([...platformModules, sentinelModule]);
     renderApp();
 
     const link = await screen.findByRole("link", { name: "Sentinel" });
-    expect(link.getAttribute("href")).toBe("https://sentinel.example.test/");
+    expect(link.getAttribute("href")).toBe("/modules/sentinel-monitor/");
     expect(link.getAttribute("target")).toBe("_blank");
     expect(link.getAttribute("rel")).toContain("noreferrer");
+  });
+
+  it("shows console contributions only when both the web build and server catalog include them", async () => {
+    mockAuthenticatedApp();
+    vi.mocked(platformApi.modules).mockResolvedValue([platformModules[1]]);
+    renderApp();
+
+    expect(await screen.findByRole("button", { name: "Sunshine" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "主机" })).toBeNull();
+  });
+
+  it("shows an unavailable gateway module but does not make it openable", async () => {
+    mockAuthenticatedApp();
+    vi.mocked(platformApi.modules).mockResolvedValue([
+      ...platformModules,
+      { ...sentinelModule, health: "backoff", health_message: "worker restart backoff" },
+    ]);
+    renderApp();
+
+    const item = await screen.findByRole("button", { name: "Sentinel" });
+    expect((item as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("link", { name: "Sentinel" })).toBeNull();
+    expect(item.getAttribute("title")).toContain("worker restart backoff");
+  });
+
+  it("rejects a gateway entry that is not a safe same-origin path", async () => {
+    mockAuthenticatedApp();
+    vi.mocked(platformApi.modules).mockResolvedValue([
+      ...platformModules,
+      { ...sentinelModule, ui: { kind: "gateway", entry_path: "//outside.example/" } },
+    ]);
+    renderApp();
+
+    expect(await screen.findByRole("button", { name: "Sentinel" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Sentinel" })).toBeNull();
   });
 
   it("does not replay a consumed Agent creation request after returning to the host page", async () => {

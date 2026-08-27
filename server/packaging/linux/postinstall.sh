@@ -5,7 +5,7 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
 service_name=unionc.service
-package_version=0.3.6
+package_version=0.4.0
 server_binary=/usr/bin/unionc
 data_dir=/var/lib/unionc
 config_dir=/etc/unionc
@@ -741,7 +741,7 @@ EOF
 
 # The root-owned marker directory binds the current package version to the
 # exact numeric service identity. Removing the package deliberately keeps it,
-# so only an exact 0.3.6 reinstall can reclaim the retained state. Never
+# so only an exact 0.4.0 reinstall can reclaim the retained state. Never
 # normalize an existing foreign directory before trusting marker files below.
 if [ -e "$account_state_dir" ] || [ -L "$account_state_dir" ]; then
   [ -d "$account_state_dir" ] && [ ! -L "$account_state_dir" ] ||

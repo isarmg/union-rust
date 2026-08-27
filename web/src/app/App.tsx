@@ -1,4 +1,4 @@
-import { FormEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
   Camera, Check, ExternalLink, FolderOpen, Images, LayoutDashboard, Lock, LogIn, Moon,
   Plus, Power, RefreshCw, Settings, Sun, Terminal, User, X,
@@ -16,11 +16,16 @@ import { overviewQueryKeys } from "../features/overview/queryKeys";
 import { parseAgentActivationRoute } from "../features/agent-activation/route";
 import { useEventStream, useMetricHistory } from "./hooks";
 import { OverviewView } from "../features/overview/OverviewView";
-import { AgentActivationPage } from "../features/agent-activation/AgentActivationPage";
 // 产品内置视图按需加载；业务模块自身的懒加载入口集中在 moduleRegistry。
-const LogsView = lazy(() => import("../features/logs/LogsView").then((m) => ({ default: m.LogsView })));
+const LogsView = __UNIONC_MODULE_SUNSHINE__
+  ? lazy(() => import("../features/logs/LogsView").then((m) => ({ default: m.LogsView })))
+  : null;
+const AgentActivationPage = __UNIONC_MODULE_HOST_MONITORING__
+  ? lazy(() => import("../features/agent-activation/AgentActivationPage")
+    .then((m) => ({ default: m.AgentActivationPage })))
+  : null;
 const SettingsView = lazy(() => import("../features/settings/SettingsView").then((m) => ({ default: m.SettingsView })));
-import { embeddedModuleById, embeddedModules } from "./moduleRegistry";
+import { embeddedModuleById } from "./moduleRegistry";
 import { platformApi } from "../features/platform/api";
 import { platformQueryKeys } from "../features/platform/queryKeys";
 import type { PlatformModule } from "../features/platform/types";
@@ -28,13 +33,26 @@ import { CardActions, CardInner, CardRow, InlineNotice, LoadingBlock } from "../
 
 const coreNavItems = [
   { key: "overview", label: "总览", icon: LayoutDashboard },
-  { key: "logs", label: "日志", icon: Terminal },
+  ...(__UNIONC_MODULE_SUNSHINE__
+    ? [{ key: "logs", label: "日志", icon: Terminal } as const]
+    : []),
   { key: "settings", label: "设置", icon: Settings },
-] as const satisfies ReadonlyArray<{
+] satisfies ReadonlyArray<{
   key: string; label: string; icon: React.ComponentType<{ size?: number }>;
 }>;
 type Theme = "light" | "dark";
 const THEME_STORAGE_KEY = "unionc-theme";
+
+/** Build a same-origin module entry from the immutable server descriptor. */
+export function gatewayEntryPath(module: PlatformModule): string | null {
+  if (module.ui.kind !== "gateway") return null;
+  const expectedPrefix = `/modules/${module.id}`;
+  const { gateway_prefix: prefix } = module.service;
+  const entry = module.ui.entry_path;
+  if (prefix !== expectedPrefix || !entry.startsWith("/") || entry.startsWith("//")
+    || entry.includes("\\")) return null;
+  return entry === "/" ? `${prefix}/` : `${prefix}${entry}`;
+}
 
 function getInitialTheme(): Theme {
   try {
@@ -86,33 +104,14 @@ function AuthedApp({
     queryKey: platformQueryKeys.modules,
     queryFn: platformApi.modules,
   });
-  const installedModules = useMemo(() => {
-    if (modulesQuery.data) return modulesQuery.data;
-    return embeddedModules.map((module): PlatformModule => ({
-      schema_version: 1,
-      id: module.id,
-      display_name: module.fallbackLabel,
-      description: "内置模块",
-      version: "bundled",
-      execution: "in_process",
-      ui: { kind: "embedded", route: `/modules/${module.id}` },
-      capabilities: [],
-      service: null,
-      database: {},
-      configured: true,
-      health: "available",
-      health_message: "已编译到当前发行版",
-      launch_url: null,
-      checked_at: null,
-    }));
-  }, [modulesQuery.data]);
+  const installedModules = modulesQuery.data ?? [];
   const embeddedNavigation = installedModules.filter((module) => (
-    module.configured && module.ui.kind === "embedded" && embeddedModuleById.has(module.id)
+    module.ui.kind === "console" && embeddedModuleById.has(module.id)
   ));
-  const externalNavigation = installedModules.filter((module) => (
-    module.configured && module.ui.kind === "external" && module.launch_url
-  ));
-  const activeModule = embeddedModuleById.get(view);
+  const gatewayNavigation = installedModules.filter((module) => module.ui.kind === "gateway");
+  const activeModule = embeddedNavigation.some((module) => module.id === view)
+    ? embeddedModuleById.get(view)
+    : undefined;
   const services = servicesQuery.data ?? [];
   const unhealthy = services.filter((service) => !service.healthy);
 
@@ -148,15 +147,29 @@ function AuthedApp({
               </button>
             );
           })}
-          {externalNavigation.map((module) => {
+          {gatewayNavigation.map((module) => {
             const Icon = module.id === "sentinel-monitor"
               ? Camera
               : module.id === "photo-backup" ? Images : module.id === "dufs" ? FolderOpen : ExternalLink;
+            const href = gatewayEntryPath(module);
+            if (module.health !== "available" || href === null) {
+              return (
+                <button
+                  key={module.id}
+                  className="nav-item"
+                  type="button"
+                  disabled
+                  title={`${module.description}（${module.health_message}）`}
+                >
+                  <Icon size={18} /><span>{module.display_name}</span>
+                </button>
+              );
+            }
             return (
               <a
                 key={module.id}
                 className="nav-item"
-                href={module.launch_url!}
+                href={href}
                 target="_blank"
                 rel="noopener noreferrer"
                 title={`${module.description}（在新标签页打开）`}
@@ -215,7 +228,7 @@ function AuthedApp({
       </aside>
       <main className="main">
         {eventStream.error && <InlineNotice tone="warn" text={eventStream.error} />}
-        {modulesQuery.error && <InlineNotice tone="warn" text={`模块目录读取失败，正在使用内置目录：${modulesQuery.error.message}`} />}
+        {modulesQuery.error && <InlineNotice tone="warn" text={`模块目录读取失败：${modulesQuery.error.message}`} />}
         {servicesQuery.error && <InlineNotice tone="danger" text={`服务状态读取失败：${servicesQuery.error.message}`} />}
         {resourcesQuery.error && <InlineNotice tone="danger" text={`系统资源读取失败：${resourcesQuery.error.message}`} />}
         {view === "overview" && (
@@ -233,7 +246,7 @@ function AuthedApp({
             addTrigger: addTriggers[activeModule.id] ?? 0,
             onAddTriggerHandled: (trigger) => handleAddTrigger(activeModule.id, trigger),
           })}
-          {view === "logs" && <LogsView />}
+          {view === "logs" && LogsView && <LogsView />}
           {view === "settings" && <SettingsView onPasswordChanged={onPasswordChanged} />}
         </Suspense>
       </main>
@@ -394,8 +407,12 @@ function AuthenticatedAppRoot() {
 
 export function App() {
   const activationRoute = parseAgentActivationRoute(window.location.pathname);
-  if (activationRoute.isActivationRoute) {
-    return <AgentActivationPage requestId={activationRoute.requestId} />;
+  if (activationRoute.isActivationRoute && AgentActivationPage) {
+    return (
+      <Suspense fallback={<LoadingBlock label="正在加载 Agent 激活页…" />}>
+        <AgentActivationPage requestId={activationRoute.requestId} />
+      </Suspense>
+    );
   }
   return <AuthenticatedAppRoot />;
 }

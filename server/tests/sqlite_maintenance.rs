@@ -170,7 +170,7 @@ async fn backup_restore_and_integrity_use_a_validated_atomic_snapshot() {
         error
             .to_string()
             .contains("another UnionC database maintenance command"),
-        "offline rekey/restore must serialize with online maintenance: {error:#}"
+        "offline restore must serialize with online maintenance: {error:#}"
     );
     let error = database::backup_database(&settings, &blocked_backup)
         .await
@@ -467,7 +467,7 @@ async fn backup_restore_and_integrity_use_a_validated_atomic_snapshot() {
     assert!(
         error
             .to_string()
-            .contains("invalid Sunshine host configuration")
+            .contains("invalid legacy Sunshine host configuration")
     );
 
     // Build an offline current-database fixture whose latest committed value

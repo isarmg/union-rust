@@ -1,68 +1,73 @@
-# UnionC
+# Union
 
-Union 是自托管管理平台和唯一发行单元。主机监控、Sunshine、Sentinel Monitor、Photo Backup
-与 Dufs 按发行 profile 在构建期选择；目标运行模型是 Union 公共 gateway 加私有独立模块
-进程。当前 Sunshine/主机仍在核心进程内；Sentinel、Photo 与 Dufs 已能由 Cargo feature
-选择 catalog 并统一组装，但静态网关与 supervisor 尚未完成，不能把目标文档误读为已完成
-实现。模块需求、边界和迁移状态见 [`docs/modules.md`](docs/modules.md)。
+Union 是这一组项目唯一面向用户的服务端产品、公共入口和 Release。五个服务端业务模块由
+Cargo feature 在构建期选择，运行时由 Union supervisor 启动为只监听回环地址的私有 worker；
+它们不是可单独部署或发布的公共服务。
 
-跨平台 Agent 采集 CPU / 内存 / 磁盘 / 网络 / 温度 / GPU 指标，上报到中心服务端；
-管理台提供实时状态、历史曲线与主机生命周期管理。
+| feature | 私有 worker | 固定地址 | gateway identity prefix | 数据所有权 |
+|---|---|---|---|---|
+| `module-sunshine` | `sunshine` | `127.0.0.1:18104` | `/modules/sunshine` | PostgreSQL schema `sunshine` |
+| `module-host-monitoring` | `host-monitoring` | `127.0.0.1:18105` | `/modules/host-monitoring` | PostgreSQL schema `host_monitoring` |
+| `module-sentinel-monitor` | `sentinel-monitor` | `127.0.0.1:18101` | `/modules/sentinel-monitor` | 专用 PostgreSQL database/role |
+| `module-photo-backup` | `photo-backup` | `127.0.0.1:18102` | `/modules/photo-backup` | 专用 PostgreSQL database/role + 明文媒体目录 |
+| `module-dufs` | `dufs` | `127.0.0.1:18103` | `/modules/dufs` | 模块私有 SQLite + 文件根 |
 
-当前 Windows x64 MSI 还安装一个普通用户权限的通知区托盘伴侣，可打开本机浏览器
-配置、配对、查看或启停服务。本地页一次填写 Server 地址和管理台生成的
-一次性授权密钥即可配对；用户选择“退出”时，托盘会先通过 UAC 停止后台采集服务。
+模块进程只接受 Union 每次启动生成的 `gateway-v1` 身份头。地址、端口、前缀、binary 和健康
+端点都编译在 Union 中；`SARMG_*_URL` 动态上游已被拒绝。模块崩溃会被 supervisor 退避重启，
+健康契约不兼容时不会被宣布就绪。
 
-**服务端不向被监控主机下发任何命令、配置或脚本**——这是设计约束，不是待实现的功能。
-代码中不存在远程执行、进程控制、文件传输或 Agent 自更新端点。
+Sunshine 与 Host 为保持 Web/Agent 线协议兼容，对外仍使用固定的
+`/api/services/sunshine/*`、`/api/monitoring/*` 和 `/api/agent/*`；表中的 prefix 是
+worker 必须验证的内部身份，不是另一组公开入口。
 
-## 组成
+## 仓库组成
 
-| 目录 | 内容 | 平台 |
-|---|---|---|
-| `server` | 服务端（Rust + axum + 内嵌 SQLite） | 仅 Linux |
-| `agent` | 采集 Agent（Rust） | Linux / Windows / macOS |
-| `protocol` | Server 与 Agent 共用的线上 DTO（Rust library） | 跨平台 |
-| `web` | 管理台前端（React + TypeScript） | 浏览器 |
+| 目录 | 职责 |
+|---|---|
+| `server` | Union 网关、认证、catalog、supervisor 与核心系统能力（Linux） |
+| `sunshine-worker` | 从核心拆出的 Sunshine 私有 worker |
+| `host-monitoring-worker` | 从核心拆出的主机监控私有 worker |
+| `agent` | 安装在远端主机的采集 companion，不由 supervisor 启动 |
+| `protocol` | Host worker 与 Agent 共用的版本化 DTO |
+| `web` | 随 Union 构建的管理前端 |
 
-远端 Agent 与 Photo Android/iOS 客户端必须物理上单独安装，但只随 Union Release 版本化；
-模块仓库不再提供独立 Release。组合构建由独立的
-[`union-builder`](https://github.com/isarmg/union-builder) 执行。
-当前可复现组合工具版本为
-[`v0.2.0`](https://github.com/isarmg/union-builder/releases/tag/v0.2.0)。
+Union 核心仍使用自己的 `unionc.db` 保存核心审计等平台状态；运行时不再承载 Sunshine 或
+Host 业务域。0.4.0 schema 中可物理保留旧域表作为只读迁移/回滚证据，关闭回滚窗口后再由
+后续 migration 删除。这里的核心 SQLite 与 Dufs 的模块 SQLite 是两份彼此独立的数据库。
 
-## 快速开始
+Photo 手机客户端和跨平台 Agent 是远端 companion：它们随 Union 兼容矩阵版本化，但不是
+服务端编译模块，也不由 supervisor 启动。模块仓库不发布可独立运行的程序。
 
-```bash
-# 服务端（Linux / WSL；入口固定工作目录和 .runtime/server）
-./tools/dev-server.sh
+## 构建与安装
 
-# 前端
-cd web && npm ci && npm run dev
-
-# 查看某台机器能采到什么（不联网）
-cargo run -p unionc-agent --bin unionc-agent -- probe
-```
-
-默认监听 `127.0.0.1:8081`，首次启动会打印开发管理员口令。
-
-## 测试
+正式组合只使用
+[`union-builder` v1.0.0](https://github.com/isarmg/union-builder/releases/tag/v1.0.0)。
+官方 profile 是 `minimal`、`storage`、`monitoring` 和 `full`；Builder 固定源码 revision、
+执行锁定依赖构建、生成完整校验清单，并提供 `verify`、`stage`、`install` 和 `rollback`。
 
 ```bash
-cargo test --workspace
+union-builder check --config profiles/full.toml
+union-builder plan --config profiles/full.toml
+union-builder build --config profiles/full.toml --profile release
+union-builder verify --release dist/full
+sudo union-builder install --release dist/full --root /opt/union
+sudo union-builder rollback --root /opt/union
 ```
 
-Server 测试各自创建临时 SQLite，不需要外部数据库。项目只支持当前版本新建的数据、
-协议、配置与安装布局；旧 Server 数据库、旧 Agent 配置/身份及旧安装方式均不读取、
-不升级，也不提供转换或导入桥。部署新版本前请导出仍需保留的数据，并全新部署、
-创建新实例并配对 Agent。
+这组命令描述受支持的发行路径，不代表当前工作树已经完成生产环境验收。开发者仍可分别运行
+crate 测试；不能把开发启动方式当作模块独立部署承诺。
 
-## 文档
+## 关键边界
 
-- **[文档中心](docs/README.md)**：项目参考、开发、部署、运维、安全和历史资料的唯一索引。
-- **[零基础教学路线](beginner-guide/README.md)**：从第一次运行到能沿真实代码解释系统。
-- **[更新日志](CHANGELOG.md)**：各版本具备的能力。
+- Union 是唯一公网监听者；worker 必须保持回环绑定，前置反代只指向 Union。
+- Sunshine/Host 各自拥有 PostgreSQL schema；Sentinel/Photo 各自拥有专用 PostgreSQL
+  database/role。禁止跨 owner 外键、查询和共享迁移。Dufs 的 SQLite 是有意保留的例外。
+- Photo 只要求传输链路使用 HTTPS；服务器保存的原始文件、缩略图和派生物保持未加密，
+  磁盘加密和备份加密属于部署者责任。
+- 旧版 `unionc.db` 中的 Sunshine/Host 域表只允许被离线导入器读取，并作为导入核验、回滚
+  证据源；新架构不会在线双写，也不会把旧库重新接回运行路径。
+- 服务端不向 Agent 下发命令、脚本、文件或自更新；多租户、插件热装载和任意自定义 worker
+  也不在范围内。
 
-## 许可
-
-[Apache License 2.0](LICENSE-APACHE)
+完整需求、部署和迁移边界从[文档中心](docs/README.md)开始阅读。许可证为
+[Apache License 2.0](LICENSE-APACHE)。

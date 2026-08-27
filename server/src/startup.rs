@@ -50,36 +50,11 @@ pub async fn initialize() -> anyhow::Result<InitializedApp> {
     // 建立差值采样基线并启动唯一的采样循环，使首个请求即返回有效读数。
     let resources = crate::system::ResourceMonitor::start().await;
     let state = AppState::new(settings, db, dummy_password_hash, local_config, resources)?;
-    start_service_status_probe(state.clone());
-    crate::platform::start_external_service_probes(state.clone());
     // 内存态和持久历史分别回收；SQLite 在 HTTP 服务启动前已经完成打开与校验，因此
     // 保留期任务在每次正常启动中都存在，不会出现“配置数据库后忘记重启而不清理”的窗口。
     start_memory_gc(state.clone());
     start_database_retention(state.clone(), runtime.retention);
     Ok(InitializedApp { addr, state })
-}
-
-/// `unionc rekey` 子命令：用当前密钥重新加密全部存量密文。
-///
-/// 不启动 HTTP 服务，跑完即退出。典型的轮换流程见 `secrets::Keyring` 的文档。
-pub async fn rekey() -> anyhow::Result<()> {
-    crate::infra::paths::init()?;
-    let runtime = RuntimeEnvironment::from_environment()?;
-    let settings = Settings::load(&runtime)?;
-    ensure_layout(LayoutIntent::ExistingOnly)?;
-    let database_path = database::database_path(&settings)?;
-    let _locks = database::acquire_offline_maintenance_locks(&database_path)?;
-    secrets::init(runtime.mode)?;
-    let pool = database::connect_existing(&settings).await?;
-    database::verify_schema(&pool).await?;
-
-    let key_id = secrets::current_key_id()?;
-    let hosts = database::rekey_secrets(&pool).await?;
-    tracing::info!(
-        "已用密钥 '{key_id}' 重新加密 {hosts} 台 Sunshine 主机的凭据；\
-         确认无误后即可移除 UNIONC_SECRET_KEY_PREVIOUS 并重启"
-    );
-    Ok(())
 }
 
 /// `unionc reset-admin-password`：离线生成并写入新的管理员密码。
@@ -211,8 +186,7 @@ async fn prepare_database(
         database::verify_schema(&db).await?;
         db
     };
-    let settings = database::load_app_settings(&db, &bootstrap).await?;
-    Ok((settings, db))
+    Ok((bootstrap, db))
 }
 
 fn listen_address(settings: &Settings) -> anyhow::Result<SocketAddr> {
@@ -223,117 +197,6 @@ fn listen_address(settings: &Settings) -> anyhow::Result<SocketAddr> {
         .trim_matches(['[', ']'])
         .parse()?;
     Ok(SocketAddr::new(bind_ip, settings.server.port))
-}
-
-/// 启动 Sunshine 的快、慢两级探测。
-///
-/// 快 worker 每 5 秒并发跑 TCP，立即发布 `/api/services`/SSE 快照；慢 worker
-/// 每 30 秒在最新已发布 TCP 批次上追加 TLS/认证/API 检查。慢 worker 始终只有
-/// 一个 await 在飞，但不会阻塞快 worker。配置变更通过 generation 记账：若变更发生在
-/// 慢轮次期间，完成后会立即对最新批次补跑，不会并发重入。
-fn start_service_status_probe(state: AppState) {
-    const STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
-    const HEALTH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
-
-    let (batch_sender, batch_receiver) = tokio::sync::watch::channel::<
-        Option<(u64, crate::sunshine::status::ServiceProbeBatch)>,
-    >(None);
-    let status_state = state.clone();
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(STATUS_INTERVAL);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut configuration_generation = 0_u64;
-        loop {
-            let configuration_changed = tokio::select! {
-                biased;
-                () = status_state.sunshine.health_refresh.notified() => true,
-                _ = ticker.tick() => false,
-            };
-            if configuration_changed {
-                configuration_generation = configuration_generation.wrapping_add(1);
-            }
-            // A configuration change can happen while network I/O is in
-            // flight. The probe helper publishes only if the complete input
-            // host list is still current; a discarded batch is followed by the
-            // Notify permit left by the CRUD operation.
-            if let Some(batch) =
-                crate::sunshine::status::probe_and_publish_services(&status_state).await
-            {
-                batch_sender.send_replace(Some((configuration_generation, batch)));
-            }
-        }
-    });
-
-    tokio::spawn(run_service_health_probe(
-        state,
-        batch_receiver,
-        HEALTH_INTERVAL,
-    ));
-}
-
-struct HealthProbeCadence {
-    completed_generation: Option<u64>,
-    next_periodic: tokio::time::Instant,
-}
-
-impl HealthProbeCadence {
-    fn starting_at(now: tokio::time::Instant) -> Self {
-        Self {
-            completed_generation: None,
-            next_periodic: now,
-        }
-    }
-
-    fn is_due(&self, generation: u64, now: tokio::time::Instant) -> bool {
-        self.completed_generation != Some(generation) || now >= self.next_periodic
-    }
-
-    fn completed(
-        &mut self,
-        generation: u64,
-        now: tokio::time::Instant,
-        interval: std::time::Duration,
-    ) {
-        self.completed_generation = Some(generation);
-        // Completion-relative cadence prevents a slow round from causing an
-        // immediate catch-up burst. There is exactly one slow round in flight.
-        self.next_periodic = now + interval;
-    }
-}
-
-async fn run_service_health_probe(
-    state: AppState,
-    mut batches: tokio::sync::watch::Receiver<
-        Option<(u64, crate::sunshine::status::ServiceProbeBatch)>,
-    >,
-    interval: std::time::Duration,
-) {
-    let mut latest: Option<(u64, crate::sunshine::status::ServiceProbeBatch)> = None;
-    let mut cadence = HealthProbeCadence::starting_at(tokio::time::Instant::now());
-    loop {
-        if let Some((generation, batch)) = latest.as_ref()
-            && cadence.is_due(*generation, tokio::time::Instant::now())
-        {
-            let generation = *generation;
-            crate::sunshine::status::probe_and_publish_health(&state, batch.clone()).await;
-            cadence.completed(generation, tokio::time::Instant::now(), interval);
-            continue;
-        }
-
-        let changed = if latest.is_some() {
-            tokio::select! {
-                biased;
-                changed = batches.changed() => changed,
-                () = tokio::time::sleep_until(cadence.next_periodic) => continue,
-            }
-        } else {
-            batches.changed().await
-        };
-        if changed.is_err() {
-            return;
-        }
-        latest = batches.borrow_and_update().clone();
-    }
 }
 
 /// 内存态回收周期。
@@ -358,15 +221,7 @@ fn start_memory_gc(state: AppState) {
             if expired > 0 {
                 tracing::info!("maintenance: removed {expired} expired sessions");
             }
-            let buckets = state
-                .monitoring
-                .prune_report_buckets(std::time::Instant::now())
-                .await;
-            if buckets > 0 {
-                tracing::debug!("maintenance: reclaimed {buckets} idle agent rate-limit buckets");
-            }
-            // 登录桶与上报桶同理：热路径只清理自己查阅的那几个 Vec，
-            // 遍历整张 map 丢弃空桶放在这里。
+            // 登录限流热路径只清理自己查阅的 Vec；全表回收放在这里。
             let login_buckets = crate::auth::http::prune_login_buckets(&state).await;
             if login_buckets > 0 {
                 tracing::debug!("maintenance: reclaimed {login_buckets} idle login buckets");
@@ -384,20 +239,6 @@ fn start_database_retention(state: AppState, retention: RetentionSettings) {
                 }
                 Ok(_) => {}
                 Err(error) => tracing::warn!("maintenance: failed to prune audit history: {error}"),
-            }
-            match crate::monitoring::store::prune_monitoring_history(
-                state.db().as_ref(),
-                retention.telemetry_days,
-            )
-            .await
-            {
-                Ok(removed) if removed > 0 => {
-                    tracing::info!("maintenance: removed {removed} old monitoring reports")
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::warn!("maintenance: failed to prune monitoring history: {error}")
-                }
             }
             tokio::time::sleep(std::time::Duration::from_secs(24 * 60 * 60)).await;
         }
@@ -464,8 +305,8 @@ pub async fn integrity_check() -> anyhow::Result<()> {
 #[cfg(test)]
 mod password_reset_tests {
     use super::{
-        HealthProbeCadence, LocalConfig, bootstrap_allowed, config_with_reset_password,
-        generate_admin_password, prepare_database,
+        LocalConfig, bootstrap_allowed, config_with_reset_password, generate_admin_password,
+        prepare_database,
     };
     use crate::{config::Settings, infra::database};
 
@@ -546,27 +387,5 @@ mod password_reset_tests {
         assert_eq!(updated.admin_username, original.admin_username);
         assert_ne!(updated.admin_password_hash, original.admin_password_hash);
         assert!(bcrypt::verify(password, &updated.admin_password_hash).unwrap());
-    }
-
-    #[test]
-    fn health_cadence_runs_initially_on_change_and_periodically_without_waiting() {
-        let interval = std::time::Duration::from_secs(30);
-        let started = tokio::time::Instant::now();
-        let mut cadence = HealthProbeCadence::starting_at(started);
-
-        assert!(
-            cadence.is_due(0, started),
-            "the first TCP batch must trigger health"
-        );
-        cadence.completed(0, started, interval);
-        assert!(!cadence.is_due(0, started + interval / 2));
-        assert!(
-            cadence.is_due(1, started + interval / 2),
-            "a configuration generation must trigger health immediately"
-        );
-
-        cadence.completed(1, started + interval / 2, interval);
-        assert!(!cadence.is_due(1, started + interval));
-        assert!(cadence.is_due(1, started + interval + interval / 2));
     }
 }
