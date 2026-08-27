@@ -2,8 +2,9 @@
 
 Union 是自托管管理平台和唯一发行单元。主机监控、Sunshine、Sentinel Monitor、Photo Backup
 与 Dufs 按发行 profile 在构建期选择；目标运行模型是 Union 公共 gateway 加私有独立模块
-进程。当前 Sunshine/主机仍在核心进程内，其余三项仍在静态网关迁移中，不能把目标文档误读
-为已完成实现。模块需求、边界和迁移状态见 [`docs/modules.md`](docs/modules.md)。
+进程。当前 Sunshine/主机仍在核心进程内；Sentinel、Photo 与 Dufs 已能由 Cargo feature
+选择 catalog 并统一组装，但静态网关与 supervisor 尚未完成，不能把目标文档误读为已完成
+实现。模块需求、边界和迁移状态见 [`docs/modules.md`](docs/modules.md)。
 
 跨平台 Agent 采集 CPU / 内存 / 磁盘 / 网络 / 温度 / GPU 指标，上报到中心服务端；
 管理台提供实时状态、历史曲线与主机生命周期管理。
@@ -27,6 +28,8 @@ Union 是自托管管理平台和唯一发行单元。主机监控、Sunshine、
 远端 Agent 与 Photo Android/iOS 客户端必须物理上单独安装，但只随 Union Release 版本化；
 模块仓库不再提供独立 Release。组合构建由独立的
 [`union-builder`](https://github.com/isarmg/union-builder) 执行。
+当前可复现组合工具版本为
+[`v0.2.0`](https://github.com/isarmg/union-builder/releases/tag/v0.2.0)。
 
 ## 快速开始
 
