@@ -10,6 +10,7 @@
 | 第一次接触项目 | [零基础教学](../beginner-guide/README.md) |
 | 快速建立完整认识 | [完整项目手册](../DOCUMENTATION.md) |
 | 判断功能范围和明确非目标 | [功能与边界说明](reference/capabilities.md) |
+| 理解编译期模块与当前迁移差距 | [平台模块](modules.md) |
 | 配置本地开发环境 | [本地开发运行手册](runbooks/development.md) |
 | 开发或部署 Server | [Server 说明](server.md) |
 | 开发或部署 Agent | [Agent 说明](agent.md) |

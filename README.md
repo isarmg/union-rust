@@ -1,6 +1,9 @@
 # UnionC
 
-只读的多主机状态监控系统，附带一组 Sunshine 串流主机管理能力。
+Union 是自托管管理平台和唯一发行单元。主机监控、Sunshine、Sentinel Monitor、Photo Backup
+与 Dufs 按发行 profile 在构建期选择；目标运行模型是 Union 公共 gateway 加私有独立模块
+进程。当前 Sunshine/主机仍在核心进程内，其余三项仍在静态网关迁移中，不能把目标文档误读
+为已完成实现。模块需求、边界和迁移状态见 [`docs/modules.md`](docs/modules.md)。
 
 跨平台 Agent 采集 CPU / 内存 / 磁盘 / 网络 / 温度 / GPU 指标，上报到中心服务端；
 管理台提供实时状态、历史曲线与主机生命周期管理。
@@ -20,6 +23,10 @@
 | `agent` | 采集 Agent（Rust） | Linux / Windows / macOS |
 | `protocol` | Server 与 Agent 共用的线上 DTO（Rust library） | 跨平台 |
 | `web` | 管理台前端（React + TypeScript） | 浏览器 |
+
+远端 Agent 与 Photo Android/iOS 客户端必须物理上单独安装，但只随 Union Release 版本化；
+模块仓库不再提供独立 Release。组合构建由独立的
+[`union-builder`](https://github.com/isarmg/union-builder) 执行。
 
 ## 快速开始
 

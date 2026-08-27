@@ -1,5 +1,10 @@
 # 平台模块
 
+> 目标边界已变更：五个业务模块都必须由编译 profile 选择并以 Union 私有进程运行，Union 是
+> 唯一公共入口和 Release。本文后续“内置/服务模块”的描述是当前迁移状态，不是最终承诺。
+> 完整需求见 sibling `upstream/REQUIREMENTS-AND-BOUNDARIES.md`，迁移门禁见
+> `platform/docs/COMPILED-PROCESS-MIGRATION.md`。
+
 UnionC 是 `/mnt/sarmg.org/platform` 的首个发行组装程序。模块目录来自版本化 manifest，
 而不是前后端各自维护的名称列表。
 
