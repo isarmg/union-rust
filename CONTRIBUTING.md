@@ -123,4 +123,4 @@ fn multibyte_input_is_rejected_instead_of_panicking() { ... }
 
 ## 许可
 
-提交即表示你同意你的贡献以 MIT 与 Apache-2.0 双许可发布。
+提交即表示你同意你的贡献以 [Apache License 2.0](LICENSE-APACHE) 发布。

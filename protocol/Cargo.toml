@@ -3,6 +3,7 @@ name = "unionc-protocol"
 description = "Current wire types shared by the UnionC server and telemetry agent"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
 license.workspace = true
 
 [dependencies]

@@ -13,7 +13,8 @@ members = ["server", "agent", "protocol"]
 [workspace.package]
 version = "0.3.6"
 edition = "2024"
-license = "MIT OR Apache-2.0"
+authors = ["sarmg <isarmg@163.com>"]
+license = "Apache-2.0"
 
 # Workspace 成员共用的依赖在此统一版本，避免同一个库出现多个版本各自编译一遍。
 [workspace.dependencies]

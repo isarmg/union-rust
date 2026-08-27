@@ -4,10 +4,10 @@ platform: linux
 version: ${VERSION}
 section: admin
 priority: optional
-maintainer: UnionC
+maintainer: sarmg <isarmg@163.com>
 description: |
   UnionC console backend with embedded SQLite — read-only multi-host monitoring and Sunshine management.
-license: MIT OR Apache-2.0
+license: Apache-2.0
 overrides:
   deb:
     # The lifecycle scripts call useradd/groupadd, which Debian ships in

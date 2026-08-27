@@ -55,4 +55,4 @@ Server 测试各自创建临时 SQLite，不需要外部数据库。项目只支
 
 ## 许可
 
-MIT OR Apache-2.0
+[Apache License 2.0](LICENSE-APACHE)

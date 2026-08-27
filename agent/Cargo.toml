@@ -3,6 +3,7 @@ name = "unionc-agent"
 description = "Read-only cross-platform host telemetry agent for UnionC"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
 license.workspace = true
 
 [features]

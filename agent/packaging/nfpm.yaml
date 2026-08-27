@@ -4,9 +4,9 @@ platform: linux
 version: ${VERSION}
 section: admin
 priority: optional
-maintainer: UnionC
+maintainer: sarmg <isarmg@163.com>
 description: Read-only cross-platform host telemetry agent for UnionC
-license: MIT OR Apache-2.0
+license: Apache-2.0
 overrides:
   deb:
     # useradd/groupadd/userdel/groupdel are provided by passwd on Debian-family
