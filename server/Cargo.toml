@@ -53,8 +53,8 @@ unionc-protocol.workspace = true
 uuid.workspace = true
 # 0.13: rustls 成为默认 TLS 后端，feature 名从 rustls-tls 改为 rustls
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
-sarmg-platform-axum = { git = "https://github.com/isarmg/sarmg-platform.git", rev = "09198f0fc4878a1d4c717752c47948b8223dd567" }
-sarmg-platform-core = { git = "https://github.com/isarmg/sarmg-platform.git", rev = "09198f0fc4878a1d4c717752c47948b8223dd567" }
+sarmg-platform-axum = { git = "https://github.com/isarmg/sarmg-platform.git", rev = "b850394e9fe83f8b3dbbfb6a6cf18ddd5d13d53d" }
+sarmg-platform-core = { git = "https://github.com/isarmg/sarmg-platform.git", rev = "b850394e9fe83f8b3dbbfb6a6cf18ddd5d13d53d" }
 
 [dev-dependencies]
 tempfile = "3"

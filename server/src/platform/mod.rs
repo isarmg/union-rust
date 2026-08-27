@@ -9,35 +9,11 @@ use axum::{Json, Router, extract::State, routing::get};
 use futures_util::stream::{self, StreamExt};
 use sarmg_platform_axum::{AxumModule, assemble};
 use sarmg_platform_core::{
-    ModuleCatalog, ModuleDescriptor, ModuleExecution, ModuleHealthState, ModuleInstance,
+    ModuleCatalog, ModuleDescriptor, ModuleExecution, ModuleHealthState, ModuleInstance, manifests,
 };
 use tokio::sync::RwLock;
 
 use crate::{config::PlatformSettings, state::AppState, system::ServiceStatus};
-
-const SUNSHINE_MANIFEST: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../platform/modules/sunshine.json"
-));
-const HOST_MONITORING_MANIFEST: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../platform/modules/host-monitoring.json"
-));
-#[cfg(feature = "module-sentinel-monitor")]
-const SENTINEL_MANIFEST: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../platform/modules/sentinel-monitor.json"
-));
-#[cfg(feature = "module-photo-backup")]
-const PHOTO_MANIFEST: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../platform/modules/photo-backup.json"
-));
-#[cfg(feature = "module-dufs")]
-const DUFS_MANIFEST: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../platform/modules/dufs.json"
-));
 
 #[derive(Debug, Clone)]
 struct HealthSnapshot {
@@ -168,14 +144,14 @@ impl PlatformState {
 
 fn catalog() -> anyhow::Result<ModuleCatalog> {
     let manifests = vec![
-        SUNSHINE_MANIFEST,
-        HOST_MONITORING_MANIFEST,
+        manifests::SUNSHINE,
+        manifests::HOST_MONITORING,
         #[cfg(feature = "module-sentinel-monitor")]
-        SENTINEL_MANIFEST,
+        manifests::SENTINEL_MONITOR,
         #[cfg(feature = "module-photo-backup")]
-        PHOTO_MANIFEST,
+        manifests::PHOTO_BACKUP,
         #[cfg(feature = "module-dufs")]
-        DUFS_MANIFEST,
+        manifests::DUFS,
     ];
     let modules = manifests
         .into_iter()
