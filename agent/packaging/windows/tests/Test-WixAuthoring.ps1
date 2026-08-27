@@ -540,25 +540,41 @@ if ($defaultProductVersions.Count -ne 1) {
 Assert-Equal $defaultProductVersions[0].InnerText `
     $workspaceVersionMatches[0].Groups["version"].Value `
     "The default WiX ProductVersion must match the unionc-agent workspace package version."
-Assert-Contains $releaseText 'Where-Object name -eq "unionc-agent"' `
-    "The release workflow must resolve the Windows MSI version from unionc-agent Cargo metadata."
-Assert-Contains $releaseText '$version = $agentPackage[0].version' `
-    "The unsigned MSI version must default to the unionc-agent Cargo package version."
-Assert-Contains $releaseText 'if ($agentPackage[0].version -ne $version)' `
-    "The release workflow must reject a tag that differs from the unionc-agent Cargo package version."
-$productVersionBindings = [regex]::Matches(
+# Agent installers may be carried inside the versioned Builder distribution,
+# but this repository must create exactly one Union Release and must never
+# rebuild or upload an Agent-only artifact beside it. WiX authoring remains
+# independently testable below without coupling the product Release workflow
+# back to the retired standalone MSI publication path.
+Assert-Contains $releaseText `
+    'uses: isarmg/union-builder/.github/workflows/build-union.yml@v1.0.0' `
+    "The release workflow must delegate the complete distribution to Union Builder v1.0.0."
+Assert-Contains $releaseText 'profile: full' `
+    "The release workflow must select the official full Union profile."
+Assert-Contains $releaseText 'artifact-name: union-distribution' `
+    "The Builder output must remain one complete Union distribution artifact."
+Assert-Contains $releaseText 'archive="dist/union-${VERSION}-full-linux-x86_64.tar.gz"' `
+    "The GitHub Release must publish the complete Union archive."
+Assert-Contains $releaseText 'dist/SHA256SUMS' `
+    "The complete Union archive must be accompanied by its checksum manifest."
+$unionReleaseCreates = [regex]::Matches(
     $releaseText,
-    '(?m)^\s+PRODUCT_VERSION:\s+\$\{\{\s+steps\.version\.outputs\.version\s+\}\}\s*$'
+    '(?m)^\s+gh release create "\$GITHUB_REF_NAME"\s+\\$'
 )
-if ($productVersionBindings.Count -ne 1) {
-    throw "Expected the resolved MSI version to feed the single unsigned Windows MSI build step; found $($productVersionBindings.Count)."
+if ($unionReleaseCreates.Count -ne 1) {
+    throw "Expected exactly one GitHub Release for the complete Union distribution; found $($unionReleaseCreates.Count)."
 }
-$lifecycleVersionBindings = [regex]::Matches(
-    $releaseText,
-    '(?m)^\s+-ProductVersion "\$\{\{\s+steps\.version\.outputs\.version\s+\}\}"\s*$'
-)
-if ($lifecycleVersionBindings.Count -ne 1) {
-    throw "Expected the resolved MSI version to feed the Windows lifecycle test once; found $($lifecycleVersionBindings.Count)."
+foreach ($standaloneAgentReleaseMechanism in @(
+    'agent\packaging\windows\wix\build-msi.cmd',
+    'UnionC-Agent-${',
+    'unionc-agent-windows',
+    'PRODUCT_VERSION:',
+    '-ProductVersion "',
+    'dist/*.msi',
+    'actions/upload-artifact@'
+)) {
+    if ($releaseText.Contains($standaloneAgentReleaseMechanism)) {
+        throw "The Union Release workflow must not build or publish an independent Agent artifact: $standaloneAgentReleaseMechanism"
+    }
 }
 Assert-Contains $projectText "'^\d+\.\d+\.\d+$'" `
     "The build must enforce a strict three-field MSI version."
