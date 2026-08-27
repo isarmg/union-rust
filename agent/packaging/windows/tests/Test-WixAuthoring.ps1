@@ -558,7 +558,7 @@ Assert-Contains $releaseText 'dist/SHA256SUMS' `
     "The complete Union archive must be accompanied by its checksum manifest."
 $unionReleaseCreates = [regex]::Matches(
     $releaseText,
-    '(?m)^\s+gh release create "\$GITHUB_REF_NAME"\s+\\$'
+    '(?m)^\s+gh release create "\$GITHUB_REF_NAME"'
 )
 if ($unionReleaseCreates.Count -ne 1) {
     throw "Expected exactly one GitHub Release for the complete Union distribution; found $($unionReleaseCreates.Count)."
