@@ -1885,6 +1885,7 @@ dependencies = [
 [[package]]
 name = "sarmg-platform-axum"
 version = "0.1.0"
+source = "git+https://github.com/isarmg/sarmg-platform.git?rev=09198f0fc4878a1d4c717752c47948b8223dd567#09198f0fc4878a1d4c717752c47948b8223dd567"
 dependencies = [
  "axum",
  "sarmg-platform-core",
@@ -1893,6 +1894,7 @@ dependencies = [
 [[package]]
 name = "sarmg-platform-core"
 version = "0.1.0"
+source = "git+https://github.com/isarmg/sarmg-platform.git?rev=09198f0fc4878a1d4c717752c47948b8223dd567#09198f0fc4878a1d4c717752c47948b8223dd567"
 dependencies = [
  "serde",
  "thiserror 2.0.18",

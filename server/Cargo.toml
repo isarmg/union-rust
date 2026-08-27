@@ -6,6 +6,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = ["module-dufs", "module-photo-backup", "module-sentinel-monitor"]
+module-dufs = []
+module-photo-backup = []
+module-sentinel-monitor = []
+
 [dependencies]
 anyhow.workspace = true
 aes-gcm = "0.10"
@@ -47,8 +53,8 @@ unionc-protocol.workspace = true
 uuid.workspace = true
 # 0.13: rustls 成为默认 TLS 后端，feature 名从 rustls-tls 改为 rustls
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
-sarmg-platform-axum = { path = "../../platform/crates/axum" }
-sarmg-platform-core = { path = "../../platform/crates/core" }
+sarmg-platform-axum = { git = "https://github.com/isarmg/sarmg-platform.git", rev = "09198f0fc4878a1d4c717752c47948b8223dd567" }
+sarmg-platform-core = { git = "https://github.com/isarmg/sarmg-platform.git", rev = "09198f0fc4878a1d4c717752c47948b8223dd567" }
 
 [dev-dependencies]
 tempfile = "3"

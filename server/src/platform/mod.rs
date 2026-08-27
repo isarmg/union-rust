@@ -23,14 +23,17 @@ const HOST_MONITORING_MANIFEST: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../platform/modules/host-monitoring.json"
 ));
+#[cfg(feature = "module-sentinel-monitor")]
 const SENTINEL_MANIFEST: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../platform/modules/sentinel-monitor.json"
 ));
+#[cfg(feature = "module-photo-backup")]
 const PHOTO_MANIFEST: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../platform/modules/photo-backup.json"
 ));
+#[cfg(feature = "module-dufs")]
 const DUFS_MANIFEST: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../platform/modules/dufs.json"
@@ -164,16 +167,20 @@ impl PlatformState {
 }
 
 fn catalog() -> anyhow::Result<ModuleCatalog> {
-    let modules = [
+    let manifests = vec![
         SUNSHINE_MANIFEST,
         HOST_MONITORING_MANIFEST,
+        #[cfg(feature = "module-sentinel-monitor")]
         SENTINEL_MANIFEST,
+        #[cfg(feature = "module-photo-backup")]
         PHOTO_MANIFEST,
+        #[cfg(feature = "module-dufs")]
         DUFS_MANIFEST,
-    ]
-    .into_iter()
-    .map(serde_json::from_str)
-    .collect::<Result<Vec<ModuleDescriptor>, _>>()?;
+    ];
+    let modules = manifests
+        .into_iter()
+        .map(serde_json::from_str)
+        .collect::<Result<Vec<ModuleDescriptor>, _>>()?;
     Ok(ModuleCatalog::new(modules)?)
 }
 
@@ -328,16 +335,24 @@ fn service_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "module-dufs")]
     use sarmg_platform_core::UiContribution;
 
     #[test]
     fn catalog_keeps_business_data_ownership_separate() {
         let catalog = catalog().unwrap();
-        assert_eq!(catalog.modules().len(), 5);
+        let expected = 2
+            + usize::from(cfg!(feature = "module-dufs"))
+            + usize::from(cfg!(feature = "module-photo-backup"))
+            + usize::from(cfg!(feature = "module-sentinel-monitor"));
+        assert_eq!(catalog.modules().len(), expected);
+        #[cfg(feature = "module-dufs")]
         assert!(matches!(
             catalog.get("dufs").unwrap().ui,
             UiContribution::External { .. }
         ));
+        #[cfg(not(feature = "module-dufs"))]
+        assert!(catalog.get("dufs").is_none());
         assert_eq!(
             catalog.get("host-monitoring").unwrap().execution,
             ModuleExecution::InProcess
@@ -348,12 +363,21 @@ mod tests {
     async fn unconfigured_services_are_visible_but_not_launchable() {
         let state = PlatformState::new(&PlatformSettings::default()).unwrap();
         let modules = state.instances().await;
-        let sentinel = modules
-            .iter()
-            .find(|module| module.descriptor.id == "sentinel-monitor")
-            .unwrap();
-        assert!(!sentinel.configured);
-        assert_eq!(sentinel.health, ModuleHealthState::Unconfigured);
-        assert!(sentinel.launch_url.is_none());
+        #[cfg(feature = "module-sentinel-monitor")]
+        {
+            let sentinel = modules
+                .iter()
+                .find(|module| module.descriptor.id == "sentinel-monitor")
+                .unwrap();
+            assert!(!sentinel.configured);
+            assert_eq!(sentinel.health, ModuleHealthState::Unconfigured);
+            assert!(sentinel.launch_url.is_none());
+        }
+        #[cfg(not(feature = "module-sentinel-monitor"))]
+        assert!(
+            modules
+                .iter()
+                .all(|module| module.descriptor.id != "sentinel-monitor")
+        );
     }
 }
