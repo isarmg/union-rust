@@ -540,14 +540,20 @@ if ($defaultProductVersions.Count -ne 1) {
 Assert-Equal $defaultProductVersions[0].InnerText `
     $workspaceVersionMatches[0].Groups["version"].Value `
     "The default WiX ProductVersion must match the unionc-agent workspace package version."
-# Agent installers may be carried inside the versioned Builder distribution,
-# but this repository must create exactly one Union Release and must never
-# rebuild or upload an Agent-only artifact beside it. WiX authoring remains
-# independently testable below without coupling the product Release workflow
-# back to the retired standalone MSI publication path.
-Assert-Contains $releaseText `
-    'uses: isarmg/union-builder/.github/workflows/build-union.yml@v1.0.0' `
-    "The release workflow must delegate the complete distribution to Union Builder v1.0.0."
+# The Agent is a remote companion, not a server module package. This repository
+# creates exactly one Union Release and never rebuilds or uploads an Agent-only
+# artifact beside it. WiX authoring remains independently testable without
+# coupling the product Release workflow back to the retired MSI publication path.
+$builderUsesMatches = [regex]::Matches(
+    $releaseText,
+    '(?m)^\s+uses:\s+isarmg/union-builder/\.github/workflows/build-union\.yml@(?<revision>[0-9a-f]{40})\s*$'
+)
+if ($builderUsesMatches.Count -ne 1) {
+    throw "The release workflow must delegate once to an immutable Union Builder v2 commit."
+}
+$builderRevision = $builderUsesMatches[0].Groups["revision"].Value
+Assert-Contains $releaseText ("builder-revision: " + $builderRevision) `
+    "The Builder checkout revision must equal the reusable workflow commit."
 Assert-Contains $releaseText 'profile: full' `
     "The release workflow must select the official full Union profile."
 Assert-Contains $releaseText 'artifact-name: union-distribution' `
