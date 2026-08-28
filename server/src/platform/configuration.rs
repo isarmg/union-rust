@@ -59,15 +59,37 @@ struct ConfigurationEntry {
 #[derive(Clone)]
 pub struct ConfigurationRegistry {
     directory: Arc<PathBuf>,
+    /// Actual Core-owned roots, resolved from this process' deployment configuration. Keeping
+    /// these separate from module claims avoids inventing a pseudo-module while applying the same
+    /// component-aware lexical overlap rule in every read, write and injection path.
+    reserved_storage_trees: Arc<Vec<PathBuf>>,
     entries: Arc<RwLock<BTreeMap<String, ConfigurationEntry>>>,
 }
 
 impl ConfigurationRegistry {
-    pub fn new(directory: PathBuf) -> Self {
-        Self {
-            directory: Arc::new(directory),
-            entries: Arc::new(RwLock::new(BTreeMap::new())),
+    /// Construct a registry with every Core-owned storage root that modules must not overlap.
+    ///
+    /// Reserved roots are normalized here because deployment paths may come from environment
+    /// configuration and need not already be in the strict textual form required of module JSON.
+    pub fn new(
+        directory: PathBuf,
+        reserved_storage_trees: impl IntoIterator<Item = PathBuf>,
+    ) -> anyhow::Result<Self> {
+        let mut normalized_reserved_storage_trees = Vec::new();
+        for path in reserved_storage_trees {
+            let path = crate::infra::paths::normalize_absolute(path)?;
+            if path == Path::new("/") {
+                anyhow::bail!("reserved Core storage tree must not be the filesystem root");
+            }
+            if !normalized_reserved_storage_trees.contains(&path) {
+                normalized_reserved_storage_trees.push(path);
+            }
         }
+        Ok(Self {
+            directory: Arc::new(directory),
+            reserved_storage_trees: Arc::new(normalized_reserved_storage_trees),
+            entries: Arc::new(RwLock::new(BTreeMap::new())),
+        })
     }
 
     pub async fn register(
@@ -102,7 +124,11 @@ impl ConfigurationRegistry {
         };
         let mut entries = self.entries.write().await;
         let (value, validation_error) = if let Some(candidate) = value {
-            match validate_resource_conflicts(&entries, Some((module, &schema, &candidate))) {
+            match validate_resource_conflicts(
+                &entries,
+                Some((module, &schema, &candidate)),
+                &self.reserved_storage_trees,
+            ) {
                 Ok(()) => (Some(candidate), validation_error),
                 Err(error) => (None, Some(safe_resource_validation_error(&error))),
             }
@@ -143,7 +169,8 @@ impl ConfigurationRegistry {
             schema: entry.schema.clone(),
             configured: value.is_some()
                 && entry.validation_error.is_none()
-                && validate_resource_conflicts(&entries, None).is_ok(),
+                && validate_resource_conflicts(&entries, None, &self.reserved_storage_trees)
+                    .is_ok(),
             validation_error: entry.validation_error.clone(),
             value,
         })
@@ -156,7 +183,7 @@ impl ConfigurationRegistry {
 
     pub(crate) async fn raw_value_owned(&self, module: String) -> Option<Value> {
         let entries = self.entries.read().await;
-        if validate_resource_conflicts(&entries, None).is_err() {
+        if validate_resource_conflicts(&entries, None, &self.reserved_storage_trees).is_err() {
             return None;
         }
         entries.get(&module).and_then(|entry| entry.value.clone())
@@ -167,7 +194,7 @@ impl ConfigurationRegistry {
         entries.get(module).is_some_and(|entry| {
             entry.value.is_some()
                 && entry.validation_error.is_none()
-                && validate_resource_conflicts(&entries, None).is_ok()
+                && validate_resource_conflicts(&entries, None, &self.reserved_storage_trees).is_ok()
         })
     }
 
@@ -178,7 +205,7 @@ impl ConfigurationRegistry {
     /// deployment concerns.
     pub async fn validate_resource_isolation(&self) -> anyhow::Result<()> {
         let entries = self.entries.read().await;
-        validate_resource_conflicts(&entries, None)
+        validate_resource_conflicts(&entries, None, &self.reserved_storage_trees)
     }
 
     pub async fn set(&self, module: &str, value: Value) -> anyhow::Result<ModuleConfiguration> {
@@ -200,7 +227,11 @@ impl ConfigurationRegistry {
             .get(module)
             .expect("configuration remained registered while validating")
             .schema;
-        validate_resource_conflicts(&entries, Some((module, schema, &value)))?;
+        validate_resource_conflicts(
+            &entries,
+            Some((module, schema, &value)),
+            &self.reserved_storage_trees,
+        )?;
         std::fs::create_dir_all(self.directory.as_ref())?;
         write_json_atomically(&self.configuration_path(module)?, &value)?;
         let entry = entries
@@ -438,6 +469,7 @@ fn validate_value(schema: &Value, value: &Value, path: &str) -> anyhow::Result<(
 fn validate_resource_conflicts(
     entries: &BTreeMap<String, ConfigurationEntry>,
     replacement: Option<(&str, &Value, &Value)>,
+    reserved_storage_trees: &[PathBuf],
 ) -> anyhow::Result<()> {
     let mut claims = Vec::new();
     for (module, entry) in entries {
@@ -450,6 +482,21 @@ fn validate_resource_conflicts(
     }
     if let Some((module, schema, value)) = replacement {
         collect_resource_claims(module, schema, value, "$", &mut claims)?;
+    }
+
+    for claim in &claims {
+        let ResourceIdentity::StorageTree(path) = &claim.identity else {
+            continue;
+        };
+        if reserved_storage_trees
+            .iter()
+            .any(|reserved| storage_trees_overlap(path, reserved))
+        {
+            anyhow::bail!(
+                "configuration resource conflict: module {} declares a storage tree that overlaps reserved Core storage",
+                claim.module
+            );
+        }
     }
 
     for (index, left) in claims.iter().enumerate() {
@@ -479,10 +526,7 @@ fn validate_resource_conflicts(
                 (
                     ResourceIdentity::StorageTree(left_path),
                     ResourceIdentity::StorageTree(right_path),
-                ) if left_path == right_path
-                    || left_path.starts_with(right_path)
-                    || right_path.starts_with(left_path) =>
-                {
+                ) if storage_trees_overlap(left_path, right_path) => {
                     if left.module == right.module {
                         anyhow::bail!(
                             "configuration resource conflict: storage tree declarations for module {} overlap",
@@ -500,6 +544,10 @@ fn validate_resource_conflicts(
         }
     }
     Ok(())
+}
+
+fn storage_trees_overlap(left: &Path, right: &Path) -> bool {
+    left == right || left.starts_with(right) || right.starts_with(left)
 }
 
 fn collect_resource_claims(
@@ -777,10 +825,14 @@ fn bounded_safe_error(error: &anyhow::Error) -> String {
 mod tests {
     use super::*;
 
+    fn test_registry(directory: &Path) -> ConfigurationRegistry {
+        ConfigurationRegistry::new(directory.to_path_buf(), []).unwrap()
+    }
+
     #[tokio::test]
     async fn configuration_is_validated_persisted_and_redacted() {
         let directory = tempfile::tempdir().unwrap();
-        let registry = ConfigurationRegistry::new(directory.path().to_path_buf());
+        let registry = test_registry(directory.path());
         registry
             .register(
                 "example",
@@ -905,7 +957,7 @@ mod tests {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
 
-        let registry = ConfigurationRegistry::new(directory.path().to_path_buf());
+        let registry = test_registry(directory.path());
         registry
             .register(
                 "example",
@@ -1006,7 +1058,7 @@ mod tests {
     #[tokio::test]
     async fn postgresql_database_and_role_must_both_be_unique_per_endpoint() {
         let directory = tempfile::tempdir().unwrap();
-        let registry = ConfigurationRegistry::new(directory.path().to_path_buf());
+        let registry = test_registry(directory.path());
         for module in ["alpha", "beta"] {
             registry
                 .register(
@@ -1076,7 +1128,7 @@ mod tests {
     #[tokio::test]
     async fn storage_trees_must_be_normalized_absolute_and_non_overlapping() {
         let directory = tempfile::tempdir().unwrap();
-        let registry = ConfigurationRegistry::new(directory.path().to_path_buf());
+        let registry = test_registry(directory.path());
         for module in ["alpha", "beta"] {
             registry
                 .register(module, 1, storage_resource_schema(), vec![])
@@ -1119,9 +1171,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn module_storage_must_not_overlap_reserved_core_storage() {
+        let directory = tempfile::tempdir().unwrap();
+        let core_data_root = directory.path().join("core/data");
+        let plugin_state_root = directory.path().join("external-plugin-state");
+        let registry = ConfigurationRegistry::new(
+            directory.path().join("configuration"),
+            [
+                core_data_root.join("temporary/.."),
+                plugin_state_root.clone(),
+            ],
+        )
+        .unwrap();
+        registry
+            .register("example", 1, storage_resource_schema(), vec![])
+            .await
+            .unwrap();
+
+        let core_ancestor = core_data_root.parent().unwrap().to_path_buf();
+        for (relation, candidate) in [
+            ("equal", core_data_root.clone()),
+            ("ancestor", core_ancestor),
+            ("descendant", core_data_root.join("module-data")),
+            (
+                "external plugin state",
+                plugin_state_root.join("module-data"),
+            ),
+        ] {
+            let error = registry
+                .set("example", serde_json::json!({"data_dir":candidate}))
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("overlaps reserved Core storage"),
+                "{relation}: {error}"
+            );
+            assert!(
+                !error.contains(directory.path().to_str().unwrap()),
+                "reserved paths must not be disclosed: {error}"
+            );
+        }
+
+        registry
+            .set(
+                "example",
+                serde_json::json!({"data_dir":directory.path().join("module-data")}),
+            )
+            .await
+            .unwrap();
+        assert!(registry.is_configured("example").await);
+        registry.validate_resource_isolation().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn persisted_resource_conflict_is_retained_but_not_configured_or_injected() {
         let directory = tempfile::tempdir().unwrap();
-        let registry = ConfigurationRegistry::new(directory.path().to_path_buf());
+        let registry = test_registry(directory.path());
         registry
             .register(
                 "alpha",
@@ -1181,7 +1287,7 @@ mod tests {
     #[tokio::test]
     async fn declarations_within_one_module_may_not_overlap() {
         let directory = tempfile::tempdir().unwrap();
-        let registry = ConfigurationRegistry::new(directory.path().to_path_buf());
+        let registry = test_registry(directory.path());
         registry
             .register(
                 "example",

@@ -50,12 +50,17 @@ enable/disable 状态保存在 Core 数据目录，配置读取时对声明的�
 - `x-union-resource: postgresql_database` 要求规范的 `postgresql://` URL，并在同一 endpoint 上
   阻止两个模块复用 database 或 role；
 - `x-union-resource: storage_tree` 要求非根、绝对且词法规范的路径，并阻止模块内或模块间相同、
-  父子重叠的目录树。
+  父子重叠的目录树；Core 实际数据根和 Plugin Runtime 状态根属于保留目录，模块目录与其相同、
+  为其祖先或后代同样被拒绝。
 
 Core 在保存新值、判断 configured 状态和向 worker 注入前复核全部声明。冲突的磁盘旧配置保留用于
 管理员修复，但不会被回显或注入。这是保守的误配置门禁，不解析 DNS alias、symlink、bind mount
 或实际进程访问权限；同 UID worker 仍处于共同信任域，强隔离必须依靠独立 UID、数据库/文件权限、
 Container 或 Service。
+
+保留目录取自进程实际解析后的 `UNIONC_DATA_DIR` 与 Plugin Runtime 状态根，包括外置
+`UNIONC_PLUGIN_STATE_DIR`。升级前若模块 storage tree 与这些目录重叠，旧 JSON 不会被删除，但该
+模块将 fail-closed 为未配置；管理员必须先迁移业务数据，再提交独立目录配置并重新启用。
 
 ## 当前标准模块
 

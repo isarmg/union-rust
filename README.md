@@ -93,8 +93,10 @@ database/role、独立 migration 和备份责任；它们可以共用 cluster，
 模块配置 Schema 必须用 `x-union-resource: postgresql_database` 标注 PostgreSQL URL，用
 `x-union-resource: storage_tree` 标注状态或内容目录。Core 会拒绝同一 PostgreSQL endpoint 上重复的
 database 或 role，以及相同、父子重叠或非绝对规范形式的 storage tree；冲突的磁盘旧配置保留但
-标记为未配置，且不会注入 worker。这是面向声明值的误配置防护，不解析 DNS 别名、符号链接或挂载
-关系，也不替代独立 UID、文件权限、数据库权限、Container 或 Service 隔离。
+标记为未配置，且不会注入 worker。Core 实际解析的 `UNIONC_DATA_DIR` 和 Plugin Runtime 状态根
+（包括外置 `UNIONC_PLUGIN_STATE_DIR`）也是保留 storage tree；模块目录与任一保留根相同、为其
+祖先或后代都会被拒绝。这是面向声明值的误配置防护，不解析 DNS 别名、符号链接或挂载关系，也不
+替代独立 UID、文件权限、数据库权限、Container 或 Service 隔离。
 
 Photo 和 Dufs 只要求传输链路加密：外部请求必须经过 Union TLS，服务器保存的内容仍是服务可直接
 读取的原始明文字节。摘要用于完整性，不构成端到端或静态内容加密。

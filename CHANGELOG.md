@@ -42,6 +42,8 @@
 
 - Core SQLite 收敛为平台所有权；Sunshine、Host、Sentinel 与 Photo 各使用专用 PostgreSQL
   database/role 和独立 migration/备份单元，Dufs 独占 SQLite 与 rooted filesystem。
+- Core 实际数据根及 Plugin Runtime 状态根成为保留 storage tree；模块配置与其相同、为其父目录
+  或子目录都会 fail-closed，避免模块覆盖控制面 SQLite、密钥、配置或启停状态。
 - Gateway 按 Manifest route/method/auth/permission 转发，清除外部伪造的内部身份与 hop-by-hop
   header，并持续检查 worker liveness/readiness。Photo/Dufs 仍仅要求传输加密，服务器内容保持
   可由服务读取的原始明文字节。

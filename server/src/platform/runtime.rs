@@ -375,7 +375,16 @@ pub struct PlatformState {
 
 impl PlatformState {
     pub fn new(store: PackageStore, administrator: &str) -> anyhow::Result<Self> {
-        let configuration = ConfigurationRegistry::new(store.configuration_directory());
+        // The main data root owns Core SQLite, the local administrator configuration and secrets.
+        // Plugin selection/configuration state can be relocated independently, so reserve the
+        // store's actual state root as well instead of assuming it remains under UNIONC_DATA_DIR.
+        let configuration = ConfigurationRegistry::new(
+            store.configuration_directory(),
+            [
+                crate::infra::paths::data_dir().to_path_buf(),
+                store.state_root().to_path_buf(),
+            ],
+        )?;
         Ok(Self {
             store,
             records: Arc::new(RwLock::new(BTreeMap::new())),

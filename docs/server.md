@@ -43,6 +43,8 @@ Core 的主要部署环境变量：
 - `UNIONC_ENV=production`
 - `UNIONC_DATA_DIR`：Core SQLite 与 Plugin Runtime 配置/启停状态的绝对根路径；模块业务存储
   仍由各自配置和数据 owner 决定
+- 可选 `UNIONC_PLUGIN_STATE_DIR`：把 Plugin Runtime 配置/启停状态放到另一个私有绝对路径；它与
+  `UNIONC_DATA_DIR` 都是 Core 保留目录，不能作为模块 storage tree 或其父/子目录
 - `UNIONC_SECRET_KEY`：Core 32-byte Base64 主密钥
 - `UNIONC_PROXY_SECRET`：可信 TLS 反代证明，64 位小写 hex
 - 首次创建核心管理员时临时使用 `UNIONC_ALLOW_BOOTSTRAP=1` 和
@@ -61,6 +63,10 @@ Core 的主要部署环境变量：
 若新发行的配置 Schema 拒绝旧值，Core 保留旧文件但不会注入 worker，并通过配置 API 返回有界、
 不含配置值的 `validation_error`；模块保持未配置，管理员可按新 Schema PUT 完整替代值。这样升级
 不会因为旧配置不兼容而失去修复入口。
+
+Core 对所有 `x-union-resource: storage_tree` 声明执行同目录和父子目录冲突检查，并把实际解析后的
+`UNIONC_DATA_DIR` 与 Plugin Runtime 状态根作为保留树。旧模块目录若覆盖保留根、位于其中或包含
+保留根，升级后会保留原配置但 fail-closed 为未配置；先迁移业务数据，再提交互不重叠的新目录。
 
 ## 运行期模块管理
 
