@@ -57,6 +57,10 @@ sudo union-builder rollback --root /opt/union
 这组命令描述受支持的发行路径，不代表当前工作树已经完成生产环境验收。开发者仍可分别运行
 crate 测试；不能把开发启动方式当作模块独立部署承诺。
 
+当前 `v0.4.0` 是正式的架构/构建里程碑 Release，**不是 production-ready 资格声明**。真实
+PostgreSQL/SQLite/文件系统迁移、网关/媒体运行检查、生产服务升级以及服务/数据回滚仍须在部署
+前逐项验收。
+
 ## 关键边界
 
 - Union 是唯一公网监听者；worker 必须保持回环绑定，前置反代只指向 Union。

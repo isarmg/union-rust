@@ -168,6 +168,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.release_metadata.outputs.version }}
+          RELEASE_CLASSIFICATION: |
+            ## Release classification
+
+            This is a formal architecture/build milestone Release. It is **not production-ready** and does not approve production deployment. Production promotion still requires real database/filesystem migration, runtime gateway/media checks, service upgrade, and service/data rollback evidence.
         run: |
           set -euo pipefail
           archive="dist/union-${VERSION}-full-linux-x86_64.tar.gz"
@@ -176,4 +180,5 @@ jobs:
             dist/SHA256SUMS \
             --verify-tag \
             --title "Union ${VERSION}" \
+            --notes "$RELEASE_CLASSIFICATION" \
             --generate-notes
