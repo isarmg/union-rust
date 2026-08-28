@@ -4,14 +4,15 @@
 
 | 组件 | 要求 |
 |---|---|
-| Rust | stable（当前锁定依赖要求 1.95+；edition 2024 本身要求 1.85+） |
-| SQLite | Core 与 Dufs 各自内嵌使用，无需单独安装 |
-| PostgreSQL | Sunshine、Host、Sentinel、Photo 集成测试各使用专用 database/role |
+| Rust | 1.98.0（与 CI 和正式构建一致） |
+| SQLite | Core 内嵌使用，无需单独安装 |
 | Node.js | 24 LTS 或更高（前端） |
 
-服务端**仅支持 Linux**（`lib.rs` 有 `compile_error!` 固定该约束）；Agent 支持
-Linux / Windows / macOS。在非 Linux 上开发 Agent 时需显式指定 `-p unionc-agent`，
-否则 workspace 默认成员会把服务端一并拉进来。
+Core 服务端**仅支持 Linux**（`lib.rs` 有 `compile_error!` 固定该约束）。本仓库只维护 Core 和
+Web Shell；Sunshine 与 Host worker 不属于本仓库 workspace，分别在
+[`sunshine-worker`](https://github.com/isarmg/sunshine-worker) 和
+[`host-monitoring`](https://github.com/isarmg/host-monitoring) 开发与验证。Host/Agent DTO 和跨平台
+Agent 也由 `host-monitoring` 仓库维护、构建和测试。
 
 ## 构建与测试
 
@@ -27,8 +28,9 @@ cargo test --workspace
 ### 数据层测试遵守模块所有权
 
 Core 持久层测试会在系统临时目录创建隔离 SQLite。Sunshine、Host、Sentinel、Photo 的数据与
-migration 测试属于各自 worker，必须使用相互隔离的专用 PostgreSQL database/role；Dufs 使用
-自己的临时 SQLite 和文件根。不能用 Core SQLite 单测替代模块数据库集成测试：
+migration 测试属于各自模块仓库，必须在对应仓库中使用相互隔离的专用 PostgreSQL
+database/role；Dufs 使用自己的临时 SQLite 和文件根。不能用 Core SQLite 单测替代模块数据库
+集成测试：
 
 ```bash
 cargo test -p unionc
@@ -38,25 +40,14 @@ cargo test -p unionc
 旧格式转换、回填或双写路径接回 Core 请求路径。模块 schema 变化由模块自己的 migration 和
 合同测试负责，不能由 Core 建立跨模块表或共享 migration ledger。
 
-OTLP live 测试需要真实 Collector，并由 `UNIONC_AGENT_TEST_REQUIRE_OTLP=1` 守护。它验证
-Agent → Collector 的接收合同，不验证 Collector exporter、时序库落库或查询。
-
 ### 提交前必须通过
 
-以下是核心本地门禁；它们刻意包含当前 CI 没有单独执行的 protocol 单测和 OTLP 官方 proto
-解码测试。CI 还配置了三个 Agent 平台各自的打包/生命周期门禁和真实 Collector；前序步骤
-失败时，后续平台门禁不会执行：
+以下是本仓库 Core 与 Web Shell 的本地门禁：
 
 ```bash
 cargo fmt --all -- --check
 cargo clippy -p unionc --all-targets -- -D warnings
-cargo clippy -p unionc-agent --all-targets -- -D warnings
 cargo test --workspace
-# Agent 的 feature 分支平时不编译，必须单独覆盖
-cargo check -p unionc-agent --no-default-features --all-targets
-cargo check -p unionc-agent --no-default-features --features otlp --all-targets
-cargo check -p unionc-agent --no-default-features --features nvidia --all-targets
-cargo test -p unionc-agent --features otlp --test otlp_encoding
 cd web
 npm ci
 npm audit --audit-level=high
@@ -66,8 +57,8 @@ npm test
 npm run build
 ```
 
-真实 Collector 的 `otlp_live` 需要先准备接收端；跨平台安装器门禁也必须依赖对应 CI runner，
-不能用一台 Linux 开发机上的本地通过代替。
+Host worker、protocol、Agent feature、真实 Collector 和跨平台安装器门禁必须在
+`host-monitoring` 仓库执行；不能用本仓库的 Core 测试或一台 Linux 开发机上的本地通过代替。
 
 ## 代码约定
 
@@ -81,20 +72,25 @@ npm run build
 ```
 
 修复缺陷时，请在注释里写清这里防的是什么故障、换成更直观的写法会表现为什么现象。
-代码库里大量此类注释（如 `agent/src/spool.rs` 的隔离文件预算、
-`server/src/http/request_body_deadline.rs` 的源速率预约）
+代码库里大量此类注释（如 `server/src/http/request_body_deadline.rs` 的源速率预约）
 是刻意维护的资产。
 
 ### 上报间隔的三层边界必须联合评估
 
-三层约束相关但刻意不完全相同，修改任一层都要检查另外两层及 jitter 测试：
+这三层代码均由 [`host-monitoring`](https://github.com/isarmg/host-monitoring) 仓库维护，相关改动和
+测试应在该仓库完成：
 
-- `protocol/src/report.rs` 与 `host-monitoring-worker/src/model.rs`：HTTP 报文中的**实测间隔**
-  权威契约为 `[0.1, 3600]`；
-- `agent/src/config.rs`：配置是整数秒（最小 1），并保证 jitter 后最坏实测周期不超过 3600，
+- `host-monitoring` 仓库的 `protocol/src/report.rs` 与
+  `host-monitoring-worker/src/model.rs`：HTTP 报文中的**实测间隔**权威契约为
+  `[0.1, 3600]`；
+- `host-monitoring` 仓库的 `agent/src/config.rs`：配置是整数秒（最小 1），并保证 jitter 后最坏实测周期不超过 3600，
   `MIN/MAX_REPORT_INTERVAL_SECONDS` 保护生成报文；
-- `host-monitoring-worker/migrations/`：模块 PostgreSQL 存储约束用于拦截损坏数据，不能代替
-  Rust 入口校验。
+- `host-monitoring` 仓库的 `host-monitoring-worker/migrations/`：模块 PostgreSQL 存储约束用于
+  拦截损坏数据，不能代替 Rust 入口校验。
+
+正式 Union profile 必须以不可变 revision 纳入 Host worker；跨平台 Agent 由同一 Host 仓库产出
+companion artifact、独立安装，并通过 Union 兼容矩阵与服务器发行对应。Agent 不进入 Union
+服务器 distribution 或 Core supervisor。
 
 ### 每个数据 owner 只维护自己的当前 schema
 

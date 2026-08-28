@@ -51,13 +51,17 @@ client。启停模块不需要重建 Web Console，单模块加载/渲染失败�
 |---|---|
 | `server` | Core Platform、Plugin Runtime、Gateway、认证/RBAC、配置、审计和生命周期 |
 | `web` | 无业务内置路由的动态 Web Shell |
-| `sunshine-worker` | Sunshine Module 的 Backend、Frontend、Manifest、权限、配置和 migration |
-| `host-monitoring-worker` | Host Module 的 Backend、Frontend、Manifest、权限、配置和 migration |
-| `agent` | 安装在远端主机的采集 companion，不由模块 Runtime 启动 |
-| `protocol` | Host worker 与 Agent 共用的版本化 DTO |
 
-Sentinel、Photo、Dufs 的模块源码位于各自仓库，由 Builder 固定 revision 后组装到同一 Union
-distribution。多仓库只是源码治理选择；发行内包格式和运行边界一致。
+本仓库只维护 Core 和 Web Shell。业务模块源码分别位于独立仓库：Sunshine 位于
+[`sunshine-worker`](https://github.com/isarmg/sunshine-worker)，Host worker 及双方共用的
+`unionc-protocol`、跨平台 `unionc-agent` 均位于
+[`host-monitoring`](https://github.com/isarmg/host-monitoring)，Sentinel、Photo、Dufs 也各自位于
+模块仓库。
+
+这些拆分只改变源码所有权，不改变产品和部署边界：模块不作为独立公网服务发布，仍由 Builder
+固定各仓库 revision、组装进同一 Union distribution，并由 Plugin Runtime 作为回环私有进程监管。
+正式 `full` 服务器发行包含 Host worker，不包含需要在目标主机独立安装的 Agent；Agent 是 Host
+仓库产出的 companion artifact，不是 Union 公网服务，也不属于 Core 的私有 worker 进程树。
 
 ## 数据边界
 

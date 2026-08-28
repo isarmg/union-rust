@@ -2,8 +2,6 @@
 target/
 dist/
 node_modules/
-agent/packaging/windows/wix/bin/
-agent/packaging/windows/wix/obj/
 
 # ── 运行时数据与密钥（严禁入库）────────────────────────────────────────────
 # unionc.secret 是 AES-256 主密钥，unionc-config.json 含管理员 bcrypt 哈希，

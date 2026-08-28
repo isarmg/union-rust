@@ -937,13 +937,13 @@ mod tests {
     const MODULE_REVISION: &str = "1111111111111111111111111111111111111111";
     const DISTRIBUTION_REVISION: &str = "2222222222222222222222222222222222222222";
 
-    fn sunshine_fixture() -> &'static str {
-        include_str!("../../../sunshine-worker/manifest.json")
+    fn module_fixture() -> &'static str {
+        include_str!("../../testdata/module-fixture/manifest.json")
     }
 
     fn copy_fixture(destination: &Path) {
         std::fs::create_dir_all(destination).unwrap();
-        let source = sunshine_fixture();
+        let source = module_fixture();
         let manifest = PluginManifest::parse_json(source).unwrap();
         std::fs::write(destination.join("manifest.json"), source).unwrap();
         let schema = destination.join(&manifest.configuration.schema);
@@ -952,12 +952,12 @@ mod tests {
     }
 
     fn write_production_release(root: &Path, manifest_revision: &str) {
-        let module = root.join("modules/sunshine");
+        let module = root.join("modules/fixture-module");
         std::fs::create_dir_all(&module).unwrap();
         std::fs::create_dir_all(root.join("bin")).unwrap();
         std::fs::create_dir_all(root.join("share/union/web")).unwrap();
 
-        let mut manifest: serde_json::Value = serde_json::from_str(sunshine_fixture()).unwrap();
+        let mut manifest: serde_json::Value = serde_json::from_str(module_fixture()).unwrap();
         manifest["version_metadata"]["source_revision"] = manifest_revision.into();
         std::fs::write(
             module.join("manifest.json"),
@@ -985,13 +985,13 @@ mod tests {
                 "web_shell": "share/union/web"
             },
             "modules": [{
-                "id": "sunshine",
+                "id": "fixture-module",
                 "version": manifest["version"],
                 "revision": MODULE_REVISION,
-                "package": "modules/sunshine",
-                "manifest": "modules/sunshine/manifest.json"
+                "package": "modules/fixture-module",
+                "manifest": "modules/fixture-module/manifest.json"
             }],
-            "activation_order": ["sunshine"]
+            "activation_order": ["fixture-module"]
         });
         std::fs::write(
             root.join("union-release.json"),
@@ -1024,12 +1024,12 @@ mod tests {
     fn bundled_membership_is_immutable_but_enable_state_is_writable() {
         let temporary = tempfile::tempdir().unwrap();
         let bundled = temporary.path().join("bundled");
-        copy_fixture(&bundled.join("sunshine"));
+        copy_fixture(&bundled.join("fixture-module"));
         let store = PackageStore::new(bundled, temporary.path().join("state"));
         assert!(!store.discover().unwrap()[0].enabled);
-        assert!(store.set_enabled("sunshine", true).unwrap().enabled);
+        assert!(store.set_enabled("fixture-module", true).unwrap().enabled);
         assert!(store.discover().unwrap()[0].enabled);
-        assert!(!store.set_enabled("sunshine", false).unwrap().enabled);
+        assert!(!store.set_enabled("fixture-module", false).unwrap().enabled);
         assert!(!store.discover().unwrap()[0].enabled);
         assert!(store.set_enabled("not-bundled", true).is_err());
     }
@@ -1114,7 +1114,7 @@ mod tests {
 
         let modules = store.discover().unwrap();
         assert_eq!(modules.len(), 1);
-        assert_eq!(modules[0].manifest.id, "sunshine");
+        assert_eq!(modules[0].manifest.id, "fixture-module");
         assert_eq!(
             modules[0]
                 .manifest
@@ -1157,7 +1157,7 @@ mod tests {
         let release = temporary.path().join("release");
         write_production_release(&release, MODULE_REVISION);
         let store = production_store(&release, temporary.path().join("state"));
-        std::fs::write(release.join("modules/sunshine/manifest.json"), b"{}").unwrap();
+        std::fs::write(release.join("modules/fixture-module/manifest.json"), b"{}").unwrap();
         assert!(
             store
                 .discover()
@@ -1175,7 +1175,11 @@ mod tests {
         let release = temporary.path().join("release");
         write_production_release(&release, MODULE_REVISION);
         let store = production_store(&release, temporary.path().join("state"));
-        symlink("/etc/passwd", release.join("modules/sunshine/escaped")).unwrap();
+        symlink(
+            "/etc/passwd",
+            release.join("modules/fixture-module/escaped"),
+        )
+        .unwrap();
         assert!(
             store
                 .discover()

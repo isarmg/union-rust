@@ -13,6 +13,10 @@
   注册，以及 `process`、受信 `in_process`、container/service adapter 的统一生命周期边界。
 - Sunshine、Host Monitoring、Sentinel、Photo Backup 与 Dufs 均迁为只绑定 loopback 的独立受管
   worker；Union 仍是唯一公网入口，运行期不提供模块代码安装、升级、卸载、上传或下载 API。
+- Sunshine 源码迁至 `isarmg/sunshine-worker`，Host worker、`unionc-protocol` 与跨平台 Agent
+  迁至 `isarmg/host-monitoring`；Union 仓库只保留 Core 与 Web Shell。Builder `full` 发行固定 Host
+  revision 并纳入 worker，Runtime 继续监管它；Agent 则由 Host 仓库产出 companion artifact、在
+  远端独立安装，不属于 Union 服务器发行或 Core 私有 worker。
 
 ### Web 与管理
 

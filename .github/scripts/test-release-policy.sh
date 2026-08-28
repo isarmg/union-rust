@@ -79,16 +79,11 @@ grep -Fq '      profile: full' "$release_workflow" ||
   fail 'release must select the Builder official full profile'
 
 for required in \
-  'cargo clippy --locked -p unionc-sunshine-worker' \
-  'cargo test --locked -p unionc-sunshine-worker' \
-  'cargo clippy --locked -p union-host-monitoring-worker' \
-  'cargo test --locked -p union-host-monitoring-worker' \
   'name: schema-v2 composition boundary' \
-  'Assert Core has no business-module Cargo features' \
-  'os: [ubuntu-24.04, windows-2025, macos-26]'
+  'Assert Core has no business-module Cargo features'
 do
   grep -Fq "$required" "$ci_workflow" ||
-    fail "CI is missing required worker/profile/companion coverage: $required"
+    fail "CI is missing required composition coverage: $required"
 done
 if grep -En '(features:[[:space:]]*module-|--features[^[:space:]]*[[:space:]]+module-)' \
   "$ci_workflow" "$release_workflow" server/Cargo.toml; then

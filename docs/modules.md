@@ -146,9 +146,10 @@ PUT 是完整值写入而不是占位符合并，必须显式提供所有被隐�
 | `monitoring` | Sentinel Monitor + Host Monitoring |
 | `full` | 五个标准模块 |
 
-profile 固定源码 revision 和发行包含集合，不记录模块运行时是否启用。Agent 与 Photo 手机客户端
-是远端 companion，不属于服务器模块包或进程树；它们按 Union 兼容矩阵管理，通过 Union 网关
-访问相应模块。
+profile 固定源码 revision 和发行包含集合，不记录模块运行时是否启用。正式 `full` profile 包含
+Host worker；同一 `host-monitoring` 仓库产出的跨平台 Agent 与 Photo 手机客户端则是远端
+companion artifact，不属于服务器模块包或进程树。它们独立安装，按 Union 兼容矩阵管理，并通过
+Union 网关访问相应模块。
 
 ## 明确非目标
 

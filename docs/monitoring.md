@@ -4,6 +4,10 @@ Host Monitoring 是 Builder 可纳入发行的标准模块包，Backend 以 Unio
 进程运行。模块必须先按 Schema 配置其专用 PostgreSQL database/role，再由管理员在运行期启用；
 当前发行未包含该包时，不能靠配置 URL 或启停操作补入它。
 
+Host worker、`unionc-protocol` 和跨平台 `unionc-agent` 的源码权威均为
+[`host-monitoring`](https://github.com/isarmg/host-monitoring)。Builder `full` 服务器发行只纳入并
+固定其中的 Host worker；Agent 是同仓构建、在目标主机独立安装的 companion artifact。
+
 Agent 只连接 Union 的公共模块数据面：
 
 - 配对：`/api/modules/host-monitoring/agent/v2/*`
@@ -27,9 +31,10 @@ OTLP 不是权威存储，不影响主上报 ACK，也不替代 Host PostgreSQL�
 feature 构建并配置 `UNIONC_AGENT_OTLP_ENDPOINT`；这是远端 companion 的构建选项，不是 Union
 Core 的业务模块 feature。Collector、看板和长期时序库由部署者提供。
 
-Agent 不属于服务器模块包，也不由 Plugin Runtime 启动、更新或卸载。服务端不向 Agent 下发
-命令、配置、脚本或更新。完整配对和退役边界见 [Agent](agent.md)、[Agent 配对](agent-pairing.md)
-和 [生命周期 runbook](runbooks/agent-lifecycle.md)。
+Agent 不属于 Union 服务器 distribution，也不由 Plugin Runtime 启动、更新或卸载。它不是公网
+服务或 Core 私有 worker；服务端不向 Agent 下发命令、配置、脚本或更新。完整配对和退役边界见
+[Agent](agent.md)、[Agent 配对](agent-pairing.md) 和
+[生命周期 runbook](runbooks/agent-lifecycle.md)。
 
 本地协议测试、模块 readiness 或 Collector live test 不构成生产验收；发布候选仍需记录目标系统
 上的安装、配对、上报、离线 spool、数据库备份恢复、进程故障和版本兼容结果。

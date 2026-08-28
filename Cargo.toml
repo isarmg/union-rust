@@ -2,19 +2,10 @@
 resolver = "3"
 members = [
   "server",
-  "agent",
-  "protocol",
-  "sunshine-worker",
-  "host-monitoring-worker",
 ]
 
-# Server 与 Agent 此前是各自独立的 package，各有一份 Cargo.lock，每条命令都要写两遍
-# `--manifest-path`。合并为 workspace 后：一次 `cargo test` 覆盖全部、一份锁文件、
-# 共享的依赖版本与发布 profile；protocol crate 则承载两端唯一的线上 DTO 定义。
-#
-# 注意：Union server 与私有 worker 发行目标为 Linux；远端 host agent 跨三平台。
-# 在非 Linux 上构建 agent 时需显式指定 `-p unionc-agent`，否则 workspace 默认
-# 成员会把 server 也拉进来。
+# 该 workspace 只拥有产品中立的 Core；业务 worker 与远端 companion 均由各自仓库
+# 独立验证。正式服务器发行图由 Union Builder 以不可变 revision 组合。
 
 [workspace.package]
 version = "0.5.0"
@@ -34,7 +25,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 url = { version = "2", features = ["serde"] }
-unionc-protocol = { path = "protocol" }
 
 [profile.release]
 codegen-units = 1

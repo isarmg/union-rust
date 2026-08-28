@@ -1,4 +1,4 @@
-# Union Agent
+# Host Monitoring Agent
 
 `unionc-agent` 是安装在远端 Linux/Windows/macOS 主机上的只读遥测 companion。它采集 CPU、
 内存、网络、磁盘、温度和可用 GPU 指标，主动通过 HTTPS 向 Union 上报。
@@ -7,8 +7,10 @@ Agent 不是服务端模块：
 
 - 不属于五个服务器模块包；
 - 不由 Union supervisor 启动、停止或更新；
+- 不进入 Union `full` 服务器 distribution，必须在目标主机独立安装；
 - 随 Union Release 的 compatibility matrix 记录兼容版本；
-- 可以由包管理、MDM 或组织软件中心分发，但没有独立服务端产品/模块 Release。
+- 由 Host 仓库产出 companion artifact，可经包管理、MDM 或组织软件中心分发，但不是独立公网
+  服务或服务器模块 Release。
 
 Agent 不监听远端端口，不实现命令执行、脚本/配置下发、文件传输或自更新。长期设备 secret
 在 Agent 本地生成，Host worker 只持有验证所需数据。首次配对使用短时一次性授权值；完整
@@ -18,7 +20,12 @@ Agent 不监听远端端口，不实现命令执行、脚本/配置下发、文�
 Agent 不知道 worker 的 loopback 地址或 gateway token。Host 数据存储在模块专用 PostgreSQL
 database/role（库内 `host_monitoring` schema）；旧 Union SQLite 只可能作为一次性离线导入源。
 
-开发验证：
+Host worker、双方共用的 `unionc-protocol` 与 `unionc-agent` 均由独立
+[`host-monitoring`](https://github.com/isarmg/host-monitoring) 仓库权威维护。Builder `full` profile
+以不可变 revision 纳入其中的 Host worker；Agent 则从 Host 仓库作为跨平台 companion artifact
+构建和独立安装，不由 Builder 当作服务器 worker 打包。
+
+Agent 开发验证必须在 `host-monitoring` 仓库根目录执行，而不是在 Union 仓库执行：
 
 ```bash
 cargo test -p unionc-agent

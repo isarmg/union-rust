@@ -1,0 +1,104 @@
+{
+  "manifest_version": 1,
+  "id": "fixture-module",
+  "display_name": "Fixture Module",
+  "description": "Product-neutral package-store test fixture",
+  "version": "0.5.0",
+  "version_metadata": {
+    "channel": "development",
+    "distribution": "bundled",
+    "license": "Apache-2.0"
+  },
+  "compatibility": {
+    "core": ">=0.5.0, <0.6.0",
+    "platform_api": "^1.0.0",
+    "plugin_api": "^1.0.0"
+  },
+  "dependencies": [],
+  "execution": {
+    "mode": "process",
+    "executable": "backend/fixture-module",
+    "args": [],
+    "environment": [],
+    "bind": {
+      "host": "127.0.0.1",
+      "port": 18999,
+      "environment": "FIXTURE_MODULE_BIND"
+    }
+  },
+  "backend": {
+    "api_version": "v1",
+    "base_path": "/api/modules/fixture-module",
+    "service": "fixture-module.api",
+    "routes": [
+      {
+        "id": "read",
+        "path": "/items",
+        "upstream_path": "/items",
+        "methods": ["GET"],
+        "auth": "platform",
+        "permission": "fixture-module.read"
+      }
+    ]
+  },
+  "frontend": {
+    "entry": "frontend/entry.js",
+    "styles": [],
+    "components": ["FixtureView"],
+    "api_base": "/api/modules/fixture-module",
+    "routes": [
+      {
+        "path": "/modules/fixture-module",
+        "component": "FixtureView",
+        "permission": "fixture-module.read"
+      }
+    ],
+    "menu": [
+      {
+        "id": "overview",
+        "label": "Fixture",
+        "route": "/modules/fixture-module",
+        "permission": "fixture-module.read",
+        "order": 1
+      }
+    ]
+  },
+  "permissions": [
+    {
+      "id": "fixture-module.read",
+      "description": "Read fixture data",
+      "default_roles": ["admin"]
+    }
+  ],
+  "migrations": [],
+  "configuration": {
+    "schema": "config/schema.json",
+    "version": 1,
+    "secret_fields": []
+  },
+  "health": {
+    "kind": "http",
+    "service": "fixture-module.api",
+    "liveness_path": "/health/live",
+    "readiness_path": "/health/ready",
+    "interval_seconds": 10,
+    "timeout_seconds": 2
+  },
+  "lifecycle": {
+    "startup_timeout_seconds": 30,
+    "shutdown_timeout_seconds": 30,
+    "restart_policy": "on_failure",
+    "max_restarts": 5
+  },
+  "services": [
+    {
+      "name": "fixture-module.api",
+      "protocol": "http",
+      "visibility": "platform"
+    }
+  ],
+  "events": {
+    "publishes": [],
+    "subscribes": []
+  }
+}
