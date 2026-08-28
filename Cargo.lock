@@ -2322,20 +2322,45 @@ dependencies = [
 
 [[package]]
 name = "sarmg-platform-core"
-version = "0.1.0"
-source = "git+https://github.com/isarmg/sarmg-platform.git?rev=7bf0c3c005c4804373de7c502a52a3dc02490d60#7bf0c3c005c4804373de7c502a52a3dc02490d60"
+version = "0.2.0"
+source = "git+https://github.com/isarmg/sarmg-platform.git?rev=c788db2c349f159ad91df93f494c8ef72747a0d0#c788db2c349f159ad91df93f494c8ef72747a0d0"
 dependencies = [
+ "semver",
  "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "sarmg-platform-events"
+version = "0.2.0"
+source = "git+https://github.com/isarmg/sarmg-platform.git?rev=c788db2c349f159ad91df93f494c8ef72747a0d0#c788db2c349f159ad91df93f494c8ef72747a0d0"
+dependencies = [
+ "semver",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "sarmg-platform-gateway"
-version = "0.1.0"
-source = "git+https://github.com/isarmg/sarmg-platform.git?rev=7bf0c3c005c4804373de7c502a52a3dc02490d60#7bf0c3c005c4804373de7c502a52a3dc02490d60"
+version = "0.2.0"
+source = "git+https://github.com/isarmg/sarmg-platform.git?rev=c788db2c349f159ad91df93f494c8ef72747a0d0#c788db2c349f159ad91df93f494c8ef72747a0d0"
 dependencies = [
  "http",
  "subtle",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "sarmg-platform-sdk"
+version = "0.2.0"
+source = "git+https://github.com/isarmg/sarmg-platform.git?rev=c788db2c349f159ad91df93f494c8ef72747a0d0#c788db2c349f159ad91df93f494c8ef72747a0d0"
+dependencies = [
+ "sarmg-platform-core",
+ "sarmg-platform-events",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 
@@ -2382,6 +2407,10 @@ name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
+dependencies = [
+ "serde",
+ "serde_core",
+]
 
 [[package]]
 name = "serde"
@@ -3184,7 +3213,7 @@ checksum = "7df058c713841ad818f1dc5d3fd88063241cc61f49f5fbea4b951e8cf5a8d71d"
 
 [[package]]
 name = "union-host-monitoring-worker"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3210,7 +3239,7 @@ dependencies = [
 
 [[package]]
 name = "unionc"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3226,12 +3255,15 @@ dependencies = [
  "reqwest",
  "rustix",
  "sarmg-platform-core",
+ "sarmg-platform-events",
+ "sarmg-platform-gateway",
+ "sarmg-platform-sdk",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
  "sqlx-core",
  "sqlx-sqlite",
- "sysinfo",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -3239,14 +3271,13 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
- "unionc-agent",
- "unionc-protocol",
+ "url",
  "uuid",
 ]
 
 [[package]]
 name = "unionc-agent"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3274,7 +3305,7 @@ dependencies = [
 
 [[package]]
 name = "unionc-protocol"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3284,7 +3315,7 @@ dependencies = [
 
 [[package]]
 name = "unionc-sunshine-worker"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3336,6 +3367,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sarmg.org/modules/sunshine/config-v1.schema.json",
+  "title": "Sunshine module configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["database_url", "credential_key"],
+  "properties": {
+    "database_url": { "type": "string", "minLength": 1, "x-union-resource": "postgresql_database" },
+    "credential_key": { "type": "string", "minLength": 43 },
+    "credential_key_id": { "type": "string", "minLength": 1, "default": "primary" },
+    "production": { "type": "boolean", "default": true }
+  }
+}

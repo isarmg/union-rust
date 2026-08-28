@@ -313,6 +313,7 @@ pub async fn activate(
     pool: &PgPool,
     request_id: Uuid,
     activation_hash: &str,
+    actor: &str,
 ) -> anyhow::Result<ActivateResult> {
     let mut tx = pool.begin().await?;
     let pairing = sqlx::query(
@@ -378,7 +379,7 @@ pub async fn activate(
         "monitoring.agent_instance.activate",
         &instance_id.to_string(),
         Some(&format!("request_id={request_id}; invite_id={invite_id}")),
-        "union-agent-gateway",
+        actor,
     )
     .await?;
     tx.commit().await?;

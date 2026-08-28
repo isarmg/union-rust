@@ -3,6 +3,35 @@
 本文件记录 UnionC 的显著变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.5.0] — Unreleased
+
+### 架构
+
+- Core/Web Shell 不再通过 Cargo feature 链接业务模块。Builder 2.0 在发行阶段组装标准模块包，
+  Plugin Runtime 在运行阶段只发现、配置、启停和监管当前不可变发行已包含的包。
+- 引入 Manifest v1、Platform/Plugin API compatibility、依赖拓扑、动态权限/配置/路由/服务/事件
+  注册，以及 `process`、受信 `in_process`、container/service adapter 的统一生命周期边界。
+- Sunshine、Host Monitoring、Sentinel、Photo Backup 与 Dufs 均迁为只绑定 loopback 的独立受管
+  worker；Union 仍是唯一公网入口，运行期不提供模块代码安装、升级、卸载、上传或下载 API。
+
+### Web 与管理
+
+- Web 改为无业务内置页面的 Shell + Dynamic Module Loading；模块 ESM 通过
+  `activate(hostSdk)` 注册 Manifest 已声明的 Component，导航、样式和错误边界按 enabled catalog
+  动态管理。
+- 设置页新增发行内模块列表、Schema 驱动的配置、脱敏 secret 处理、健康/PID/重启状态，以及
+  重扫、启用和停用操作。
+
+### 数据与安全
+
+- Core SQLite 收敛为平台所有权；Sunshine、Host、Sentinel 与 Photo 各使用专用 PostgreSQL
+  database/role 和独立 migration/备份单元，Dufs 独占 SQLite 与 rooted filesystem。
+- Gateway 按 Manifest route/method/auth/permission 转发，清除外部伪造的内部身份与 hop-by-hop
+  header，并持续检查 worker liveness/readiness。Photo/Dufs 仍仅要求传输加密，服务器内容保持
+  可由服务读取的原始明文字节。
+
+本节记录迁移源码目标，不声明最终 Builder 2.0/Union 0.5 制品或生产环境验收已经完成。
+
 ## [0.4.0] — 2026-08-27
 
 ### 架构

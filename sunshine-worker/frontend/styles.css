@@ -1,0 +1,199 @@
+.sunshine-module {
+  display: grid;
+  gap: 16px;
+  color: var(--text, #172033);
+}
+
+.sunshine-module .union-module__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.sunshine-module .union-module__eyebrow,
+.sunshine-module .union-module__description,
+.sunshine-module .union-module__card-heading p {
+  margin: 0;
+  color: var(--muted, #667085);
+}
+
+.sunshine-module .union-module__eyebrow {
+  color: var(--accent, #2563eb);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .08em;
+}
+
+.sunshine-module h1 {
+  margin: 4px 0;
+}
+
+.sunshine-module .union-module__refresh,
+.sunshine-module .union-module__state button {
+  min-height: 36px;
+  padding: 0 14px;
+  color: var(--text, #172033);
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #d7deea);
+  border-radius: var(--radius-control, 8px);
+  cursor: pointer;
+}
+
+.sunshine-module .union-module__refresh:disabled {
+  cursor: wait;
+  opacity: .65;
+}
+
+.sunshine-module .union-module__summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.sunshine-module .union-module__summary > div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 112px;
+  padding: 12px 14px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #d7deea);
+  border-radius: var(--radius-card, 12px);
+}
+
+.sunshine-module .union-module__summary strong {
+  font-size: 22px;
+}
+
+.sunshine-module .union-module__summary span,
+.sunshine-module .union-module__summary code {
+  color: var(--muted, #667085);
+}
+
+.sunshine-module .union-module__summary code {
+  margin-inline-start: auto;
+}
+
+.sunshine-module .union-module__state {
+  margin: 0;
+  padding: 16px;
+  color: var(--muted, #667085);
+  background: var(--surface, #fff);
+  border: 1px dashed var(--border, #d7deea);
+  border-radius: var(--radius-card, 12px);
+}
+
+.sunshine-module .union-module__state--error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--danger, #b42318);
+  background: var(--danger-soft, #fef3f2);
+  border-style: solid;
+}
+
+.sunshine-module .union-module__state p {
+  margin: 0;
+}
+
+.sunshine-module .union-module__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 310px), 1fr));
+  gap: 14px;
+}
+
+.sunshine-module .union-module__card {
+  min-width: 0;
+  padding: 16px;
+  background: var(--surface-strong, #fff);
+  border: 1px solid var(--border, #d7deea);
+  border-radius: var(--radius-card, 12px);
+  box-shadow: var(--shadow, 0 8px 20px rgb(15 23 42 / 8%));
+}
+
+.sunshine-module .union-module__card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sunshine-module .union-module__card h2 {
+  margin: 0 0 4px;
+  font-size: 17px;
+}
+
+.sunshine-module .union-module__badge {
+  flex: none;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 999px;
+}
+
+.sunshine-module .union-module__badge--ready {
+  color: #067647;
+  background: #ecfdf3;
+}
+
+.sunshine-module .union-module__badge--pending {
+  color: #854a0e;
+  background: #fffaeb;
+}
+
+.sunshine-module .union-module__badge--error {
+  color: var(--danger, #b42318);
+  background: var(--danger-soft, #fef3f2);
+}
+
+.sunshine-module .union-module__details {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0 0;
+}
+
+.sunshine-module .union-module__details > div {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.sunshine-module dt {
+  color: var(--muted, #667085);
+}
+
+.sunshine-module dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.sunshine-module .union-module__diagnostic {
+  margin: 14px 0 0;
+  padding: 10px;
+  color: var(--danger, #b42318);
+  background: var(--danger-soft, #fef3f2);
+  border-radius: var(--radius-control, 8px);
+  overflow-wrap: anywhere;
+}
+
+.sunshine-module .union-module__diagnostic--ok {
+  color: #067647;
+  background: #ecfdf3;
+}
+
+@media (max-width: 640px) {
+  .sunshine-module .union-module__header,
+  .sunshine-module .union-module__state--error {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .sunshine-module .union-module__summary code {
+    width: 100%;
+    margin-inline-start: 0;
+  }
+}

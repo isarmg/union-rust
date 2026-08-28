@@ -37,7 +37,6 @@ fn state_with_session() -> AppState {
             admin_username: "admin".into(),
             admin_password_hash: "unused".into(),
         },
-        unionc::system::ResourceMonitor::frozen(Default::default()),
     )
     .expect("capture in-memory database identity");
     let sessions = state.auth.sessions.clone();
@@ -148,7 +147,6 @@ async fn login_issues_a_readable_csrf_cookie_and_an_http_only_session_cookie() {
             admin_username: "admin".into(),
             admin_password_hash: ADMIN_HASH.into(),
         },
-        unionc::system::ResourceMonitor::frozen(Default::default()),
     )
     .expect("capture in-memory database identity");
     let response = http::router(state)

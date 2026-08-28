@@ -30,8 +30,8 @@ overrides:
 # payload，也不要用 AGENT_BINARY/任意 VERSION 把校验对象和实际入包对象拆开。
 # 合并为 Cargo workspace 后产物在根 target/，路径因此全部根相对。
 #
-# ⚠⚠ 不要在 `contents[].src` 里写 `${VAR}`——nfpm 不对该字段做环境变量展开，
-# 详见 server/packaging/nfpm.yaml 顶部的说明（那里记录了实测的失败信息）。
+# ⚠⚠ 不要在 `contents[].src` 里写 `${VAR}`——nfpm 不对该字段做环境变量展开。
+# 产物路径必须是已经静态校验的固定 workspace-relative 路径。
 #
 # 交叉编译的产物请先落到 target/release/ 再打包，例如：
 #   cargo build --release -p unionc-agent --target aarch64-unknown-linux-gnu

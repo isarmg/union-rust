@@ -36,7 +36,7 @@ pub(super) fn validate_activation_url_request(
         || url.host_str().map(str::to_ascii_lowercase)
             != pairing.host_str().map(str::to_ascii_lowercase)
         || url.port_or_known_default() != pairing.port_or_known_default()
-        || url.path() != format!("/agent/activate/{request_id}")
+        || url.path() != format!("/modules/host-monitoring/activate/{request_id}")
     {
         bail!("stored activation URL does not match the pending pairing request");
     }

@@ -33,7 +33,7 @@ tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unionc-protocol = { path = "../protocol" }
-sarmg-platform-gateway = { git = "https://github.com/isarmg/sarmg-platform.git", rev = "7bf0c3c005c4804373de7c502a52a3dc02490d60" }
+sarmg-platform-gateway = { git = "https://github.com/isarmg/sarmg-platform.git", rev = "c788db2c349f159ad91df93f494c8ef72747a0d0" }
 uuid = { version = "1", features = ["serde", "v4"] }
 
 [dev-dependencies]

@@ -175,35 +175,3 @@ fn describe_schema_mismatch(expected: &[SchemaObject], actual: &[SchemaObject]) 
         actual.len()
     )
 }
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacySunshineHostConfig {
-    name: String,
-    web_port: u16,
-    username: String,
-    verify_tls: bool,
-}
-
-pub(super) async fn validate_encrypted_values(path: &Path) -> anyhow::Result<()> {
-    let mut connection = open_read_only(path).await?;
-    let rows = query("SELECT config,secret FROM external_hosts")
-        .fetch_all(&mut connection)
-        .await?;
-    for row in rows {
-        let config: String = row.try_get("config")?;
-        let parsed: LegacySunshineHostConfig = serde_json::from_str(&config)
-            .context("backup contains invalid legacy Sunshine host configuration")?;
-        let _ = (
-            parsed.name,
-            parsed.web_port,
-            parsed.username,
-            parsed.verify_tls,
-        );
-        if let Some(encrypted) = row.try_get::<Option<String>, _>("secret")? {
-            crate::infra::secrets::decrypt(&encrypted)
-                .context("backup contains a Sunshine secret that cannot be decrypted")?;
-        }
-    }
-    Ok(())
-}

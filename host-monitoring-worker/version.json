@@ -1,0 +1,13 @@
+{
+  "manifest_version": 1,
+  "id": "host-monitoring",
+  "version": "0.5.0",
+  "channel": "development",
+  "distribution": "bundled",
+  "license": "Apache-2.0",
+  "compatibility": {
+    "core": ">=0.5.0, <0.6.0",
+    "platform_api": "^1.0.0",
+    "plugin_api": "^1.0.0"
+  }
+}

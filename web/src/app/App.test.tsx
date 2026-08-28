@@ -2,6 +2,7 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { authApi as api } from "../features/auth/api";
@@ -9,99 +10,137 @@ import { authQueryKeys } from "../features/auth/queryKeys";
 import { overviewApi } from "../features/overview/api";
 import { overviewQueryKeys } from "../features/overview/queryKeys";
 import type { ServiceStatus } from "../features/overview/types";
-import { monitoringApi } from "../features/monitoring/api";
-import type { CreatedAgentInstance } from "../features/monitoring/types";
 import { ApiError, request } from "../shared/api/client";
 import { realtimeApi } from "./realtimeApi";
 import { platformApi } from "../features/platform/api";
 import type { PlatformModule } from "../features/platform/types";
+import type { WebModuleComponentProps } from "../platform-sdk/web";
+import { moduleRuntimeEnvironment } from "./moduleRuntime";
 
 const platformModules: PlatformModule[] = [
   {
-    schema_version: 1,
-    id: "host-monitoring",
-    display_name: "主机",
-    description: "主机监控",
+    manifest_version: 1,
+    id: "inventory",
+    display_name: "Inventory",
+    description: "Neutral inventory fixture",
     version: "0.1.0",
-    execution: "private_process",
-    ui: { kind: "console", route: "/modules/host-monitoring" },
-    capabilities: [],
-    service: {
-      binary: "host-monitoring",
-      bind: "127.0.0.1:18105",
-      gateway_prefix: "/modules/host-monitoring",
-      liveness_path: "/health/live",
-      readiness_path: "/health/ready",
+    compatibility: {
+      core: ">=0.5.0, <0.6.0",
+      platform_api: "^1.0.0",
+      plugin_api: "^1.0.0",
     },
-    database: {
-      profile: "postgres_schema",
-      database_env: "UNIONC_HOST_MONITORING_DATABASE_URL",
-      schema: "host_monitoring",
-      role: "host_monitoring_runtime",
+    dependencies: [],
+    permissions: [{ id: "inventory.items.read", description: "Read inventory" }],
+    frontend: {
+      entry: "frontend/remoteEntry.js",
+      styles: [],
+      components: ["InventoryView"],
+      api_base: "/api/modules/inventory",
+      routes: [{
+        path: "/modules/inventory",
+        component: "InventoryView",
+        permission: "inventory.items.read",
+      }],
+      menu: [{
+        id: "overview",
+        label: "Inventory",
+        route: "/modules/inventory",
+        permission: "inventory.items.read",
+        order: 20,
+      }],
     },
-    health: "available",
+    enabled: true,
+    lifecycle_state: "available",
     health_message: "worker ready",
     pid: 101,
     restart_count: 0,
     checked_at: null,
+    resolved_frontend: {
+      entry: "/modules/inventory/assets/frontend/remoteEntry.js",
+      styles: [],
+    },
   },
   {
-    schema_version: 1,
-    id: "sunshine",
-    display_name: "Sunshine",
-    description: "Sunshine 管理",
+    manifest_version: 1,
+    id: "reports",
+    display_name: "Reports",
+    description: "Neutral reports fixture",
     version: "0.1.0",
-    execution: "private_process",
-    ui: { kind: "console", route: "/modules/sunshine" },
-    capabilities: [],
-    service: {
-      binary: "sunshine",
-      bind: "127.0.0.1:18104",
-      gateway_prefix: "/modules/sunshine",
-      liveness_path: "/health/live",
-      readiness_path: "/health/ready",
+    compatibility: {
+      core: ">=0.5.0, <0.6.0",
+      platform_api: "^1.0.0",
+      plugin_api: "^1.0.0",
     },
-    database: {
-      profile: "postgres_schema",
-      database_env: "UNIONC_SUNSHINE_DATABASE_URL",
-      schema: "sunshine",
-      role: "sunshine_runtime",
+    dependencies: [],
+    permissions: [{ id: "reports.read", description: "Read reports" }],
+    frontend: {
+      entry: "frontend/remoteEntry.js",
+      styles: [],
+      components: ["ReportsView"],
+      api_base: "/api/modules/reports",
+      routes: [
+        { path: "/modules/reports", component: "ReportsView", permission: "reports.read" },
+      ],
+      menu: [
+        { id: "overview", label: "Reports", route: "/modules/reports", permission: "reports.read", order: 10 },
+      ],
     },
-    health: "available",
+    enabled: true,
+    lifecycle_state: "available",
     health_message: "worker ready",
     pid: 102,
     restart_count: 0,
     checked_at: null,
+    resolved_frontend: {
+      entry: "/modules/reports/assets/frontend/remoteEntry.js",
+      styles: [],
+    },
   },
 ];
 
-const sentinelModule: PlatformModule = {
-  schema_version: 1,
-  id: "sentinel-monitor",
-  display_name: "Sentinel",
-  description: "摄像头监控",
+const invalidRemoteModule = {
+  manifest_version: 1,
+  id: "unsafe-entry",
+  display_name: "Unsafe entry",
+  description: "Invalid cross-origin fixture",
   version: "0.1.0",
-  execution: "private_process",
-  ui: { kind: "gateway", entry_path: "/" },
-  capabilities: [],
-  service: {
-    binary: "sentinel-monitor",
-    bind: "127.0.0.1:18101",
-    gateway_prefix: "/modules/sentinel-monitor",
-    liveness_path: "/health/live",
-    readiness_path: "/health/ready",
+  compatibility: { core: ">=0.5.0, <0.6.0", platform_api: "^1.0.0", plugin_api: "^1.0.0" },
+  dependencies: [],
+  permissions: [],
+  frontend: {
+    entry: "https://outside.example/remoteEntry.js",
+    styles: [],
+    components: ["UnsafeView"],
+    api_base: "/api/modules/unsafe-entry",
+    routes: [{ path: "/modules/unsafe-entry", component: "UnsafeView", permission: null }],
+    menu: [{
+      id: "overview", label: "Unsafe", route: "/modules/unsafe-entry", permission: null, order: 30,
+    }],
   },
-  database: {
-    profile: "dedicated_postgres",
-    database_env: "UNIONC_SENTINEL_DATABASE_URL",
-    role: "sentinel_monitor_runtime",
-  },
-  health: "available",
+  enabled: true,
+  lifecycle_state: "available",
   health_message: "gateway-v1 ready",
   pid: 103,
   restart_count: 2,
   checked_at: "2026-08-27T00:00:00Z",
-};
+  resolved_frontend: {
+    entry: "/modules/unsafe-entry/assets/https://outside.example/remoteEntry.js",
+    styles: [],
+  },
+} as const;
+
+function NeutralInventoryView({
+  actionRequest,
+  onActionRequestHandled,
+}: WebModuleComponentProps) {
+  const [handled, setHandled] = useState(0);
+  useEffect(() => {
+    if (!actionRequest) return;
+    setHandled(actionRequest);
+    onActionRequestHandled(actionRequest);
+  }, [actionRequest, onActionRequestHandled]);
+  return <section><h1>Inventory fixture</h1><output>Handled action {handled}</output></section>;
+}
 
 function renderApp() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -114,11 +153,43 @@ function renderApp() {
 }
 
 function mockAuthenticatedApp() {
-  vi.spyOn(api, "authenticate").mockResolvedValue({ username: "admin" });
+  vi.spyOn(api, "authenticate").mockResolvedValue({ username: "admin", permissions: ["*"] });
   const services = vi.spyOn(overviewApi, "services").mockReturnValue(new Promise(() => {}));
-  vi.spyOn(overviewApi, "systemResources").mockReturnValue(new Promise(() => {}));
   vi.spyOn(realtimeApi, "issueSseTicket").mockReturnValue(new Promise(() => {}));
   vi.spyOn(platformApi, "modules").mockResolvedValue(platformModules);
+  vi.spyOn(platformApi, "moduleConfiguration").mockImplementation(async (module) => ({
+    module,
+    schema_version: 1,
+    schema: { type: "object", properties: {} },
+    configured: true,
+    validation_error: null,
+    value: {},
+  }));
+  vi.spyOn(moduleRuntimeEnvironment, "load").mockImplementation(async (manifest) => {
+    const components = Object.fromEntries(manifest.frontend.components.map((name) => [
+      name,
+      name === "InventoryView"
+        ? NeutralInventoryView
+        : () => <section data-testid={`${manifest.id}:${name}`} />,
+    ]));
+    const activation = {
+      components,
+      primaryActions: manifest.id === "inventory"
+        ? [{ component: "InventoryView", label: "Create item" }]
+        : undefined,
+    };
+    return {
+      manifest,
+      entry: {
+        pluginApiVersion: "1.0.0",
+        moduleId: manifest.id,
+        version: manifest.version,
+        activate: () => activation,
+      },
+      activation,
+      dispose: vi.fn(),
+    };
+  });
   Object.defineProperty(window, "matchMedia", {
     configurable: true,
     value: vi.fn().mockReturnValue({ matches: false }),
@@ -154,6 +225,7 @@ describe("session verification", () => {
     cleanup();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    window.history.replaceState(null, "", "/");
   });
 
   it("shows the login form only for an unauthenticated response", async () => {
@@ -196,7 +268,7 @@ describe("session verification", () => {
     await waitFor(() => expect(services).toHaveBeenCalledTimes(2));
     const newQueryClient = queryClientFromCall(services.mock.calls[1] as unknown[]);
     expect(newQueryClient).not.toBe(oldQueryClient);
-    expect(newQueryClient.getQueryData(authQueryKeys.me)).toEqual({ username: "admin" });
+    expect(newQueryClient.getQueryData(authQueryKeys.me)).toEqual({ username: "admin", permissions: ["*"] });
   });
 
   it("enters the signed-out state, clears private caches, and blocks login until logout completes", async () => {
@@ -294,92 +366,63 @@ describe("session verification", () => {
     expect(logout).not.toHaveBeenCalled();
   });
 
-  it("opens an available gateway module through its descriptor-derived same-origin path", async () => {
+  it("isolates an invalid dynamic module manifest without losing core navigation", async () => {
     mockAuthenticatedApp();
-    vi.mocked(platformApi.modules).mockResolvedValue([...platformModules, sentinelModule]);
+    vi.mocked(platformApi.modules).mockResolvedValue([...platformModules, invalidRemoteModule]);
     renderApp();
 
-    const link = await screen.findByRole("link", { name: "Sentinel" });
-    expect(link.getAttribute("href")).toBe("/modules/sentinel-monitor/");
-    expect(link.getAttribute("target")).toBe("_blank");
-    expect(link.getAttribute("rel")).toContain("noreferrer");
+    expect(await screen.findByText(/模块 unsafe-entry Manifest 无效/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "总览" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Unsafe" })).toBeNull();
   });
 
-  it("shows console contributions only when both the web build and server catalog include them", async () => {
+  it("shows only runtime catalog contributions", async () => {
     mockAuthenticatedApp();
     vi.mocked(platformApi.modules).mockResolvedValue([platformModules[1]]);
     renderApp();
 
-    expect(await screen.findByRole("button", { name: "Sunshine" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "主机" })).toBeNull();
+    expect(await screen.findByRole("button", { name: "Reports" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Inventory" })).toBeNull();
   });
 
-  it("shows an unavailable gateway module but does not make it openable", async () => {
+  it("filters protected module menus with the authenticated permission grants", async () => {
     mockAuthenticatedApp();
-    vi.mocked(platformApi.modules).mockResolvedValue([
-      ...platformModules,
-      { ...sentinelModule, health: "backoff", health_message: "worker restart backoff" },
-    ]);
-    renderApp();
-
-    const item = await screen.findByRole("button", { name: "Sentinel" });
-    expect((item as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.queryByRole("link", { name: "Sentinel" })).toBeNull();
-    expect(item.getAttribute("title")).toContain("worker restart backoff");
-  });
-
-  it("rejects a gateway entry that is not a safe same-origin path", async () => {
-    mockAuthenticatedApp();
-    vi.mocked(platformApi.modules).mockResolvedValue([
-      ...platformModules,
-      { ...sentinelModule, ui: { kind: "gateway", entry_path: "//outside.example/" } },
-    ]);
-    renderApp();
-
-    expect(await screen.findByRole("button", { name: "Sentinel" })).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "Sentinel" })).toBeNull();
-  });
-
-  it("does not replay a consumed Agent creation request after returning to the host page", async () => {
-    mockAuthenticatedApp();
-    vi.spyOn(monitoringApi, "monitoringHosts").mockResolvedValue({
-      hosts: [],
-      total: 0,
-      limit: 20,
-      offset: 0,
-    });
-    vi.spyOn(monitoringApi, "monitoringAgentInstances").mockResolvedValue([]);
-    const invitationCreatedAt = Date.now();
-    const invitation: CreatedAgentInstance = {
-      request_id: "request-1",
-      instance_id: "host-1",
-      display_name: "概览",
-      status: "pending",
-      activation_code: "one-time-secret",
-      expires_at: new Date(invitationCreatedAt + 15 * 60 * 1_000).toISOString(),
-      created_at: new Date(invitationCreatedAt).toISOString(),
+    vi.mocked(api.authenticate).mockResolvedValue({ username: "admin", permissions: [] });
+    const protectedInventory: PlatformModule = {
+      ...platformModules[0],
+      permissions: [{ id: "inventory.private.read", description: "Read private inventory" }],
+      frontend: {
+        ...platformModules[0].frontend!,
+        routes: [{
+          ...platformModules[0].frontend!.routes[0],
+          permission: "inventory.private.read",
+        }],
+        menu: [{
+          ...platformModules[0].frontend!.menu[0],
+          permission: "inventory.private.read",
+        }],
+      },
     };
-    const create = vi.spyOn(monitoringApi, "monitoringCreateAgentInstance")
-      .mockResolvedValue(invitation);
-    const cancel = vi.spyOn(monitoringApi, "monitoringCancelAgentInstance").mockResolvedValue();
+    vi.mocked(platformApi.modules).mockResolvedValue([protectedInventory]);
     renderApp();
 
-    fireEvent.click(await screen.findByRole("button", { name: "主机" }));
-    await screen.findByRole("heading", { name: "主机监控" }, { timeout: 5_000 });
-    fireEvent.click(screen.getByRole("button", { name: "创建 Agent" }));
-    expect(await screen.findByText(invitation.activation_code, {}, { timeout: 5_000 })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "取消邀请并清除授权密钥" }));
-    await waitFor(() => expect(cancel).toHaveBeenCalledWith(invitation.request_id));
-    await waitFor(() => expect(screen.queryByText(invitation.activation_code)).toBeNull());
+    expect(await screen.findByRole("button", { name: "总览" })).toBeTruthy();
+    await waitFor(() => expect(platformApi.modules).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: "Inventory" })).toBeNull();
+  });
+
+  it("does not replay a consumed module action after returning to the module page", async () => {
+    mockAuthenticatedApp();
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Inventory" }));
+    expect(await screen.findByRole("heading", { name: "Inventory fixture" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Create item" }));
+    expect(await screen.findByText("Handled action 1")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "总览" }));
-    fireEvent.click(screen.getByRole("button", { name: "主机" }));
-    await screen.findByRole("heading", { name: "主机监控" });
-
-    expect(create).toHaveBeenCalledTimes(1);
-    expect(screen.queryByText(invitation.activation_code)).toBeNull();
-    expect(screen.queryByText(/只读采集/)).toBeNull();
-    expect(screen.queryByText("暂无 Agent 上报数据")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Inventory" }));
+    expect(await screen.findByText("Handled action 0")).toBeTruthy();
   });
 
   it("ignores a password-change callback from a replaced browser session", async () => {

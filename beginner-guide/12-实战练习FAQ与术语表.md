@@ -1,9 +1,10 @@
 # 12. 练习、FAQ 与术语
 
-练习：比较 `minimal` 与 `full` 的 Builder plan；验证未选模块没有路由；向 worker 直接
+练习：比较 `minimal` 与 `full` 的 Builder plan；验证未纳入模块不在发行/catalog，验证纳入但
+disabled 的模块没有可达路由；向 worker 直接
 发送缺少 gateway token 的请求；画出 Agent→Union→Host→PostgreSQL 链路。
 
-- **profile**：确定 feature、revision、binary 和资源的构建清单。
+- **profile**：锁定 revision 并确定发行包含哪些完整模块包的构建清单，不记录运行时启停状态。
 - **worker**：由 supervisor 管理的私有业务进程，不是独立产品。
 - **gateway-v1**：Union 到 worker 的内部身份合同。
 - **companion**：部署在远端设备、随兼容矩阵管理但不在 server 进程树中的客户端。

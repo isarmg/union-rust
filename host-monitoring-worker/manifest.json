@@ -1,0 +1,88 @@
+{
+  "manifest_version": 1,
+  "id": "host-monitoring",
+  "display_name": "主机",
+  "description": "Agent 配对、遥测接收、历史和主机生命周期",
+  "version": "0.5.0",
+  "version_metadata": { "channel": "development", "distribution": "bundled", "license": "Apache-2.0" },
+  "compatibility": {
+    "core": ">=0.5.0, <0.6.0",
+    "platform_api": "^1.0.0",
+    "plugin_api": "^1.0.0"
+  },
+  "dependencies": [],
+  "execution": {
+    "mode": "process",
+    "executable": "backend/host-monitoring",
+    "args": ["serve"],
+    "environment": [
+      { "name": "UNION_HOST_MONITORING_DATABASE_URL", "config_pointer": "/database_url" }
+    ],
+    "bind": { "host": "127.0.0.1", "port": 18105, "environment": "UNION_HOST_MONITORING_BIND" }
+  },
+  "backend": {
+    "api_version": "v1",
+    "base_path": "/api/modules/host-monitoring",
+    "service": "host-monitoring.api",
+    "routes": [
+      { "id": "hosts-read", "path": "/hosts", "upstream_path": "/api/monitoring/hosts", "methods": ["GET"], "auth": "platform", "permission": "host-monitoring.hosts.read" },
+      { "id": "host-details-read", "path": "/hosts/{*path}", "upstream_path": "/api/monitoring/hosts/{*path}", "methods": ["GET"], "auth": "platform", "permission": "host-monitoring.hosts.read" },
+      { "id": "agent-instances-read", "path": "/agent-instances", "upstream_path": "/api/monitoring/agent-instances", "methods": ["GET"], "auth": "platform", "permission": "host-monitoring.hosts.read" },
+      { "id": "agent-instances-write", "path": "/agent-instances", "upstream_path": "/api/monitoring/agent-instances", "methods": ["POST"], "auth": "platform", "permission": "host-monitoring.agents.write" },
+      { "id": "agent-instance-write", "path": "/agent-instances/{*path}", "upstream_path": "/api/monitoring/agent-instances/{*path}", "methods": ["DELETE"], "auth": "platform", "permission": "host-monitoring.agents.write" },
+      { "id": "managed-instance-write", "path": "/managed-instances/{*path}", "upstream_path": "/api/monitoring/managed-instances/{*path}", "methods": ["PATCH", "DELETE"], "auth": "platform", "permission": "host-monitoring.agents.write" },
+      { "id": "agent-report", "path": "/agent/v1/report", "upstream_path": "/api/agent/v1/report", "methods": ["POST"], "auth": "module", "permission": null },
+      { "id": "pairing-create", "path": "/agent/v2/pairing-requests", "upstream_path": "/api/agent/v2/pairing-requests", "methods": ["POST"], "auth": "module", "permission": null },
+      { "id": "pairing-read", "path": "/agent/v2/pairing-requests/{request_id}", "upstream_path": "/api/agent/v2/pairing-requests/{request_id}", "methods": ["GET"], "auth": "module", "permission": null },
+      { "id": "pairing-status", "path": "/agent/v2/pairing-requests/{request_id}/status", "upstream_path": "/api/agent/v2/pairing-requests/{request_id}/status", "methods": ["POST"], "auth": "module", "permission": null },
+      { "id": "agent-activate", "path": "/agent/v2/activate", "upstream_path": "/api/agent/v2/activate", "methods": ["POST"], "auth": "module", "permission": null },
+      { "id": "agent-activate-admin", "path": "/agent/v2/activate-admin", "upstream_path": "/api/agent/v2/activate-admin", "methods": ["POST"], "auth": "platform", "permission": "host-monitoring.agents.write" }
+    ]
+  },
+  "frontend": {
+    "entry": "frontend/entry.js",
+    "styles": ["frontend/styles.css"],
+    "components": ["HostMonitoringView", "HostActivationView"],
+    "api_base": "/api/modules/host-monitoring",
+    "routes": [
+      { "path": "/modules/host-monitoring", "component": "HostMonitoringView", "permission": "host-monitoring.hosts.read" },
+      { "path": "/modules/host-monitoring/activate/:requestId", "component": "HostActivationView", "permission": "host-monitoring.agents.write" }
+    ],
+    "menu": [
+      { "id": "overview", "label": "主机", "route": "/modules/host-monitoring", "permission": "host-monitoring.hosts.read", "order": 10 }
+    ]
+  },
+  "permissions": [
+    { "id": "host-monitoring.hosts.read", "description": "查看主机和遥测", "default_roles": ["admin"] },
+    { "id": "host-monitoring.agents.write", "description": "配对和管理 Agent", "default_roles": ["admin"] }
+  ],
+  "migrations": [
+    { "id": "schema-v1", "engine": "postgresql", "directory": "migrations", "schema": "host_monitoring" }
+  ],
+  "configuration": {
+    "schema": "config/schema.json",
+    "version": 1,
+    "secret_fields": ["/database_url"]
+  },
+  "health": {
+    "kind": "http",
+    "service": "host-monitoring.api",
+    "liveness_path": "/health/live",
+    "readiness_path": "/health/ready",
+    "interval_seconds": 10,
+    "timeout_seconds": 2
+  },
+  "lifecycle": {
+    "startup_timeout_seconds": 30,
+    "shutdown_timeout_seconds": 30,
+    "restart_policy": "on_failure",
+    "max_restarts": 5
+  },
+  "services": [
+    { "name": "host-monitoring.api", "protocol": "http", "visibility": "platform" }
+  ],
+  "events": {
+    "publishes": [],
+    "subscribes": []
+  }
+}

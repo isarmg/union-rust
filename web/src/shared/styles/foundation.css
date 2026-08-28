@@ -189,65 +189,6 @@ body {
   align-content: start;
 }
 
-/* 日志页：app-shell 固定 100vh，main 填满剩余高度，使 pre 在固定框内滚动。
- * overflow: clip 裁剪溢出内容，但不像 overflow: hidden 那样建立新的滚动容器，
- * 因此 sidebar 的 position: sticky 仍以视口为基准，不会产生额外位移。 */
-.app-shell:has(.logs-view-stack) {
-  height: 100vh;
-  overflow: clip;
-}
-
-.main:has(.logs-view-stack) {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-}
-
-/* 日志页：覆盖 grid 为 flex，让内部链路可以逐级撑满剩余高度 */
-.main > .logs-view-stack {
-  display: flex;
-  flex-direction: column;
-}
-
-.logs-view-stack > .section-band {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  gap: 16px;
-}
-
-.logs-view-stack .log-viewer {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-}
-
-.logs-view-stack .log-viewer pre {
-  flex: 1;
-  min-height: 0;
-  max-height: none;
-}
-
-.logs-host-selector {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-shrink: 0;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.logs-host-selector select {
-  min-height: 36px;
-  padding: 0 10px;
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-}
-
 .eyebrow {
   margin: 0 0 4px;
   color: var(--accent);
@@ -736,7 +677,8 @@ pre {
 }
 
 .session-error-card,
-.fatal-error-card {
+.fatal-error-card,
+.module-error-card {
   display: grid;
   width: min(480px, 100%);
   gap: 14px;
@@ -746,6 +688,10 @@ pre {
   border: 1px solid var(--border);
   border-radius: var(--radius-panel);
   box-shadow: var(--shadow);
+}
+
+.module-error-card {
+  margin: 16px auto;
 }
 
 .fatal-error-screen {

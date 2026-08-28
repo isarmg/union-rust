@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sarmg.org/modules/host-monitoring/config-v1.schema.json",
+  "title": "Host Monitoring module configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["database_url"],
+  "properties": {
+    "database_url": { "type": "string", "minLength": 1, "x-union-resource": "postgresql_database" }
+  }
+}

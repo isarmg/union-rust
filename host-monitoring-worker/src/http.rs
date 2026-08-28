@@ -80,6 +80,7 @@ pub fn router(state: AppState) -> Router {
             "/api/monitoring/managed-instances/{host_id}",
             axum::routing::patch(update_remark).delete(delete_host),
         )
+        .route("/api/agent/v2/activate-admin", post(activate_admin))
         .layer(DefaultBodyLimit::max(16 * 1024))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -96,7 +97,7 @@ pub fn router(state: AppState) -> Router {
             "/api/agent/v2/pairing-requests/{request_id}/status",
             post(pairing_status),
         )
-        .route("/api/agent/v2/activate", post(activate))
+        .route("/api/agent/v2/activate", post(activate_capability))
         .layer(DefaultBodyLimit::max(AGENT_REPORT_MAX_BODY_BYTES));
     Router::new()
         .route("/health", get(live))
@@ -113,20 +114,20 @@ pub fn router(state: AppState) -> Router {
 
 async fn console_admission(
     State(state): State<AppState>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Result<Response> {
-    auth::require_console(request.headers(), &state)?;
+    let principal = auth::require_console(request.headers(), &state)?;
+    request.extensions_mut().insert(principal);
     Ok(next.run(request).await)
 }
 
 async fn gateway_admission(
     State(state): State<AppState>,
-    mut request: Request,
+    request: Request,
     next: Next,
 ) -> Result<Response> {
-    let principal = auth::require(request.headers(), &state)?;
-    request.extensions_mut().insert(principal);
+    auth::require(request.headers(), &state)?;
     Ok(next.run(request).await)
 }
 
@@ -240,7 +241,7 @@ async fn create_pairing(
                 },
                 Json(AgentPairingResponse {
                     request_id: request_id.to_string(),
-                    activation_url: format!("/agent/activate/{request_id}"),
+                    activation_url: activation_url(request_id),
                     expires_in: (expires_at - Utc::now()).num_seconds().max(1) as u64,
                     poll_interval: 5,
                 }),
@@ -301,9 +302,25 @@ async fn pairing_status(
     Ok(response)
 }
 
-async fn activate(
+async fn activate_admin(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Json(request): Json<ActivateAgentRequest>,
+) -> Result<Response> {
+    activate(&state, request, &principal.subject).await
+}
+
+async fn activate_capability(
     State(state): State<AppState>,
     Json(request): Json<ActivateAgentRequest>,
+) -> Result<Response> {
+    activate(&state, request, "agent-capability").await
+}
+
+async fn activate(
+    state: &AppState,
+    request: ActivateAgentRequest,
+    actor: &str,
 ) -> Result<Response> {
     let id = canonical_uuid(&request.request_id, "pairing request id")?;
     if request.activation_code.len() > 256
@@ -315,6 +332,7 @@ async fn activate(
         &state.pool,
         id,
         &crate::token_hash(&request.activation_code),
+        actor,
     )
     .await
     .map_err(database)?
@@ -339,6 +357,10 @@ async fn activate(
             "activation code or pairing request already used".into(),
         )),
     }
+}
+
+fn activation_url(request_id: uuid::Uuid) -> String {
+    format!("/modules/host-monitoring/activate/{request_id}")
 }
 
 async fn report(
@@ -525,6 +547,19 @@ mod tests {
             .header(auth::FORWARDED_PREFIX_HEADER, auth::MODULE_PREFIX)
     }
 
+    fn console_gateway(request: axum::http::request::Builder) -> axum::http::request::Builder {
+        gateway(request).header(auth::PRINCIPAL_HEADER, "operator")
+    }
+
+    #[test]
+    fn pairing_activation_url_targets_the_dynamic_host_module() {
+        let request_id = uuid::Uuid::parse_str("00000000-0000-4000-8000-000000000001").unwrap();
+        assert_eq!(
+            activation_url(request_id),
+            "/modules/host-monitoring/activate/00000000-0000-4000-8000-000000000001"
+        );
+    }
+
     #[tokio::test]
     async fn health_and_module_routes_require_the_same_gateway_contract() {
         assert_eq!(
@@ -598,6 +633,36 @@ mod tests {
         assert_eq!(
             app().oneshot(request).await.unwrap().status(),
             StatusCode::MISDIRECTED_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn admin_activation_requires_a_principal_but_capability_activation_does_not() {
+        let request = console_gateway(Request::post("/api/agent/v2/activate-admin"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        assert_eq!(
+            app().oneshot(request).await.unwrap().status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+
+        let request = gateway(Request::post("/api/agent/v2/activate-admin"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        assert_eq!(
+            app().oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+
+        let request = gateway(Request::post("/api/agent/v2/activate"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        assert_eq!(
+            app().oneshot(request).await.unwrap().status(),
+            StatusCode::UNPROCESSABLE_ENTITY
         );
     }
 }

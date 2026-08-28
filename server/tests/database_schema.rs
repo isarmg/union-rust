@@ -164,6 +164,42 @@ async fn database_from_another_application_version_is_rejected() {
     assert!(error.to_string().contains("schema metadata mismatch"));
 }
 
+#[tokio::test]
+async fn version_one_business_database_is_rejected_without_online_migration() {
+    let (_url, pool) = uninitialized_database("reject_version_one_business_database").await;
+    query(
+        "CREATE TABLE schema_metadata(\
+            schema_version INTEGER PRIMARY KEY CHECK(schema_version=1),\
+            application_version TEXT NOT NULL,\
+            checksum TEXT NOT NULL\
+         ) STRICT",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    query(
+        "INSERT INTO schema_metadata(schema_version,application_version,checksum) \
+         VALUES(1,'0.4.0','legacy')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    query("CREATE TABLE external_hosts(host_id TEXT PRIMARY KEY) STRICT")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let error = database::initialize_schema(&pool).await.unwrap_err();
+    assert!(error.to_string().contains("schema metadata mismatch"));
+    let legacy_table_count: i64 =
+        query("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name='external_hosts'")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get(0);
+    assert_eq!(legacy_table_count, 1, "rejection must not mutate v0.4 data");
+}
+
 /// 每次使用独立的临时 SQLite 文件运行，不允许因外部数据库缺失而跳过。
 #[tokio::test]
 async fn current_schema_is_versioned_and_idempotent() {
@@ -193,6 +229,12 @@ async fn current_schema_is_versioned_and_idempotent() {
         1,
         "schema_metadata must contain exactly the current schema record"
     );
+    let schema_version: i64 = query("SELECT schema_version FROM schema_metadata")
+        .fetch_one(&pool)
+        .await
+        .expect("read current schema version")
+        .get(0);
+    assert_eq!(schema_version, database::current_schema_version());
     assert_eq!(row.get::<Option<String>, _>("checksum").unwrap().len(), 64);
     assert_eq!(
         row.get::<Option<String>, _>("application_version")
@@ -239,32 +281,21 @@ async fn current_schema_is_versioned_and_idempotent() {
         1
     );
 
-    let invalid_external_host = query(
-        "INSERT INTO external_hosts(kind,host_id,address,config,secret) VALUES('sunshine','invalid-json','127.0.0.1','[]',NULL)",
-    ).execute(&pool).await;
-    assert!(
-        invalid_external_host.is_err(),
-        "external host config must be a JSON object"
-    );
-
-    let unsupported_kind = query(
-        "INSERT INTO external_hosts(kind,host_id,address,config,secret) VALUES('unsupported','invalid-kind','127.0.0.1','{}',NULL)",
-    ).execute(&pool).await;
-    assert!(
-        unsupported_kind.is_err(),
-        "only Sunshine hosts are accepted"
-    );
-
-    // Domain tables remain as a read-only legacy cutover source until the PostgreSQL import
-    // evidence has been accepted. Union no longer has routes or stores that write them.
-    let monitoring_tables = query(
+    let business_tables = query(
         "SELECT COUNT(*) AS count FROM sqlite_schema \
-         WHERE type='table' AND name IN ('monitored_hosts','agent_metric_reports')",
+         WHERE type='table' AND name IN (\
+             'external_hosts','monitored_hosts','agent_metric_reports','agent_credentials',\
+             'agent_instance_invites','agent_pairing_requests'\
+         )",
     )
     .fetch_one(&pool)
     .await
-    .expect("read monitoring tables");
-    assert_eq!(monitoring_tables.get::<i64, _>("count"), 2);
+    .expect("inspect forbidden business tables");
+    assert_eq!(
+        business_tables.get::<i64, _>("count"),
+        0,
+        "Core persistence must contain platform data only"
+    );
 
     let foreign_keys: i64 = query("PRAGMA foreign_keys")
         .fetch_one(&pool)
@@ -285,7 +316,7 @@ async fn current_schema_is_versioned_and_idempotent() {
         .await
         .expect("read synchronous pragma")
         .get(0);
-    assert_eq!(synchronous, 2, "关键凭据必须使用 synchronous=FULL");
+    assert_eq!(synchronous, 2, "平台审计必须使用 synchronous=FULL");
 
     let violations = query("PRAGMA foreign_key_check")
         .fetch_all(&pool)

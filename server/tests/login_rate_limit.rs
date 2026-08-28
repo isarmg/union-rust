@@ -30,7 +30,6 @@ fn test_state() -> AppState {
             admin_username: "admin".into(),
             admin_password_hash: ADMIN_HASH.into(),
         },
-        unionc::system::ResourceMonitor::frozen(Default::default()),
     )
     .expect("capture in-memory database identity")
 }

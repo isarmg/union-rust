@@ -143,7 +143,11 @@ pub(crate) async fn me(
 ) -> AppResult<Json<UserInfoResponse>> {
     let token = extract_token(&headers).ok_or(AppError::Unauthorized)?;
     let user = local_session_user(&state, &token).await?;
-    Ok(Json(UserInfoResponse { username: user }))
+    let permissions = state.platform.permissions.permissions_for(&user).await;
+    Ok(Json(UserInfoResponse {
+        username: user,
+        permissions,
+    }))
 }
 
 /// POST /api/auth/change-password — 修改密码，并使该账号的全部会话失效。

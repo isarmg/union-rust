@@ -7,26 +7,6 @@
   margin-left: auto;
 }
 
-.card-address-inline {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  width: 100%;
-  min-width: 0;
-  white-space: nowrap;
-}
-
-.card-address-inline .sunshine-inline-editable:not(.compact) {
-  flex: 0 1 auto;
-}
-
-.card-address-inline .sunshine-inline-input:not(.compact) {
-  field-sizing: content;
-  flex: 0 1 auto;
-  width: auto;
-  max-width: 100%;
-}
-
 .sarmg-card__content > :has(> .sarmg-status-led) {
   display: inline-flex;
   flex-shrink: 0;

@@ -1,4 +1,4 @@
-//! 健康检查、系统资源和 SSE 事件流 handler。
+//! 健康检查、模块服务状态和 SSE 事件流 handler。
 //!
 //! # SSE（Server-Sent Events）原理
 //!
@@ -34,7 +34,6 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/api/health", get(health))
         .route("/api/ready", get(ready))
         .route("/api/services", get(services))
-        .route("/api/system/resources", get(resources))
         .route("/api/audit-logs", get(audit_logs))
         .route("/api/events", get(events))
         .route("/api/events/ticket", post(issue_sse_ticket))
@@ -129,20 +128,9 @@ pub(crate) async fn ready(
     )
 }
 
-/// 返回所有受管 Sunshine 主机的当前运行状态列表。
+/// 返回平台与发行内模块发布的当前服务状态列表。
 pub(crate) async fn services(State(state): State<AppState>) -> Json<Vec<ServiceStatus>> {
     Json(state.services.snapshot().await)
-}
-
-/// 返回最近一次系统资源快照（CPU、内存、磁盘、网络吞吐）。
-///
-/// **本 handler 不发起任何采样**，只读后台任务维护的快照。吞吐类指标是"读取即消费"的
-/// 差值，若在 handler 里现场采样，两个并发观察者会互相吃掉对方的增量窗口——后到的那个
-/// 直接读到 0。详见 `system` 模块顶部的说明。
-pub(crate) async fn resources(
-    State(state): State<AppState>,
-) -> Json<crate::system::SystemResources> {
-    Json(state.resources.snapshot())
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -175,16 +163,12 @@ pub(crate) async fn audit_logs(
     Ok(response)
 }
 
-/// SSE 服务状态推送流：转发后台探测任务广播的状态更新（当前每 5 秒一次）。
+/// SSE 服务状态推送流：转发平台状态发布者广播的更新。
 ///
 /// # 为什么是订阅而不是自己轮询
 ///
-/// 让每个连接各自跑一遍探测循环会有两个问题：对每台 Sunshine 主机的探测频率随浏览器
-/// 标签数线性放大；且串行探测下 10 台离线主机 × 500ms 超时就要 5 秒，恰好等于推送
-/// 周期，实际推送退化成约 10 秒一次。
-///
-/// 因此探测集中在 `startup::start_service_status_probe` 启动的后台 worker 里，本 handler
-/// 只做订阅转发，连接数不影响对被监控主机的压力。
+/// 本 handler 不执行探测，只订阅 `ServiceStatusState`。模块或平台适配器各自采样并发布
+/// 一次状态，任意数量的浏览器连接只消费同一份快照。
 ///
 /// # axum SSE 的工作原理
 ///
@@ -204,8 +188,7 @@ pub(crate) async fn events(
     State(state): State<AppState>,
     Extension(mut session_cancellation): Extension<crate::state::SseSessionCancellation>,
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
-    // 本 handler **不发起任何探测**：探测由 startup 启动的后台 worker 负责，
-    // 这里只订阅广播。因此连接数不再放大对被监控主机的探测频率。
+    // 本 handler 不发起任何探测，只订阅状态生产者共享的广播。
     let mut updates = state.services.events.subscribe();
     let mut shutdown = state.subscribe_shutdown();
 

@@ -47,9 +47,7 @@ pub async fn initialize() -> anyhow::Result<InitializedApp> {
     let (settings, db) = prepare_database(bootstrap_settings, allow_bootstrap).await?;
     let addr = listen_address(&settings)?;
     let dummy_password_hash = hash_password(uuid::Uuid::new_v4().to_string()).await?;
-    // 建立差值采样基线并启动唯一的采样循环，使首个请求即返回有效读数。
-    let resources = crate::system::ResourceMonitor::start().await;
-    let state = AppState::new(settings, db, dummy_password_hash, local_config, resources)?;
+    let state = AppState::new(settings, db, dummy_password_hash, local_config)?;
     // 内存态和持久历史分别回收；SQLite 在 HTTP 服务启动前已经完成打开与校验，因此
     // 保留期任务在每次正常启动中都存在，不会出现“配置数据库后忘记重启而不清理”的窗口。
     start_memory_gc(state.clone());
@@ -59,7 +57,7 @@ pub async fn initialize() -> anyhow::Result<InitializedApp> {
 
 /// `unionc reset-admin-password`：离线生成并写入新的管理员密码。
 ///
-/// 只读取/替换本地私有配置，不连接数据库，也不改动业务数据、Agent 凭据或主密钥。
+/// 只读取/替换本地私有配置，不连接数据库，也不改动平台审计、模块状态或主密钥。
 /// 命令会把随机密码输出一次；调用方随后必须重启 Server，使旧内存会话全部失效。
 pub async fn reset_admin_password() -> anyhow::Result<(String, String)> {
     crate::infra::paths::init()?;
@@ -201,15 +199,15 @@ fn listen_address(settings: &Settings) -> anyhow::Result<SocketAddr> {
 
 /// 内存态回收周期。
 ///
-/// 会话与限流桶的回收都很廉价，但把它们塞进 24 小时的数据库清理循环里，就意味着
-/// 一台注销的主机要留着桶到明天。拆成独立的短周期任务，两者各自按自己的时间尺度运行。
+/// 会话与登录限流桶的回收都很廉价，但把它们塞进 24 小时的数据库清理循环会让
+/// 无效内存状态滞留过久。拆成独立的短周期任务，各自按合适的时间尺度运行。
 const MEMORY_GC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// 进程内状态的周期性回收。
 ///
-/// 这两项都不挂在请求热路径上顺带完成：鉴权取写锁清过期会话会让所有已认证请求串行化，
-/// 每次上报 `retain()` 一遍全部限流桶会给全系统最高频的写路径挂上一段 O(主机数) 的
-/// 临界区。集中到这里之后，两条热路径都只剩一次哈希查找。
+/// 这两项都不挂在请求热路径上顺带完成：鉴权取写锁清过期会话会让所有已认证请求
+/// 串行化，登录时扫描全部限流桶也会延长认证临界区。集中回收后，热路径只需查阅
+/// 当前请求对应的状态。
 fn start_memory_gc(state: AppState) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(MEMORY_GC_INTERVAL);
@@ -290,7 +288,7 @@ pub async fn restore_database(input: &std::path::Path, force: bool) -> anyhow::R
     Ok(())
 }
 
-/// Run SQLite integrity, foreign-key, schema and encrypted-value checks.
+/// Run SQLite integrity, foreign-key and exact platform-schema checks.
 pub async fn integrity_check() -> anyhow::Result<()> {
     crate::infra::paths::init()?;
     let runtime = RuntimeEnvironment::from_environment()?;

@@ -178,9 +178,9 @@ fn pairing_activation_loads_the_server_assigned_identity() {
             "version": env!("CARGO_PKG_VERSION"),
             "generation": generation,
             "request_id": request_id,
-            "activation_url": "https://unionc.example/agent/activate/test",
+            "activation_url": "https://unionc.example/modules/host-monitoring/activate/test",
             "instance_id": instance_id,
-            "report_endpoint": "https://unionc.example/api/agent/v1/report",
+            "report_endpoint": "https://unionc.example/api/modules/host-monitoring/agent/v1/report",
             "completed_at": chrono::Utc::now()
         }))
         .unwrap(),
@@ -193,14 +193,14 @@ fn pairing_activation_loads_the_server_assigned_identity() {
         generation,
         request_id,
         instance_id,
-        "https://unionc.example/api/agent/v1/report",
+        "https://unionc.example/api/modules/host-monitoring/agent/v1/report",
     )
     .unwrap();
 
     assert_eq!(host.id, instance_id.to_string());
     assert_eq!(
         config.endpoint,
-        "https://unionc.example/api/agent/v1/report"
+        "https://unionc.example/api/modules/host-monitoring/agent/v1/report"
     );
     fs::remove_dir_all(directory).unwrap();
 }

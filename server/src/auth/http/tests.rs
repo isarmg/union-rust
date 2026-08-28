@@ -24,7 +24,6 @@ mod tests {
                 admin_username: "admin".to_string(),
                 admin_password_hash: password_hash,
             },
-            crate::system::ResourceMonitor::frozen(Default::default()),
         )
         .expect("capture in-memory database identity")
     }

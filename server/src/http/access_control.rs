@@ -33,6 +33,19 @@ pub(super) async fn require_auth(
         return Ok(next.run(request).await);
     }
 
+    if let Some((module, suffix)) = module_api_path(&path)
+        && state
+            .platform
+            .route_auth(module, request.method(), suffix)
+            .await
+            == Some(sarmg_platform_core::RouteAuth::Module)
+    {
+        // This is an explicit Manifest declaration, not a path-name exception in Core. The
+        // plugin owns authentication for this route (for example an Agent capability or mobile
+        // upload token), while gateway-v1 still proves the internal hop to the backend.
+        return Ok(next.run(request).await);
+    }
+
     // EventSource 不支持自定义请求头，因此 SSE 使用一次性短效票据。
     if path == "/api/events"
         && let Some(ticket) = sse_ticket(request.uri().query()).map(str::to_owned)
@@ -43,6 +56,11 @@ pub(super) async fn require_auth(
     let token = auth::session_cookie(request.headers()).ok_or(AppError::Unauthorized)?;
     let session = auth::local_session(&state, &token).await?;
     let username = session.username.clone();
+    request
+        .extensions_mut()
+        .insert(crate::platform::AuthenticatedPrincipal {
+            username: username.clone(),
+        });
 
     if path == "/api/events" {
         let cancellation = auth::sse_session_cancellation(&state, &token).await?;
@@ -69,6 +87,21 @@ pub(super) async fn require_auth(
 
 fn is_public_path(path: &str) -> bool {
     matches!(path, "/api/health" | "/api/ready" | "/api/auth/login")
+}
+
+fn module_api_path(path: &str) -> Option<(&str, &str)> {
+    let remainder = path.strip_prefix("/api/modules/")?;
+    let (module, suffix) = remainder
+        .split_once('/')
+        .map_or((remainder, "/"), |(module, suffix)| (module, suffix));
+    if module.is_empty() {
+        return None;
+    }
+    if suffix == "/" {
+        Some((module, suffix))
+    } else {
+        Some((module, path.get(path.len() - suffix.len() - 1..)?))
+    }
 }
 
 fn sse_ticket(query: Option<&str>) -> Option<&str> {
@@ -245,7 +278,6 @@ mod tests {
                 admin_username: "admin".to_string(),
                 admin_password_hash: "unused".to_string(),
             },
-            crate::system::ResourceMonitor::frozen(Default::default()),
         )
         .expect("capture file database identity");
         (directory, path, state)

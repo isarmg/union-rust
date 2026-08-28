@@ -14,7 +14,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     InternalAuth, InternalIdentity,
-    auth::{AUDIENCE_HEADER, PREFIX_HEADER, PROTOCOL_HEADER, TOKEN_HEADER},
+    auth::{AUDIENCE_HEADER, PREFIX_HEADER, PRINCIPAL_HEADER, PROTOCOL_HEADER, TOKEN_HEADER},
     client::UpstreamClient,
     crypto::SecretBox,
     db,
@@ -135,10 +135,14 @@ async fn authenticate(
     if !state.auth.validates(request.headers()) {
         return Err(AppError::GatewayRequired);
     }
-    let identity = InternalIdentity {
-        subject: "union-gateway".to_string(),
-    };
-    request.extensions_mut().insert(identity);
+    if !request.uri().path().starts_with("/health/") {
+        let subject = crate::auth::parse_principal(request.headers())
+            .map_err(|_| AppError::Unauthorized)?
+            .to_owned();
+        request
+            .extensions_mut()
+            .insert(InternalIdentity { subject });
+    }
     // The business handlers and upstream Sunshine client never need Union's
     // proof or browser-facing credentials after this trust transition.
     for name in [
@@ -146,6 +150,7 @@ async fn authenticate(
         AUDIENCE_HEADER,
         TOKEN_HEADER,
         PREFIX_HEADER,
+        PRINCIPAL_HEADER,
     ] {
         request.headers_mut().remove(name);
     }
@@ -800,5 +805,35 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()[PROTOCOL_HEADER], PROTOCOL);
         assert_eq!(response.headers()[AUDIENCE_HEADER], AUDIENCE);
+    }
+
+    #[tokio::test]
+    async fn platform_routes_require_the_canonical_operator_principal() {
+        let without_principal = test_router()
+            .oneshot(
+                Request::get("/does-not-exist")
+                    .header(PROTOCOL_HEADER, PROTOCOL)
+                    .header(AUDIENCE_HEADER, AUDIENCE)
+                    .header(TOKEN_HEADER, "a".repeat(64))
+                    .header(PREFIX_HEADER, PREFIX)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(without_principal.status(), StatusCode::UNAUTHORIZED);
+
+        let mut request = Request::get("/does-not-exist")
+            .header(PROTOCOL_HEADER, PROTOCOL)
+            .header(AUDIENCE_HEADER, AUDIENCE)
+            .header(TOKEN_HEADER, "a".repeat(64))
+            .header(PREFIX_HEADER, PREFIX)
+            .body(Body::empty())
+            .unwrap();
+        sarmg_platform_gateway::insert_principal(request.headers_mut(), "管理员").unwrap();
+        assert_eq!(
+            test_router().oneshot(request).await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
     }
 }

@@ -34,7 +34,6 @@ pub async fn restore_database(
     if staged_version != manifest.schema_version {
         bail!("backup manifest schema version does not match the database");
     }
-    validate_encrypted_values(&staging).await?;
     checkpoint_database(&staging).await?;
     remove_checkpoint_sidecars(&staging)?;
     fs::set_permissions(&staging, fs::Permissions::from_mode(0o600))?;
@@ -187,7 +186,6 @@ async fn create_validated_recovery_point(
     let _staging_guard = DatabaseFamilyGuard::new(staging.clone());
     copy_database_family_private(raw, &staging)?;
     let expected_schema_version = validate_database_file(&staging).await?;
-    validate_encrypted_values(&staging).await?;
     checkpoint_database(&staging)
         .await
         .context("failed to make the pre-restore copy self-contained")?;
@@ -199,7 +197,6 @@ async fn create_validated_recovery_point(
     if schema_version != expected_schema_version {
         bail!("pre-restore schema changed while creating its validated copy");
     }
-    validate_encrypted_values(&staging).await?;
     let database_sha256 = sha256_file(&staging)?;
 
     let backup = parent.join(format!("unionc.pre-restore-{timestamp}-{nonce}.db"));

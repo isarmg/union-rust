@@ -122,13 +122,19 @@ async fn main() -> anyhow::Result<()> {
     let app = http::router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(initialized.addr).await?;
-    unionc::platform::start_external_modules(state.clone()).await;
+    // Module discovery and process readiness are deliberately detached from Core readiness.
+    // A slow or broken private worker must not consume systemd's startup deadline or remove the
+    // public control plane needed to inspect it. Mutating lifecycle calls fail fast while the
+    // initial dependency layer is being applied and can be retried after that bounded health gate.
+    let module_startup = unionc::platform::start_external_modules(state.clone());
     tracing::info!("unionc listening on http://{}", initialized.addr);
     systemd::report_ready()?;
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(state.clone()))
         .await?;
-    state.platform.stop_workers().await;
+    module_startup.abort();
+    let _ = module_startup.await;
+    state.platform.stop_all().await;
 
     Ok(())
 }
@@ -176,7 +182,7 @@ mod tests {
             parse_command(["--version".to_string()]).unwrap(),
             Command::Version
         );
-        assert_eq!(version_line(), "unionc 0.4.0");
+        assert_eq!(version_line(), "unionc 0.5.0");
         assert_eq!(LINUX_PACKAGE_VERSION_MARKER.last(), Some(&0));
         assert!(parse_command(["-V".to_string()]).is_err());
         assert!(parse_command(["--version".to_string(), "extra".to_string()]).is_err());

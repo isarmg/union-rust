@@ -1,4 +1,4 @@
-# 可选的 Agent report 专用域名。它仍然反代 Union，而不是 Host worker 的 18105。
+# 可选的 Agent report 专用域名。它仍然反代 Union，而不是 Host worker 的私有 listener。
 # 首次 pairing 必须留在无需客户端证书的主 Union 域名。
 agents.example.com {
 	tls {
@@ -14,7 +14,7 @@ agents.example.com {
 		max_size 512KB
 	}
 
-	handle /api/agent/v1/report {
+	handle /api/modules/host-monitoring/agent/v1/report {
 		reverse_proxy 127.0.0.1:8081 {
 			header_up X-UnionC-Proxy-Secret {$UNIONC_PROXY_SECRET}
 		}

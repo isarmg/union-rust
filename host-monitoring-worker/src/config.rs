@@ -65,10 +65,17 @@ pub struct Common {
 
 impl Common {
     pub fn validate(&self) -> anyhow::Result<ValidatedConfig> {
-        if !self.bind.ip().is_loopback() {
+        let bind = match std::env::var("UNION_PLUGIN_BIND") {
+            Ok(value) => value
+                .parse::<SocketAddr>()
+                .map_err(|_| anyhow::anyhow!("UNION_PLUGIN_BIND must be a socket address"))?,
+            Err(std::env::VarError::NotPresent) => self.bind,
+            Err(error) => return Err(error.into()),
+        };
+        if !bind.ip().is_loopback() {
             anyhow::bail!(
                 "UNION host-monitoring worker must use a loopback bind; got {}",
-                self.bind
+                bind
             );
         }
         if !self.database.database_url.starts_with("postgresql://")
@@ -77,7 +84,7 @@ impl Common {
             anyhow::bail!("host-monitoring requires a PostgreSQL database URL");
         }
         Ok(ValidatedConfig {
-            bind: self.bind,
+            bind,
             database_url: self.database.database_url.clone(),
             gateway: sarmg_platform_gateway::GatewayIdentity::from_env(
                 crate::auth::MODULE_AUDIENCE,

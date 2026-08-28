@@ -90,13 +90,6 @@ impl RuntimeEnvironment {
         let proxy_secret = unicode_environment_variable("UNIONC_PROXY_SECRET")?
             .map(|value| parse_proxy_secret(&value))
             .transpose()?;
-        for variable in [
-            "SARMG_SENTINEL_URL",
-            "SARMG_PHOTO_BACKUP_URL",
-            "SARMG_DUFS_URL",
-        ] {
-            reject_legacy_module_url(variable, unicode_environment_variable(variable)?)?;
-        }
         let retention = RetentionSettings {
             audit_days: parse_retention_days(
                 "UNIONC_RETENTION_DAYS",
@@ -113,16 +106,6 @@ impl RuntimeEnvironment {
             proxy_secret,
         })
     }
-}
-
-fn reject_legacy_module_url(name: &str, value: Option<String>) -> anyhow::Result<()> {
-    if value.is_some() {
-        bail!(
-            "{name} is no longer supported: compiled Union modules have a fixed loopback \
-             binding and cannot select an arbitrary runtime upstream"
-        );
-    }
-    Ok(())
 }
 
 impl Settings {
@@ -382,18 +365,6 @@ mod tests {
             format!("{}#", "a".repeat(63)),
         ] {
             assert!(parse_proxy_secret(&invalid).is_err());
-        }
-    }
-
-    #[test]
-    fn runtime_module_upstream_urls_are_rejected_even_when_loopback() {
-        assert!(reject_legacy_module_url("SARMG_DUFS_URL", None).is_ok());
-        for value in [
-            "http://127.0.0.1:18103/",
-            "https://remote.example.test/",
-            "",
-        ] {
-            assert!(reject_legacy_module_url("SARMG_DUFS_URL", Some(value.to_string())).is_err());
         }
     }
 

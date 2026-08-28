@@ -1,0 +1,85 @@
+{
+  "manifest_version": 1,
+  "id": "sunshine",
+  "display_name": "Sunshine",
+  "description": "Sunshine 主机配置、状态探测和 API 代理",
+  "version": "0.5.0",
+  "version_metadata": { "channel": "development", "distribution": "bundled", "license": "Apache-2.0" },
+  "compatibility": {
+    "core": ">=0.5.0, <0.6.0",
+    "platform_api": "^1.0.0",
+    "plugin_api": "^1.0.0"
+  },
+  "dependencies": [],
+  "execution": {
+    "mode": "process",
+    "executable": "backend/sunshine",
+    "args": [],
+    "environment": [
+      { "name": "SUNSHINE_DATABASE_URL", "config_pointer": "/database_url" },
+      { "name": "SUNSHINE_CREDENTIAL_KEY", "config_pointer": "/credential_key" },
+      { "name": "SUNSHINE_CREDENTIAL_KEY_ID", "config_pointer": "/credential_key_id" },
+      { "name": "SUNSHINE_PRODUCTION", "config_pointer": "/production" }
+    ],
+    "bind": { "host": "127.0.0.1", "port": 18104, "environment": "SUNSHINE_BIND" }
+  },
+  "backend": {
+    "api_version": "v1",
+    "base_path": "/api/modules/sunshine",
+    "service": "sunshine.api",
+    "routes": [
+      { "id": "hosts-read", "path": "/hosts", "upstream_path": "/api/services/sunshine/hosts", "methods": ["GET"], "auth": "platform", "permission": "sunshine.hosts.read" },
+      { "id": "hosts-create", "path": "/hosts", "upstream_path": "/api/services/sunshine/hosts", "methods": ["POST"], "auth": "platform", "permission": "sunshine.hosts.write" },
+      { "id": "hosts-write", "path": "/hosts/{*path}", "upstream_path": "/api/services/sunshine/hosts/{*path}", "methods": ["POST", "PATCH", "DELETE"], "auth": "platform", "permission": "sunshine.hosts.write" },
+      { "id": "proxy", "path": "/hosts/{*path}", "upstream_path": "/api/services/sunshine/hosts/{*path}", "methods": ["GET"], "auth": "platform", "permission": "sunshine.proxy.use" }
+    ]
+  },
+  "frontend": {
+    "entry": "frontend/entry.js",
+    "styles": ["frontend/styles.css"],
+    "components": ["SunshineView", "SunshineLogsView"],
+    "api_base": "/api/modules/sunshine",
+    "routes": [
+      { "path": "/modules/sunshine", "component": "SunshineView", "permission": "sunshine.hosts.read" },
+      { "path": "/modules/sunshine/logs", "component": "SunshineLogsView", "permission": "sunshine.hosts.read" }
+    ],
+    "menu": [
+      { "id": "overview", "label": "Sunshine", "route": "/modules/sunshine", "permission": "sunshine.hosts.read", "order": 50 },
+      { "id": "logs", "label": "Sunshine 日志", "route": "/modules/sunshine/logs", "permission": "sunshine.hosts.read", "order": 51 }
+    ]
+  },
+  "permissions": [
+    { "id": "sunshine.hosts.read", "description": "查看 Sunshine 主机", "default_roles": ["admin"] },
+    { "id": "sunshine.hosts.write", "description": "配置 Sunshine 主机", "default_roles": ["admin"] },
+    { "id": "sunshine.proxy.use", "description": "调用 Sunshine 代理 API", "default_roles": ["admin"] }
+  ],
+  "migrations": [
+    { "id": "schema-v1", "engine": "postgresql", "directory": "migrations", "schema": "sunshine" }
+  ],
+  "configuration": {
+    "schema": "config/schema.json",
+    "version": 1,
+    "secret_fields": ["/database_url", "/credential_key"]
+  },
+  "health": {
+    "kind": "http",
+    "service": "sunshine.api",
+    "liveness_path": "/health/live",
+    "readiness_path": "/health/ready",
+    "interval_seconds": 10,
+    "timeout_seconds": 2
+  },
+  "lifecycle": {
+    "startup_timeout_seconds": 30,
+    "shutdown_timeout_seconds": 30,
+    "restart_policy": "on_failure",
+    "max_restarts": 5
+  },
+  "services": [
+    { "name": "sunshine.api", "protocol": "http", "visibility": "platform" }
+  ],
+  "events": {
+    "publishes": [],
+    "subscribes": []
+  }
+}

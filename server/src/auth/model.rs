@@ -21,6 +21,7 @@ pub struct LoginResponse {
 #[derive(Debug, Serialize)]
 pub struct UserInfoResponse {
     pub username: String,
+    pub permissions: Vec<String>,
 }
 
 /// 有效期 60 秒、仅用于 SSE 连接认证的短效票据。

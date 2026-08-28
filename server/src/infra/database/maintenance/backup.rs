@@ -36,7 +36,6 @@ pub async fn backup_database(settings: &Settings, output: &Path) -> anyhow::Resu
     fs::set_permissions(&staging, fs::Permissions::from_mode(0o600))?;
     File::open(&staging)?.sync_all()?;
     let schema_version = validate_database_file(&staging).await?;
-    validate_encrypted_values(&staging).await?;
     let database_sha256 = sha256_file(&staging)?;
     let manifest = build_manifest(&output, database_sha256, schema_version)?;
     write_manifest(&staging_manifest, &manifest)?;
@@ -63,7 +62,5 @@ pub async fn backup_database(settings: &Settings, output: &Path) -> anyhow::Resu
 pub async fn integrity_check(settings: &Settings) -> anyhow::Result<i64> {
     let path = database_path(settings)?;
     let _maintenance_lock = acquire_maintenance_lock(&path)?;
-    let version = validate_database_file(&path).await?;
-    validate_encrypted_values(&path).await?;
-    Ok(version)
+    validate_database_file(&path).await
 }

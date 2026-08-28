@@ -14,7 +14,7 @@ pub struct ReadinessResponse {
     pub data_directory: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ServiceStatus {
     pub name: String,
     pub kind: String,
@@ -24,38 +24,6 @@ pub struct ServiceStatus {
     pub pid: Option<u32>,
     pub message: String,
     pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct SystemResources {
-    pub cpu_usage_percent: f32,
-    pub memory_total_kib: u64,
-    pub memory_used_kib: u64,
-    pub network: NetworkThroughput,
-    pub disk_throughput: DiskThroughput,
-    pub disks: Vec<DiskInfo>,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct NetworkThroughput {
-    pub received_bytes_per_second: u64,
-    pub transmitted_bytes_per_second: u64,
-    pub total_bytes_per_second: u64,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct DiskThroughput {
-    pub read_bytes_per_second: u64,
-    pub write_bytes_per_second: u64,
-    pub total_bytes_per_second: u64,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct DiskInfo {
-    pub name: String,
-    pub mount_point: String,
-    pub total_bytes: u64,
-    pub available_bytes: u64,
 }
 
 #[derive(Debug, Serialize)]

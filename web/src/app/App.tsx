@@ -1,7 +1,7 @@
-import { FormEvent, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Camera, Check, ExternalLink, FolderOpen, Images, LayoutDashboard, Lock, LogIn, Moon,
-  Plus, Power, RefreshCw, Settings, Sun, Terminal, User, X,
+  Check, LayoutDashboard, Lock, LogIn, Moon, PackageOpen, Plus, Power, RefreshCw,
+  Settings, Sun, User, X,
 } from "lucide-react";
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -9,49 +9,53 @@ import {
   advanceAuthSessionGeneration,
   currentAuthSessionGeneration,
 } from "../shared/api/client";
-import { authApi } from "../features/auth/api";
+import { authApi, type AuthIdentity } from "../features/auth/api";
 import { authQueryKeys } from "../features/auth/queryKeys";
 import { overviewApi } from "../features/overview/api";
 import { overviewQueryKeys } from "../features/overview/queryKeys";
-import { parseAgentActivationRoute } from "../features/agent-activation/route";
-import { useEventStream, useMetricHistory } from "./hooks";
+import { useEventStream } from "./hooks";
 import { OverviewView } from "../features/overview/OverviewView";
-// 产品内置视图按需加载；业务模块自身的懒加载入口集中在 moduleRegistry。
-const LogsView = __UNIONC_MODULE_SUNSHINE__
-  ? lazy(() => import("../features/logs/LogsView").then((m) => ({ default: m.LogsView })))
-  : null;
-const AgentActivationPage = __UNIONC_MODULE_HOST_MONITORING__
-  ? lazy(() => import("../features/agent-activation/AgentActivationPage")
-    .then((m) => ({ default: m.AgentActivationPage })))
-  : null;
 const SettingsView = lazy(() => import("../features/settings/SettingsView").then((m) => ({ default: m.SettingsView })));
-import { embeddedModuleById } from "./moduleRegistry";
 import { platformApi } from "../features/platform/api";
 import { platformQueryKeys } from "../features/platform/queryKeys";
-import type { PlatformModule } from "../features/platform/types";
 import { CardActions, CardInner, CardRow, InlineNotice, LoadingBlock } from "../shared/components/ui";
+import { ModuleErrorBoundary } from "./ModuleErrorBoundary";
+import { useModuleRuntime } from "./useModuleRuntime";
+import {
+  createModuleApi,
+  createPermissionChecker,
+  matchModuleRoute,
+  type LoadedWebModule,
+} from "./moduleRuntime";
 
 const coreNavItems = [
-  { key: "overview", label: "总览", icon: LayoutDashboard },
-  ...(__UNIONC_MODULE_SUNSHINE__
-    ? [{ key: "logs", label: "日志", icon: Terminal } as const]
-    : []),
-  { key: "settings", label: "设置", icon: Settings },
+  { path: "/overview", label: "总览", icon: LayoutDashboard },
+  { path: "/settings", label: "设置", icon: Settings },
 ] satisfies ReadonlyArray<{
-  key: string; label: string; icon: React.ComponentType<{ size?: number }>;
+  path: string; label: string; icon: React.ComponentType<{ size?: number }>;
 }>;
 type Theme = "light" | "dark";
 const THEME_STORAGE_KEY = "unionc-theme";
 
-/** Build a same-origin module entry from the immutable server descriptor. */
-export function gatewayEntryPath(module: PlatformModule): string | null {
-  if (module.ui.kind !== "gateway") return null;
-  const expectedPrefix = `/modules/${module.id}`;
-  const { gateway_prefix: prefix } = module.service;
-  const entry = module.ui.entry_path;
-  if (prefix !== expectedPrefix || !entry.startsWith("/") || entry.startsWith("//")
-    || entry.includes("\\")) return null;
-  return entry === "/" ? `${prefix}/` : `${prefix}${entry}`;
+function initialShellPath(): string {
+  return window.location.pathname === "/" ? "/overview" : window.location.pathname;
+}
+
+function useShellNavigation() {
+  const [pathname, setPathname] = useState(initialShellPath);
+  useEffect(() => {
+    const onPopState = () => setPathname(initialShellPath());
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+  const navigate = useCallback((path: string, options?: { replace?: boolean }) => {
+    if (!path.startsWith("/") || path.startsWith("//") || path.includes("\\")
+        || path.includes("?") || path.includes("#")) return;
+    if (options?.replace) window.history.replaceState(null, "", path);
+    else window.history.pushState(null, "", path);
+    setPathname(path);
+  }, []);
+  return { pathname, navigate };
 }
 
 function getInitialTheme(): Theme {
@@ -63,13 +67,15 @@ function getInitialTheme(): Theme {
 }
 
 function AuthedApp({
+  identity,
   onLogout,
   onPasswordChanged,
 }: {
+  identity: AuthIdentity;
   onLogout: () => Promise<void>;
   onPasswordChanged: () => void;
 }) {
-  const [view, setView] = useState("overview");
+  const { pathname, navigate } = useShellNavigation();
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const addSequencesRef = useRef<Record<string, number>>({});
   const [addTriggers, setAddTriggers] = useState<Record<string, number>>({});
@@ -94,97 +100,107 @@ function AuthedApp({
     queryFn: overviewApi.services,
     refetchInterval: eventStream.connected ? false : 10_000,
   });
-  const resourcesQuery = useQuery({
-    queryKey: overviewQueryKeys.systemResources,
-    queryFn: overviewApi.systemResources,
-    refetchInterval: 20_000,
-  });
-  const history = useMetricHistory(resourcesQuery.data);
   const modulesQuery = useQuery({
     queryKey: platformQueryKeys.modules,
     queryFn: platformApi.modules,
+    refetchInterval: 30_000,
   });
-  const installedModules = modulesQuery.data ?? [];
-  const embeddedNavigation = installedModules.filter((module) => (
-    module.ui.kind === "console" && embeddedModuleById.has(module.id)
-  ));
-  const gatewayNavigation = installedModules.filter((module) => module.ui.kind === "gateway");
-  const activeModule = embeddedNavigation.some((module) => module.id === view)
-    ? embeddedModuleById.get(view)
-    : undefined;
+  const runtime = useModuleRuntime(modulesQuery.data, identity.permissions ?? []);
+  const hasPermission = useMemo(
+    () => createPermissionChecker(identity.permissions),
+    [identity.permissions],
+  );
+  const loadedById = useMemo(
+    () => new Map(runtime.loaded.map((module) => [module.manifest.id, module] as const)),
+    [runtime.loaded],
+  );
+  const failedById = useMemo(
+    () => new Map(runtime.failed.map((module) => [module.manifest.id, module] as const)),
+    [runtime.failed],
+  );
+  const moduleNavigation = runtime.catalog.flatMap((module) => (
+    module.enabled && module.frontend
+      ? module.frontend.menu
+        .filter((item) => hasPermission(item.permission))
+        .map((item) => ({ module, item }))
+      : []
+  )).sort((left, right) => left.item.order - right.item.order
+    || left.module.id.localeCompare(right.module.id)
+    || left.item.id.localeCompare(right.item.id));
+  const matched = runtime.loaded.flatMap((module) => {
+    const route = matchModuleRoute(module, pathname);
+    return route ? [{ module, route }] : [];
+  })[0];
+  const matchedPermission = matched ? hasPermission(matched.route.route.permission) : false;
+  const activeAction = matched?.module.activation.primaryActions?.find(
+    (action) => action.component === matched.route.route.component,
+  );
+  const actionKey = matched ? `${matched.module.manifest.id}:${matched.route.route.component}` : "";
   const services = servicesQuery.data ?? [];
   const unhealthy = services.filter((service) => !service.healthy);
+
+  const renderModuleRoute = (module: LoadedWebModule) => {
+    if (!matched || matched.module !== module) return null;
+    if (!matchedPermission) {
+      return <section className="module-error-card" role="alert"><h1>无权访问模块页面</h1><p>当前账号缺少 {matched.route.route.permission} 权限。</p></section>;
+    }
+    const Component = matched.route.component;
+    return (
+      <ModuleErrorBoundary moduleId={module.manifest.id} route={pathname}>
+        <section className="module-view" data-union-module={module.manifest.id}>
+          <Component
+            api={createModuleApi(module.manifest.frontend.api_base)}
+            location={{ pathname, params: matched.route.params }}
+            navigate={navigate}
+            hasPermission={(permission) => hasPermission(permission)}
+            actionRequest={addTriggers[actionKey] ?? 0}
+            onActionRequestHandled={(trigger) => handleAddTrigger(actionKey, trigger)}
+          />
+        </section>
+      </ModuleErrorBoundary>
+    );
+  };
 
   return (
     <div className="app-shell sarmg-theme" data-sarmg-scope data-sarmg-theme={theme}>
       <aside className="sidebar">
         <nav className="nav-list" aria-label="UnionC 导航">
-          {coreNavItems.slice(0, 1).map(({ key, label, icon: Icon }) => (
+          {coreNavItems.slice(0, 1).map(({ path, label, icon: Icon }) => (
             <button
-              key={key}
-              className={view === key ? "nav-item active" : "nav-item"}
-              aria-current={view === key ? "page" : undefined}
+              key={path}
+              className={pathname === path ? "nav-item active" : "nav-item"}
+              aria-current={pathname === path ? "page" : undefined}
               type="button"
-              onClick={() => setView(key)}
+              onClick={() => navigate(path)}
               title={label}
             >
               <Icon size={18} /><span>{label}</span>
             </button>
           ))}
-          {embeddedNavigation.map((module) => {
-            const definition = embeddedModuleById.get(module.id)!;
-            const Icon = definition.icon;
+          {moduleNavigation.map(({ module, item }) => {
+            const failed = failedById.get(module.id);
+            const ready = loadedById.has(module.id);
             return (
               <button
-                key={module.id}
-                className={view === module.id ? "nav-item active" : "nav-item"}
-                aria-current={view === module.id ? "page" : undefined}
+                key={`${module.id}:${item.id}`}
+                className={pathname === item.route ? "nav-item active" : "nav-item"}
+                aria-current={pathname === item.route ? "page" : undefined}
                 type="button"
-                onClick={() => setView(module.id)}
-                title={module.description}
+                onClick={() => navigate(item.route)}
+                disabled={!ready}
+                title={failed ? `${module.description}（${failed.error.message}）` : module.description}
               >
-                <Icon size={18} /><span>{module.display_name}</span>
+                <PackageOpen size={18} /><span>{item.label}</span>
               </button>
             );
           })}
-          {gatewayNavigation.map((module) => {
-            const Icon = module.id === "sentinel-monitor"
-              ? Camera
-              : module.id === "photo-backup" ? Images : module.id === "dufs" ? FolderOpen : ExternalLink;
-            const href = gatewayEntryPath(module);
-            if (module.health !== "available" || href === null) {
-              return (
-                <button
-                  key={module.id}
-                  className="nav-item"
-                  type="button"
-                  disabled
-                  title={`${module.description}（${module.health_message}）`}
-                >
-                  <Icon size={18} /><span>{module.display_name}</span>
-                </button>
-              );
-            }
-            return (
-              <a
-                key={module.id}
-                className="nav-item"
-                href={href}
-                target="_blank"
-                rel="noopener noreferrer"
-                title={`${module.description}（在新标签页打开）`}
-              >
-                <Icon size={18} /><span>{module.display_name}</span>
-              </a>
-            );
-          })}
-          {coreNavItems.slice(1).map(({ key, label, icon: Icon }) => (
+          {coreNavItems.slice(1).map(({ path, label, icon: Icon }) => (
             <button
-              key={key}
-              className={view === key ? "nav-item active" : "nav-item"}
-              aria-current={view === key ? "page" : undefined}
+              key={path}
+              className={pathname === path ? "nav-item active" : "nav-item"}
+              aria-current={pathname === path ? "page" : undefined}
               type="button"
-              onClick={() => setView(key)}
+              onClick={() => navigate(path)}
               title={label}
             >
               <Icon size={18} /><span>{label}</span>
@@ -192,16 +208,16 @@ function AuthedApp({
           ))}
         </nav>
         <div className="sidebar-footer">
-          {activeModule && (
+          {activeAction && (
             <button
               className="icon-button"
               type="button"
-              title={activeModule.createLabel}
-              aria-label={activeModule.createLabel}
+              title={activeAction.label}
+              aria-label={activeAction.label}
               onClick={() => {
-                const next = (addSequencesRef.current[activeModule.id] ?? 0) + 1;
-                addSequencesRef.current[activeModule.id] = next;
-                setAddTriggers((current) => ({ ...current, [activeModule.id]: next }));
+                const next = (addSequencesRef.current[actionKey] ?? 0) + 1;
+                addSequencesRef.current[actionKey] = next;
+                setAddTriggers((current) => ({ ...current, [actionKey]: next }));
               }}
             >
               <Plus size={18} />
@@ -229,25 +245,27 @@ function AuthedApp({
       <main className="main">
         {eventStream.error && <InlineNotice tone="warn" text={eventStream.error} />}
         {modulesQuery.error && <InlineNotice tone="warn" text={`模块目录读取失败：${modulesQuery.error.message}`} />}
+        {runtime.catalogIssues.map((issue) => <InlineNotice key={issue.moduleId} tone="warn" text={`模块 ${issue.moduleId} Manifest 无效：${issue.message}`} />)}
+        {runtime.failed.map((module) => <InlineNotice key={module.manifest.id} tone="warn" text={`模块 ${module.manifest.display_name} 加载失败：${module.error.message}`} />)}
         {servicesQuery.error && <InlineNotice tone="danger" text={`服务状态读取失败：${servicesQuery.error.message}`} />}
-        {resourcesQuery.error && <InlineNotice tone="danger" text={`系统资源读取失败：${resourcesQuery.error.message}`} />}
-        {view === "overview" && (
+        {pathname === "/overview" && (
           <OverviewView
             services={services}
             unhealthyCount={unhealthy.length}
-            resources={resourcesQuery.data}
-            history={history}
-            loading={servicesQuery.isLoading || resourcesQuery.isLoading}
+            loading={servicesQuery.isLoading}
           />
         )}
         {/* 懒加载的分块在切换视图时才请求，用 Suspense 兜住这段空窗。 */}
         <Suspense fallback={<LoadingBlock label="正在加载视图…" />}>
-          {activeModule && activeModule.render({
-            addTrigger: addTriggers[activeModule.id] ?? 0,
-            onAddTriggerHandled: (trigger) => handleAddTrigger(activeModule.id, trigger),
-          })}
-          {view === "logs" && LogsView && <LogsView />}
-          {view === "settings" && <SettingsView onPasswordChanged={onPasswordChanged} />}
+          {matched && renderModuleRoute(matched.module)}
+          {pathname === "/settings" && <SettingsView onPasswordChanged={onPasswordChanged} />}
+          {!matched && pathname.startsWith("/modules/") && runtime.loading && <LoadingBlock label="正在加载模块…" />}
+          {!matched && pathname !== "/overview" && pathname !== "/settings"
+            && !runtime.loading && (
+              <section className="module-error-card" role="alert">
+                <h1>页面不可用</h1><p>路由未注册、模块未启用，或当前账号无权访问。</p>
+              </section>
+            )}
         </Suspense>
       </main>
     </div>
@@ -320,7 +338,7 @@ function SessionBoundary({
       </main>
     );
   }
-  return <AuthedApp onLogout={onLogout} onPasswordChanged={onPasswordChanged} />;
+  return <AuthedApp identity={meQuery.data} onLogout={onLogout} onPasswordChanged={onPasswordChanged} />;
 }
 
 function AuthenticatedAppRoot() {
@@ -337,12 +355,14 @@ function AuthenticatedAppRoot() {
   const replaceSessionQueryClient = useCallback(() => {
     const previousQueryClient = sessionQueryClientRef.current;
     sessionGenerationRef.current = advanceAuthSessionGeneration();
-    previousQueryClient.clear();
     const nextQueryClient = new QueryClient({
       defaultOptions: previousQueryClient.getDefaultOptions(),
     });
     sessionQueryClientRef.current = nextQueryClient;
     setSessionQueryClient(nextQueryClient);
+    // Clear after React has detached the old observers. Clearing while they are still mounted can
+    // make React Query immediately recreate/refetch the private queries we are trying to discard.
+    queueMicrotask(() => previousQueryClient.clear());
   }, []);
 
   useEffect(() => {
@@ -374,11 +394,13 @@ function AuthenticatedAppRoot() {
     if (logoutPendingRef.current) throw new Error("正在退出登录，请稍候");
     const loginQueryClient = sessionQueryClientRef.current;
     const result = await authApi.login(username, password);
+    const identity = await authApi.authenticate();
     if (loginQueryClient !== sessionQueryClientRef.current) {
       throw new Error("会话状态已改变，请重新登录");
     }
+    if (identity.username !== result.username) throw new Error("登录身份与会话身份不一致");
     sessionGenerationRef.current = advanceAuthSessionGeneration();
-    loginQueryClient.setQueryData(authQueryKeys.me, { username: result.username });
+    loginQueryClient.setQueryData(authQueryKeys.me, identity);
     setSignedOut(false);
   };
   const renderedSessionGeneration = sessionGenerationRef.current;
@@ -406,13 +428,5 @@ function AuthenticatedAppRoot() {
 }
 
 export function App() {
-  const activationRoute = parseAgentActivationRoute(window.location.pathname);
-  if (activationRoute.isActivationRoute && AgentActivationPage) {
-    return (
-      <Suspense fallback={<LoadingBlock label="正在加载 Agent 激活页…" />}>
-        <AgentActivationPage requestId={activationRoute.requestId} />
-      </Suspense>
-    );
-  }
   return <AuthenticatedAppRoot />;
 }

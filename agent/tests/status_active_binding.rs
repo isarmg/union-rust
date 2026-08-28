@@ -17,14 +17,15 @@ impl Fixture {
         let config_path = root.join("config.json");
         fs::create_dir_all(&state_dir).unwrap();
         let mut config = AgentConfig::default();
-        config.endpoint = "https://old.example/api/agent/v1/report".into();
+        config.endpoint = "https://old.example/api/modules/host-monitoring/agent/v1/report".into();
         config.state_dir = state_dir.clone();
         fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
 
         let generation = Uuid::new_v4();
         let request_id = Uuid::new_v4();
         let instance_id = Uuid::new_v4();
-        let report_endpoint = "https://new.example/api/agent/v1/report".to_string();
+        let report_endpoint =
+            "https://new.example/api/modules/host-monitoring/agent/v1/report".to_string();
         fs::write(state_dir.join("host-id"), instance_id.to_string()).unwrap();
         fs::write(state_dir.join("agent-token"), "a".repeat(64)).unwrap();
         fs::write(
@@ -45,7 +46,7 @@ impl Fixture {
                 "version": env!("CARGO_PKG_VERSION"),
                 "generation": generation,
                 "request_id": request_id,
-                "activation_url": "https://new.example/agent/activate/test",
+                "activation_url": "https://new.example/modules/host-monitoring/activate/test",
                 "instance_id": instance_id,
                 "report_endpoint": report_endpoint.clone(),
                 "completed_at": chrono::Utc::now(),

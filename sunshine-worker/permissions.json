@@ -1,0 +1,5 @@
+[
+  { "id": "sunshine.hosts.read", "description": "查看 Sunshine 主机", "default_roles": ["admin"] },
+  { "id": "sunshine.hosts.write", "description": "配置 Sunshine 主机", "default_roles": ["admin"] },
+  { "id": "sunshine.proxy.use", "description": "调用 Sunshine 代理 API", "default_roles": ["admin"] }
+]

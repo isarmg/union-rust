@@ -330,8 +330,8 @@ fn write_private_key_file_with_sync(
     })?;
     // fsync on the file persists its contents, but not the new directory
     // entry. Do not let startup accept the generated key until both are
-    // durable; otherwise a power loss can leave encrypted SQLite rows without
-    // the only key capable of decrypting them.
+    // durable; otherwise a power loss can leave encrypted platform secrets
+    // without the only key capable of decrypting them.
     sync_directory(parent)
 }
 

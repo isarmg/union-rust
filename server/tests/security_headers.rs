@@ -31,7 +31,6 @@ fn app(production: bool) -> axum::Router {
                 admin_username: "admin".into(),
                 admin_password_hash: "unused".into(),
             },
-            unionc::system::ResourceMonitor::frozen(Default::default()),
         )
         .expect("capture in-memory database identity"),
     )

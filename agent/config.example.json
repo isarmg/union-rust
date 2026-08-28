@@ -1,7 +1,7 @@
 {
-  "application_version": "0.4.0",
-  "endpoint": "https://unionc.example.com/api/agent/v1/report",
-  "pairing_endpoint": "https://unionc.example.com/api/agent/v2/pairing-requests",
+  "application_version": "0.5.0",
+  "endpoint": "https://unionc.example.com/api/modules/host-monitoring/agent/v1/report",
+  "pairing_endpoint": "https://unionc.example.com/api/modules/host-monitoring/agent/v2/pairing-requests",
   "otlp_endpoint": null,
   "otlp_token": null,
   "interval_seconds": 10,

@@ -28,19 +28,15 @@ pub struct AppState {
     pub services: ServiceStatusState,
     /// Product-neutral module catalog and external service adapter snapshots.
     pub platform: crate::platform::PlatformState,
-    /// 系统资源快照。与 `services` 同一个模式：唯一的后台任务采样，读路径只读快照。
-    pub resources: crate::system::ResourceMonitor,
 }
 
-/// 服务状态的**唯一**探测结果，由后台任务单独维护。
+/// 模块与平台适配器发布的服务状态快照。
 ///
-/// 让每个 SSE 连接各自跑一遍探测循环，会使对每台 Sunshine 主机的 TCP 探测频率
-/// 随浏览器标签数线性放大；且串行探测下 10 台离线主机就要 5 秒，直接把 5 秒的
-/// 推送周期拖成 10 秒。"一次探测、多方订阅"把探测成本从 O(客户端数 × 主机数)
-/// 降为 O(主机数)。
+/// 状态生产者在其自己的生命周期中完成采样并发布一次；所有 SSE 连接共享该快照和
+/// 广播通道，浏览器连接数不会反向放大模块探测负载。
 #[derive(Clone)]
 pub struct ServiceStatusState {
-    /// 每个模块独立发布贡献，避免 Sunshine 或外部服务探测互相覆盖。
+    /// 每个模块独立贡献状态，避免不同模块或外部服务的探测结果互相覆盖。
     contributions: Arc<RwLock<BTreeMap<String, Vec<crate::system::ServiceStatus>>>>,
     /// 广播通道。容量很小即可：订阅者只关心最新状态，落后的直接跳到最新。
     pub events: tokio::sync::broadcast::Sender<Vec<crate::system::ServiceStatus>>,
@@ -220,10 +216,10 @@ impl AppState {
         db: DbPool,
         dummy_password_hash: String,
         local_config: LocalConfig,
-        resources: crate::system::ResourceMonitor,
     ) -> anyhow::Result<Self> {
         let database_identity = DatabaseIdentity::capture(&settings)?;
-        let platform = crate::platform::PlatformState::new()?;
+        let platform =
+            crate::platform::PlatformState::from_environment(&local_config.admin_username)?;
         let (shutdown, _) = tokio::sync::watch::channel(false);
         Ok(Self {
             settings: Arc::new(settings),
@@ -245,7 +241,6 @@ impl AppState {
             },
             services: ServiceStatusState::new(),
             platform,
-            resources,
         })
     }
 

@@ -36,7 +36,6 @@ async fn test_state_with_settings(mut settings: Settings) -> AppState {
             admin_username: "admin".to_string(),
             admin_password_hash: test_password_hash,
         },
-        unionc::system::ResourceMonitor::frozen(Default::default()),
     )
     .expect("capture in-memory database identity")
 }
@@ -106,6 +105,107 @@ async fn health_is_public_but_current_user_requires_authentication() {
 }
 
 #[tokio::test]
+async fn runtime_module_catalog_and_rescan_are_session_rbac_and_csrf_protected() {
+    let temporary = tempfile::tempdir().unwrap();
+    let mut state = test_state().await;
+    state.platform = unionc::platform::PlatformState::new(
+        unionc::platform::PackageStore::new(
+            temporary.path().join("bundled"),
+            temporary.path().join("state"),
+        ),
+        "admin",
+    )
+    .unwrap();
+    insert_session(&state, "test-session").await;
+    let audit_state = state.clone();
+    let app = http::router(state);
+
+    let unauthenticated = app
+        .clone()
+        .oneshot(
+            Request::get("/api/platform/modules")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    let catalog = app
+        .clone()
+        .oneshot(
+            Request::get("/api/platform/modules")
+                .header("cookie", "session=test-session")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(catalog.status(), StatusCode::OK);
+
+    let current_user = app
+        .clone()
+        .oneshot(
+            Request::get("/api/auth/me")
+                .header("cookie", "session=test-session")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let current_user: serde_json::Value =
+        serde_json::from_slice(&to_bytes(current_user.into_body(), 64 * 1024).await.unwrap())
+            .unwrap();
+    assert_eq!(current_user["permissions"], serde_json::json!(["*"]));
+
+    let missing_csrf = app
+        .clone()
+        .oneshot(
+            Request::post("/api/platform/modules/rescan")
+                .header("cookie", "session=test-session")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_csrf.status(), StatusCode::FORBIDDEN);
+
+    let rescan = app
+        .clone()
+        .oneshot(
+            Request::post("/api/platform/modules/rescan")
+                .header("cookie", "session=test-session")
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rescan.status(), StatusCode::OK);
+    let audit = database::list_audit_logs(audit_state.db().as_ref(), None, 10)
+        .await
+        .unwrap();
+    assert!(
+        audit
+            .entries
+            .iter()
+            .any(|entry| entry.action == "platform.modules.rescan")
+    );
+
+    let removed_plugins_namespace = app
+        .oneshot(
+            Request::post("/api/platform/plugins/rescan")
+                .header("cookie", "session=test-session")
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(removed_plugins_namespace.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn ready_reuses_a_fresh_database_health_snapshot() {
     let state = test_state().await;
     *state.database_health.lock().await = Some(unionc::state::DatabaseHealthSnapshot {
@@ -159,7 +259,6 @@ async fn ready_invalidates_a_fresh_success_after_database_replacement() {
             admin_username: "admin".to_string(),
             admin_password_hash: test_password_hash,
         },
-        unionc::system::ResourceMonitor::frozen(Default::default()),
     )
     .expect("capture runtime database identity");
     let app = http::router(state.clone());
@@ -456,7 +555,7 @@ async fn production_accepts_forwarding_headers_from_the_configured_proxy() {
 }
 
 #[tokio::test]
-async fn compiled_console_module_route_never_falls_back_to_legacy_in_process_storage() {
+async fn removed_legacy_business_route_is_not_reintroduced_by_the_runtime_gateway() {
     let state = test_state().await;
     insert_session(&state, "test-session").await;
     let response = http::router(state)
@@ -468,10 +567,7 @@ async fn compiled_console_module_route_never_falls_back_to_legacy_in_process_sto
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let payload: serde_json::Value =
-        serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap()).unwrap();
-    assert_eq!(payload["code"], "module_gateway_unavailable");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -568,7 +664,7 @@ async fn module_gateway_uses_a_server_generated_request_id_without_core_database
     });
     let response = http::router(state.clone())
         .oneshot(
-            Request::post("/api/monitoring/agent-instances")
+            Request::post("/api/modules/host-monitoring/agent-instances")
                 .header("cookie", "session=test-session")
                 .header("x-csrf-token", TEST_CSRF_TOKEN)
                 .header("x-request-id", "client-controlled-audit-correlation")

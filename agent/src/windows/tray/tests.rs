@@ -73,32 +73,32 @@ mod tests {
 
         assert!(
             serde_json::from_str::<PairIpcMessage>(
-                r#"{"generation":"generation","request_id":"request","activation_url":"https://server.example/agent/activate/request","pairing_endpoint":"https://server.example/api/agent/v2/pairing-requests"}"#
+                r#"{"generation":"generation","request_id":"request","activation_url":"https://server.example/modules/host-monitoring/activate/request","pairing_endpoint":"https://server.example/api/modules/host-monitoring/agent/v2/pairing-requests"}"#
             )
             .is_ok()
         );
         assert!(
             serde_json::from_str::<PairIpcMessage>(
-                r#"{"generation":"generation","request_id":"request","activation_url":"https://server.example/agent/activate/request","pairing_endpoint":"https://server.example/api/agent/v2/pairing-requests","legacy":true}"#
+                r#"{"generation":"generation","request_id":"request","activation_url":"https://server.example/modules/host-monitoring/activate/request","pairing_endpoint":"https://server.example/api/modules/host-monitoring/agent/v2/pairing-requests","legacy":true}"#
             )
             .is_err()
         );
 
         assert!(
             serde_json::from_str::<PairEvent>(
-                r#"{"event":"pairing_waiting","version":"0.4.0","request_id":"request","generation":"generation","activation_url":"https://server.example/agent/activate/request","pairing_endpoint":"https://server.example/api/agent/v2/pairing-requests","expires_at":"2026-08-20T00:00:00Z","poll_interval":2}"#
+                r#"{"event":"pairing_waiting","version":"0.4.0","request_id":"request","generation":"generation","activation_url":"https://server.example/modules/host-monitoring/activate/request","pairing_endpoint":"https://server.example/api/modules/host-monitoring/agent/v2/pairing-requests","expires_at":"2026-08-20T00:00:00Z","poll_interval":2}"#
             )
             .is_ok()
         );
         assert!(
             serde_json::from_str::<PairEvent>(
-                r#"{"event":"pairing_waiting","version":"0.4.0","request_id":"request","generation":"generation","activation_url":"https://server.example/agent/activate/request","pairing_endpoint":"https://server.example/api/agent/v2/pairing-requests","poll_interval":2}"#
+                r#"{"event":"pairing_waiting","version":"0.4.0","request_id":"request","generation":"generation","activation_url":"https://server.example/modules/host-monitoring/activate/request","pairing_endpoint":"https://server.example/api/modules/host-monitoring/agent/v2/pairing-requests","poll_interval":2}"#
             )
             .is_err()
         );
         assert!(
             serde_json::from_str::<PairEvent>(
-                r#"{"event":"paired","version":"0.4.0","request_id":"request","instance_id":"instance","endpoint":"https://server.example/api/agent/v1/report","legacy":true}"#
+                r#"{"event":"paired","version":"0.4.0","request_id":"request","instance_id":"instance","endpoint":"https://server.example/api/modules/host-monitoring/agent/v1/report","legacy":true}"#
             )
             .is_err()
         );
@@ -157,8 +157,10 @@ mod tests {
         let message = PairIpcMessage {
             generation: generation.clone(),
             request_id: request_id.clone(),
-            activation_url: format!("{server}/agent/activate/{request_id}"),
-            pairing_endpoint: format!("{server}/api/agent/v2/pairing-requests"),
+            activation_url: format!("{server}/modules/host-monitoring/activate/{request_id}"),
+            pairing_endpoint: format!(
+                "{server}/api/modules/host-monitoring/agent/v2/pairing-requests"
+            ),
         };
         validate_pair_ipc_message(&message, server).unwrap();
 

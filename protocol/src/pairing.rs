@@ -202,7 +202,7 @@ mod tests {
     fn server_to_agent_contract_has_no_control_payload() {
         assert_rejects_server_control_fields::<AgentPairingResponse>(serde_json::json!({
             "request_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-            "activation_url": "/agent/activate/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "activation_url": "/modules/host-monitoring/activate/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
             "expires_in": 900,
             "poll_interval": 2
         }));

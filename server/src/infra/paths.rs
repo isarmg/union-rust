@@ -7,7 +7,7 @@
 //! ```text
 //! <数据目录>/unionc.secret        AES-256 主密钥
 //! <数据目录>/unionc-config.json   管理员 bcrypt 哈希
-//! <数据目录>/unionc.db            SQLite 业务数据、凭据哈希与加密配置
+//! <数据目录>/unionc.db            SQLite 平台审计与核心元数据
 //! ```
 //!
 //! 若用**相对路径**表达这个目录，"文件在哪"就取决于**进程的工作目录**。从别的目录

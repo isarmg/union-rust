@@ -11,7 +11,8 @@ Agent 是远端 companion，supervisor 不管理它。组织通过可信包管�
 4. 核对设备摘要并激活；
 5. 用 `status`、`doctor` 和 Union 主机页验证上报。
 
-不要把已配对状态目录制作进镜像，也不要让 Agent 直接连接 18105。
+不要把已配对状态目录制作进镜像，也不要让 Agent 连接任何 worker loopback 地址；它只能访问
+Union 的 `/api/modules/host-monitoring/agent/*` 网关。
 
 ## 卸载与退役
 

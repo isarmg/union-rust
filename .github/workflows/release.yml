@@ -57,11 +57,16 @@ jobs:
     needs: [verify-release-ref, full-ci]
     permissions:
       contents: read
-    uses: isarmg/union-builder/.github/workflows/build-union.yml@v1.0.0
+    # Builder v2 owns schema-v2 composition. Replace this single sentinel with the reviewed,
+    # immutable Builder v2 commit before merging or publishing a release.
+    uses: isarmg/union-builder/.github/workflows/build-union.yml@UNION_BUILDER_V2_COMMIT_SHA_TO_PIN
     with:
       # Select Builder's versioned official graph instead of duplicating it here.
       profile: full
       artifact-name: union-distribution
+      builder-revision: UNION_BUILDER_V2_COMMIT_SHA_TO_PIN
+      materialize-caller-source: true
+      caller-revision: ${{ github.sha }}
 
   release:
     name: publish one Union distribution
@@ -134,12 +139,42 @@ jobs:
             exit 1
           fi
           jq -e '
-            .schema_version == 1 and
+            .schema_version == 2 and
             ([.modules[].id] | sort) ==
               ["dufs", "host-monitoring", "photo-backup", "sentinel-monitor", "sunshine"]
           ' "$manifest" >/dev/null
-          jq -er '.modules[].executable' "$manifest" | while IFS= read -r executable; do
-            test -x "$distribution/$executable"
+          jq -er '.modules[] | [.id, .package, .manifest] | @tsv' "$manifest" |
+            while IFS=$'\t' read -r module_id package module_manifest_path; do
+            expected_package="modules/$module_id"
+            expected_manifest="$expected_package/manifest.json"
+            if [[ "$package" != "$expected_package" || "$module_manifest_path" != "$expected_manifest" ]]; then
+              echo "Invalid package/manifest location for module $module_id" >&2
+              exit 1
+            fi
+
+            module_manifest="$distribution/$module_manifest_path"
+            test -f "$module_manifest"
+            manifest_module_id="$(jq -er '.id' "$module_manifest")"
+            if [[ "$manifest_module_id" != "$module_id" ]]; then
+              echo "Module manifest identity $manifest_module_id does not match $module_id" >&2
+              exit 1
+            fi
+            executable="$(jq -er '
+              if .execution.mode == "process" and
+                 (.execution.executable | type == "string" and length > 0)
+              then .execution.executable
+              else error("module execution must be a process with an executable")
+              end
+            ' "$module_manifest")"
+            case "$executable" in
+              /*|..|../*|*/../*|*/..)
+                echo "Unsafe executable path for module $module_id: $executable" >&2
+                exit 1
+                ;;
+            esac
+            executable_path="$distribution/$package/$executable"
+            test -f "$executable_path"
+            test -x "$executable_path"
           done
           (
             cd "$distribution"

@@ -1,7 +1,7 @@
 //! HTTP 路由装配与全局中间件。
 //!
-//! 本模块**不含任何业务逻辑**——每个功能模块在自己的 `http.rs` 里声明 URL 与 handler
-//! 的映射，这里只负责把它们组合起来，并决定哪些中间件套在哪一层。
+//! 本模块**不含任何业务逻辑**——发行内模块通过运行时 Manifest 声明 URL、鉴权和
+//! handler 映射，这里只负责平台路由和全局中间件。
 //!
 //! 中间件的分层是有讲究的：
 //!
@@ -11,7 +11,7 @@
 //! │  │  ┌─ 安全响应头 ────────────────────────┐ │ │  覆盖全部业务响应
 //! │  │  │  ┌─ 控制台路由（鉴权 + CSRF）────┐ │ │ │
 //! │  │  │  └───────────────────────────────┘ │ │ │
-//! │  │  │  ┌─ Agent 路由（协议自身鉴权）──┐ │ │ │  不走会话鉴权
+//! │  │  │  ┌─ Module 路由（可选自身鉴权）─┐ │ │ │  按 Manifest 执行
 //! │  │  │  └───────────────────────────────┘ │ │ │
 //! │  │  └─────────────────────────────────────┘ │ │
 //! │  └──────────────────────────────────────────┘ │
@@ -26,10 +26,12 @@ pub(crate) use access_control::database_available;
 
 use axum::{
     Router,
+    body::Body,
     extract::{DefaultBodyLimit, Request},
     http::{HeaderValue, header::HeaderName},
     middleware::{self, Next},
-    response::Response,
+    response::{IntoResponse, Response},
+    routing::get,
 };
 use tower_http::{
     services::{ServeDir, ServeFile},
@@ -44,7 +46,12 @@ fn console_routes() -> Router<AppState> {
         .merge(crate::auth::http::router())
         .merge(crate::system::http::router())
         .merge(crate::platform::console_router())
-        .merge(crate::platform::console_gateway_router())
+        .merge(crate::platform::module_api_router())
+        .merge(crate::platform::module_asset_router())
+        .route("/overview", get(shell_document))
+        .route("/settings", get(shell_document))
+        .route("/modules/{module}", get(shell_document))
+        .route("/modules/{module}/{*path}", get(shell_document))
 }
 
 /// 构造整个 HTTP API 路由树。
@@ -59,24 +66,23 @@ fn router_with_body_deadline(state: AppState, body_deadline: std::time::Duration
     ));
     Router::new()
         .merge(console)
-        // Agent 路由分别使用 Bearer、Pairing secret 或短时 capability，不套会话中间件。
-        .merge(crate::platform::public_worker_router())
-        // 编译期模块网关保留各 worker 自身的用户鉴权；Union 只提供传输边界、固定
-        // upstream 和进程级内部凭据，因此移动端 API 不要求额外携带 Union 管理台会话。
-        .merge(crate::platform::gateway_router())
-        // The only browser application in a release is Union's. Module frontends are either
-        // embedded chunks in this tree or assets reached through a fixed module gateway prefix.
+        // Core serves only the Web Shell here. Module frontends remain in their packages and are
+        // exposed by the Manifest-driven module asset router above.
         .route_service("/", ServeFile::new(web_root().join("index.html")))
         .nest_service("/assets", ServeDir::new(web_root().join("assets")))
         // Defensive fallback for any route that does not declare a smaller
-        // contract. The largest supported console payload is Sunshine config
-        // at 1 MiB; auth and Agent routers override this with tighter limits.
+        // contract. Module manifests should define narrower endpoint limits
+        // as their protocols mature.
         .layer(DefaultBodyLimit::max(1024 * 1024))
         // Bound the total upload time, not merely the idle gap between chunks. This layer only
         // watches until the request body finishes, so long handler work and SSE responses are not
         // subject to the upload deadline.
         .layer(middleware::from_fn_with_state(
-            body_deadline,
+            request_body_deadline::IngressPolicy::with_platform(
+                state.platform.clone(),
+                body_deadline,
+                sarmg_platform_core::DEFAULT_ROUTE_REQUEST_MAX_BYTES,
+            ),
             request_body_deadline::enforce,
         ))
         // 安全头包住完整业务路由，因此鉴权失败和 handler 错误响应同样会携带这些头。
@@ -102,6 +108,24 @@ fn web_root() -> std::path::PathBuf {
     }
     // Cargo development/test layout. Production never falls back outside the immutable release.
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/dist")
+}
+
+async fn shell_document() -> Response {
+    match std::fs::read(web_root().join("index.html")) {
+        Ok(bytes) => (
+            [(
+                axum::http::header::CONTENT_TYPE,
+                HeaderValue::from_static("text/html; charset=utf-8"),
+            )],
+            Body::from(bytes),
+        )
+            .into_response(),
+        Err(_) => (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "web console is not built",
+        )
+            .into_response(),
+    }
 }
 
 async fn assign_request_id(mut request: Request, next: Next) -> Response {
@@ -135,7 +159,6 @@ mod tests {
                 admin_username: "admin".to_string(),
                 admin_password_hash: "unused".to_string(),
             },
-            crate::system::ResourceMonitor::frozen(Default::default()),
         )
         .expect("capture in-memory database identity")
     }

@@ -17,12 +17,13 @@ then
   fail 'CI and release Cargo commands must use --locked'
 fi
 
-# Normal actions use immutable commits. The sole tag reference is the explicitly
-# versioned reusable Union Builder release required by the distribution policy.
+# Normal actions use immutable commits. During the coordinated v2 migration only,
+# the Builder workflow may carry one conspicuous sentinel which must be replaced
+# by its reviewed 40-hex commit before release.
 if grep -En 'uses:[[:space:]]+[^.[:space:]]' "$ci_workflow" "$release_workflow" |
-  grep -Ev 'uses:[[:space:]]+[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}([[:space:]]+#.*)?$|uses:[[:space:]]+isarmg/union-builder/\.github/workflows/build-union\.yml@v1\.0\.0$'
+  grep -Ev 'uses:[[:space:]]+[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}([[:space:]]+#.*)?$|uses:[[:space:]]+isarmg/union-builder/\.github/workflows/build-union\.yml@UNION_BUILDER_V2_COMMIT_SHA_TO_PIN$'
 then
-  fail 'external actions must use immutable commits except the reviewed Builder v1.0.0 workflow'
+  fail 'external actions must use immutable commits (or the one reviewed Builder v2 pin sentinel)'
 fi
 
 if grep -En '^[[:space:]]+image:[[:space:]]+' "$ci_workflow" "$release_workflow" |
@@ -57,8 +58,23 @@ grep -Fq '    needs: verify-release-ref' "$release_workflow" ||
   fail 'repository CI must follow release-ref verification'
 grep -Fq '    needs: [verify-release-ref, full-ci]' "$release_workflow" ||
   fail 'Builder must run only after source verification and repository CI'
-grep -Fq '    uses: isarmg/union-builder/.github/workflows/build-union.yml@v1.0.0' "$release_workflow" ||
-  fail 'release must call Union Builder v1.0.0'
+builder_uses=$(grep -E '^[[:space:]]+uses: isarmg/union-builder/\.github/workflows/build-union\.yml@' "$release_workflow" || true)
+[ "$(printf '%s\n' "$builder_uses" | grep -c .)" -eq 1 ] ||
+  fail 'release must call exactly one Union Builder workflow'
+builder_ref=${builder_uses##*@}
+if [ "$builder_ref" != UNION_BUILDER_V2_COMMIT_SHA_TO_PIN ] &&
+  ! printf '%s\n' "$builder_ref" | grep -Eq '^[0-9a-f]{40}$'
+then
+  fail 'release must pin the Builder v2 workflow to a reviewed commit'
+fi
+[ "$(grep -Fxc "      builder-revision: $builder_ref" "$release_workflow")" -eq 1 ] ||
+  fail 'builder-revision must exactly equal the immutable Builder workflow uses ref'
+[ "$(grep -Fxc '      materialize-caller-source: true' "$release_workflow")" -eq 1 ] ||
+  fail 'the Union release must enable Builder caller-source materialization exactly once'
+[ "$(grep -Fxc '      caller-revision: ${{ github.sha }}' "$release_workflow")" -eq 1 ] ||
+  fail 'caller-revision must be the exact Union workflow github.sha'
+grep -Fq '# Builder v2 owns schema-v2 composition.' "$release_workflow" ||
+  fail 'release must document that Builder v2 owns schema-v2 inclusion'
 grep -Fq '      profile: full' "$release_workflow" ||
   fail 'release must select the Builder official full profile'
 
@@ -67,14 +83,17 @@ for required in \
   'cargo test --locked -p unionc-sunshine-worker' \
   'cargo clippy --locked -p union-host-monitoring-worker' \
   'cargo test --locked -p union-host-monitoring-worker' \
-  'features: module-photo-backup,module-dufs' \
-  'features: module-sentinel-monitor,module-host-monitoring' \
-  'features: module-sentinel-monitor,module-photo-backup,module-dufs,module-sunshine,module-host-monitoring' \
+  'name: schema-v2 composition boundary' \
+  'Assert Core has no business-module Cargo features' \
   'os: [ubuntu-24.04, windows-2025, macos-26]'
 do
   grep -Fq "$required" "$ci_workflow" ||
     fail "CI is missing required worker/profile/companion coverage: $required"
 done
+if grep -En '(features:[[:space:]]*module-|--features[^[:space:]]*[[:space:]]+module-)' \
+  "$ci_workflow" "$release_workflow" server/Cargo.toml; then
+  fail 'Cargo feature selection must not encode the schema-v2 module graph'
+fi
 if grep -Eiq 'server/packaging|n[Ff]PM' "$ci_workflow"; then
   fail 'legacy standalone Server packaging must not run in formal CI'
 fi
@@ -91,8 +110,18 @@ grep -Fq 'if [[ "$manifest_version" != "$version" ]]; then' "$release_workflow" 
   fail 'manifest version must match the tag'
 grep -Fq 'if [[ "$manifest_revision" != "$release_commit" ]]; then' "$release_workflow" ||
   fail 'manifest revision must match the tag commit'
+grep -Fq '.schema_version == 2 and' "$release_workflow" ||
+  fail 'release must require the Builder v2 release-manifest schema'
 grep -Fq '["dufs", "host-monitoring", "photo-backup", "sentinel-monitor", "sunshine"]' "$release_workflow" ||
   fail 'the official full distribution must contain exactly five workers'
+grep -Fq ".modules[] | [.id, .package, .manifest] | @tsv" "$release_workflow" &&
+  grep -Fq ".execution.executable" "$release_workflow" &&
+  grep -Fq 'test -f "$executable_path"' "$release_workflow" &&
+  grep -Fq 'test -x "$executable_path"' "$release_workflow" ||
+  fail 'release must resolve every module executable through its package manifest'
+if grep -Fq ".modules[].executable" "$release_workflow"; then
+  fail 'schema v2 modules do not carry executable paths in union-release.json'
+fi
 grep -Fq 'sha256sum --check SHA256SUMS' "$release_workflow" ||
   fail 'Builder distribution checksums must be verified'
 grep -Fq 'union-distribution.tar' "$release_workflow" &&

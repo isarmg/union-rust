@@ -1,0 +1,4 @@
+[
+  { "id": "host-monitoring.hosts.read", "description": "查看主机和遥测", "default_roles": ["admin"] },
+  { "id": "host-monitoring.agents.write", "description": "配对和管理 Agent", "default_roles": ["admin"] }
+]

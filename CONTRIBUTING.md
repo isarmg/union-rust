@@ -5,7 +5,8 @@
 | 组件 | 要求 |
 |---|---|
 | Rust | stable（当前锁定依赖要求 1.95+；edition 2024 本身要求 1.85+） |
-| SQLite | 随 Server 二进制内嵌，无需单独安装 |
+| SQLite | Core 与 Dufs 各自内嵌使用，无需单独安装 |
+| PostgreSQL | Sunshine、Host、Sentinel、Photo 集成测试各使用专用 database/role |
 | Node.js | 24 LTS 或更高（前端） |
 
 服务端**仅支持 Linux**（`lib.rs` 有 `compile_error!` 固定该约束）；Agent 支持
@@ -23,20 +24,19 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-### 服务端测试使用隔离的 SQLite 文件
+### 数据层测试遵守模块所有权
 
-常规持久层测试会在系统临时目录创建各自的 SQLite 数据库，并真实执行当前 schema 初始化、事务、
-保留期清理和 Agent 端到端路径，不需要启动外部数据库服务；长期开发环境可按系统临时
-目录策略清理遗留的测试数据库：
+Core 持久层测试会在系统临时目录创建隔离 SQLite。Sunshine、Host、Sentinel、Photo 的数据与
+migration 测试属于各自 worker，必须使用相互隔离的专用 PostgreSQL database/role；Dufs 使用
+自己的临时 SQLite 和文件根。不能用 Core SQLite 单测替代模块数据库集成测试：
 
 ```bash
 cargo test -p unionc
 ```
 
-不要把测试内部的数据库路径改成生产数据目录。项目只测试当前版本在空目录中创建的
-数据库，不测试或承诺任何旧 Server 数据库的就地升级，也不得把旧格式转换、回填或导入
-路径重新接入正常构建。schema 发生变化时直接更新当前基线和合同测试；现有部署必须导出
-仍需保留的数据后全新部署。
+任何测试都不得指向生产数据。旧 Union SQLite 只允许作为离线 importer 的只读副本，不得把
+旧格式转换、回填或双写路径接回 Core 请求路径。模块 schema 变化由模块自己的 migration 和
+合同测试负责，不能由 Core 建立跨模块表或共享 migration ledger。
 
 OTLP live 测试需要真实 Collector，并由 `UNIONC_AGENT_TEST_REQUIRE_OTLP=1` 守护。它验证
 Agent → Collector 的接收合同，不验证 Collector exporter、时序库落库或查询。
@@ -82,24 +82,25 @@ npm run build
 
 修复缺陷时，请在注释里写清这里防的是什么故障、换成更直观的写法会表现为什么现象。
 代码库里大量此类注释（如 `agent/src/spool.rs` 的隔离文件预算、
-`server/src/monitoring/store/reports.rs` 的报文体保留策略）
+`server/src/http/request_body_deadline.rs` 的源速率预约）
 是刻意维护的资产。
 
 ### 上报间隔的三层边界必须联合评估
 
 三层约束相关但刻意不完全相同，修改任一层都要检查另外两层及 jitter 测试：
 
-- `server/src/monitoring/model/mod.rs`：HTTP 报文中的**实测间隔**权威契约为 `[0.1, 3600]`；
+- `protocol/src/report.rs` 与 `host-monitoring-worker/src/model.rs`：HTTP 报文中的**实测间隔**
+  权威契约为 `[0.1, 3600]`；
 - `agent/src/config.rs`：配置是整数秒（最小 1），并保证 jitter 后最坏实测周期不超过 3600，
   `MIN/MAX_REPORT_INTERVAL_SECONDS` 保护生成报文；
-- `server/schema/sqlite.sql`：存储层只设 `(0, 3600]` 粗粒度 CHECK，
-  用于拦截损坏数据，不能代替 Rust 入口校验。
+- `host-monitoring-worker/migrations/`：模块 PostgreSQL 存储约束用于拦截损坏数据，不能代替
+  Rust 入口校验。
 
-### 只维护一个当前 schema
+### 每个数据 owner 只维护自己的当前 schema
 
-`server/schema/sqlite.sql` 是当前版本唯一的数据定义。schema 变更直接
-更新这份基线及 `infra/database/mod.rs` 中的当前指纹；不要新增用于读取、转换或回填旧
-schema 的代码。Server 只接受空目录或与当前基线精确一致的数据库。
+Core SQLite、四个模块 PostgreSQL 和 Dufs SQLite 各有自己的 schema/migration 事实源。变更只能
+落在数据 owner 内，不得跨库建外键、JOIN、事务或共享 migration。旧数据转换只能进入明确的
+离线 importer；正常请求路径不读取旧 schema。
 
 ### 测试
 

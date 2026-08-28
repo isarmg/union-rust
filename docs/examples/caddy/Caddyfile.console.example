@@ -1,5 +1,5 @@
 # Union 唯一公网入口。前端、API、SSE 和 /modules/* 全部转发给同一 Union release。
-# 不要给 18101--18105 建站点或 upstream。
+# 不要给任何模块 worker 的 loopback listener 建站点或 upstream。
 union.example.com {
 	encode zstd gzip
 

@@ -836,7 +836,7 @@ async fn install_current_schema(connection: &mut SqliteConnection) -> anyhow::Re
     query(
         r#"
         CREATE TABLE schema_metadata (
-            schema_version      INTEGER PRIMARY KEY CHECK (schema_version = 1),
+            schema_version      INTEGER PRIMARY KEY CHECK (schema_version = 2),
             application_version TEXT NOT NULL,
             checksum            TEXT NOT NULL
         ) STRICT
@@ -931,7 +931,7 @@ struct CurrentSchema {
 }
 
 const CURRENT_SCHEMA: CurrentSchema = CurrentSchema {
-    version: 1,
+    version: 2,
     sql: include_str!("../../../schema/sqlite.sql"),
 };
 

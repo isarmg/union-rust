@@ -5,7 +5,7 @@
 
 Agent 不是服务端模块：
 
-- 不属于五个 Cargo module feature；
+- 不属于五个服务器模块包；
 - 不由 Union supervisor 启动、停止或更新；
 - 随 Union Release 的 compatibility matrix 记录兼容版本；
 - 可以由包管理、MDM 或组织软件中心分发，但没有独立服务端产品/模块 Release。
@@ -14,9 +14,9 @@ Agent 不监听远端端口，不实现命令执行、脚本/配置下发、文�
 在 Agent 本地生成，Host worker 只持有验证所需数据。首次配对使用短时一次性授权值；完整
 状态机见 [Agent 配对](agent-pairing.md)。
 
-数据路径固定为 Agent → Union `/api/agent/...` → 私有 Host worker。Agent 不知道 worker 的
-18105 端口或 gateway token。Host 数据存储在 PostgreSQL `host_monitoring` schema；旧
-Union SQLite 只可能作为一次性离线导入源。
+数据路径固定为 Agent → Union `/api/modules/host-monitoring/agent/...` → 私有 Host worker。
+Agent 不知道 worker 的 loopback 地址或 gateway token。Host 数据存储在模块专用 PostgreSQL
+database/role（库内 `host_monitoring` schema）；旧 Union SQLite 只可能作为一次性离线导入源。
 
 开发验证：
 

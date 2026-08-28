@@ -28,26 +28,19 @@ pub enum AppError {
     /// 本地管理员配置校验失败，返回可细分机器码。
     #[error(transparent)]
     LocalConfig(#[from] LocalConfigError),
-    /// 主机地址格式错误，返回稳定机器码 `invalid_host`。
-    #[error("{0}")]
-    InvalidHost(String),
     /// 认证失败，返回 401。
     #[error("unauthorized")]
     Unauthorized,
     /// 已认证但请求缺少必要的安全证明，返回 403。
     #[error("{0}")]
     Forbidden(String),
-    /// A valid Agent credential was presented with a report for another host.
-    /// This stable code lets the Agent discard only that impossible report.
-    #[error("agent credential does not belong to the reported host")]
-    AgentHostMismatch,
     /// 请求没有经过预期的反向代理链路（缺少 `X-Forwarded-Proto` / `X-Forwarded-For`），
     /// 返回 421 Misdirected Request。
     ///
     /// # 为什么不复用 403
     ///
     /// 这不是"凭据不对"，而是"请求走错了路"——凭据可能完全有效。一次反向代理漏透传
-    /// 请求头属于可恢复的部署配置失误，不应伪装成 Agent 授权错误。
+    /// 请求头属于可恢复的部署配置失误，不应伪装成身份认证错误。
     /// 421 的语义正是"这台服务器不该接收这个请求"，且它天然属于可重试类——
     /// 运维修好反代之后，同一份报文原样重发即可成功。
     #[error("{0}")]
@@ -67,18 +60,15 @@ pub enum AppError {
     /// 请求体未在服务器规定的总时限内传完，返回 408。
     #[error("{0}")]
     RequestTimeout(String),
+    /// 请求体超过端点允许的最大值，返回 413。
+    #[error("{0}")]
+    PayloadTooLarge(String),
     /// 本地持久层暂不可用，业务接口暂不可用，返回 503。
     #[error("{0}")]
     ServiceUnavailable(String),
     /// 内嵌 SQLite 的固定文件身份或精确当前 schema 当前不可用。
     #[error("{0}")]
     DatabaseUnavailable(String),
-    /// 外部进程或依赖服务出错，返回 502。
-    #[error("{0}")]
-    Process(String),
-    /// 管理员配置的上游 HTTP 服务错误；消息可安全返回给已认证控制台。
-    #[error("{0}")]
-    Upstream(String),
     /// 文件系统错误。
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -93,22 +83,20 @@ pub enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = match &self {
-            AppError::BadRequest(_) | AppError::LocalConfig(_) | AppError::InvalidHost(_) => {
-                StatusCode::BAD_REQUEST
-            }
+            AppError::BadRequest(_) | AppError::LocalConfig(_) => StatusCode::BAD_REQUEST,
             AppError::UnsupportedMediaType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             AppError::Unauthorized => StatusCode::UNAUTHORIZED,
-            AppError::Forbidden(_) | AppError::AgentHostMismatch => StatusCode::FORBIDDEN,
+            AppError::Forbidden(_) => StatusCode::FORBIDDEN,
             AppError::MisdirectedRequest(_) => StatusCode::MISDIRECTED_REQUEST,
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::Gone(_) => StatusCode::GONE,
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
             AppError::RequestTimeout(_) => StatusCode::REQUEST_TIMEOUT,
+            AppError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             AppError::ServiceUnavailable(_) | AppError::DatabaseUnavailable(_) => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
-            AppError::Process(_) | AppError::Upstream(_) => StatusCode::BAD_GATEWAY,
             AppError::Io(_) | AppError::Sqlx(_) | AppError::Anyhow(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -119,22 +107,17 @@ impl IntoResponse for AppError {
             AppError::BadRequest(msg) => msg.clone(),
             AppError::UnsupportedMediaType(msg) => msg.clone(),
             AppError::LocalConfig(error) => error.to_string(),
-            AppError::InvalidHost(msg) => msg.clone(),
             AppError::Unauthorized => "unauthorized".to_string(),
             AppError::Forbidden(msg) => msg.clone(),
-            AppError::AgentHostMismatch => {
-                "agent credential does not belong to the reported host".to_string()
-            }
             AppError::MisdirectedRequest(msg) => msg.clone(),
             AppError::NotFound(msg) => msg.clone(),
             AppError::Gone(msg) => msg.clone(),
             AppError::Conflict(msg) => msg.clone(),
             AppError::TooManyRequests(msg) => msg.clone(),
             AppError::RequestTimeout(msg) => msg.clone(),
+            AppError::PayloadTooLarge(msg) => msg.clone(),
             AppError::ServiceUnavailable(msg) => msg.clone(),
             AppError::DatabaseUnavailable(msg) => msg.clone(),
-            AppError::Process(_) => "upstream service error".to_string(),
-            AppError::Upstream(msg) => msg.clone(),
             AppError::Io(_) => "storage error".to_string(),
             AppError::Sqlx(_) => "database error".to_string(),
             AppError::Anyhow(_) => "internal error".to_string(),
@@ -142,8 +125,6 @@ impl IntoResponse for AppError {
 
         if status == StatusCode::INTERNAL_SERVER_ERROR {
             tracing::error!("internal error: {self}");
-        } else if matches!(&self, AppError::Process(_) | AppError::Upstream(_)) {
-            tracing::warn!("upstream/process error: {self}");
         }
 
         let body = Json(ErrorResponse {
@@ -161,20 +142,17 @@ impl AppError {
             Self::BadRequest(_) => "bad_request",
             Self::UnsupportedMediaType(_) => "unsupported_media_type",
             Self::LocalConfig(error) => error.code(),
-            Self::InvalidHost(_) => "invalid_host",
             Self::Unauthorized => "unauthorized",
             Self::Forbidden(_) => "forbidden",
-            Self::AgentHostMismatch => "agent_host_mismatch",
             Self::MisdirectedRequest(_) => "misdirected_request",
             Self::NotFound(_) => "not_found",
             Self::Gone(_) => "gone",
             Self::Conflict(_) => "conflict",
             Self::TooManyRequests(_) => "too_many_requests",
             Self::RequestTimeout(_) => "request_timeout",
+            Self::PayloadTooLarge(_) => "payload_too_large",
             Self::ServiceUnavailable(_) => "service_unavailable",
             Self::DatabaseUnavailable(_) => "database_unavailable",
-            Self::Process(_) => "process_error",
-            Self::Upstream(_) => "upstream_error",
             Self::Io(_) => "storage_error",
             Self::Sqlx(_) => "database_error",
             Self::Anyhow(_) => "internal_error",

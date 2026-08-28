@@ -1,77 +1,118 @@
 # Union
 
-Union 是这一组项目唯一面向用户的服务端产品、公共入口和 Release。五个服务端业务模块由
-Cargo feature 在构建期选择，运行时由 Union supervisor 启动为只监听回环地址的私有 worker；
-它们不是可单独部署或发布的公共服务。
+Union 是一个基于 Rust 的自托管统一服务管理平台，采用“中央控制面 + 独立业务工作进程”的
+模块化架构。Union Core 是系统唯一公网入口和 Web 管理平台，统一负责身份认证、RBAC、配置、
+控制面审计、模块注册、反向代理、进程监管、健康检查和生命周期管理，不直接承载业务逻辑。
 
-| feature | 私有 worker | 固定地址 | gateway identity prefix | 数据所有权 |
-|---|---|---|---|---|
-| `module-sunshine` | `sunshine` | `127.0.0.1:18104` | `/modules/sunshine` | PostgreSQL schema `sunshine` |
-| `module-host-monitoring` | `host-monitoring` | `127.0.0.1:18105` | `/modules/host-monitoring` | PostgreSQL schema `host_monitoring` |
-| `module-sentinel-monitor` | `sentinel-monitor` | `127.0.0.1:18101` | `/modules/sentinel-monitor` | 专用 PostgreSQL database/role |
-| `module-photo-backup` | `photo-backup` | `127.0.0.1:18102` | `/modules/photo-backup` | 专用 PostgreSQL database/role + 明文媒体目录 |
-| `module-dufs` | `dufs` | `127.0.0.1:18103` | `/modules/dufs` | 模块私有 SQLite + 文件根 |
+v0.5 的标准模块均为独立进程。当前进程模块契约只覆盖 Manifest、配置注入、回环网关、健康检查
+和生命周期；Core 内部的 Rust SDK、Event Bus、任务、通知、服务发现与 SDK 审计抽象不是 worker
+可远程调用的线协议。若后续开放这些能力，必须先定义带版本和双向认证的进程协议。
 
-模块进程只接受 Union 每次启动生成的 `gateway-v1` 身份头。地址、端口、前缀、binary 和健康
-端点都编译在 Union 中；`SARMG_*_URL` 动态上游已被拒绝。模块崩溃会被 supervisor 退避重启，
-健康契约不兼容时不会被宣布就绪。
+Builder 在发行构建阶段决定包含哪些模块包；Core 二进制不通过 Cargo feature 编译业务逻辑。
+Union 启动后读取当前不可变发行中的 Manifest，校验兼容和依赖，注册路由/权限/migration/前端
+资源，并按管理员配置动态启停模块。运行时不从公网任意下载可执行插件。
 
-Sunshine 与 Host 为保持 Web/Agent 线协议兼容，对外仍使用固定的
-`/api/services/sunshine/*`、`/api/monitoring/*` 和 `/api/agent/*`；表中的 prefix 是
-worker 必须验证的内部身份，不是另一组公开入口。
+## 当前业务模块
+
+| 模块 | 执行模式 | API base | 数据所有权 |
+|---|---|---|---|
+| Sunshine | 受监管本地进程 | `/api/modules/sunshine` | 专用 PostgreSQL database/role；内部 schema `sunshine` |
+| Host Monitoring | 受监管本地进程 | `/api/modules/host-monitoring` | 专用 PostgreSQL database/role；内部 schema `host_monitoring` |
+| Sentinel Monitor | 受监管本地进程 | `/api/modules/sentinel-monitor` | 专用 PostgreSQL database/role |
+| Photo Backup | 受监管本地进程 | `/api/modules/photo-backup` | 专用 PostgreSQL database/role + 明文媒体目录 |
+| Dufs | 受监管本地进程 | `/api/modules/dufs` | 私有 SQLite + rooted filesystem |
+
+工作进程只监听 loopback，并验证 Union 为每次启动生成的 `gateway-v1` 身份。模块崩溃由 Runtime
+按 Manifest 策略退避重启；未通过 readiness、依赖或兼容门禁的模块不会注册公开路由。后续重型
+模块可以通过受信任 adapter 演进为 Container 或 Service，但仍遵守相同 Manifest、API、权限、
+事件和数据边界。
+
+Manifest 的每条后端路由可用 `request_body.max_bytes` 和 `request_body.total_timeout_seconds` 声明
+入口预算；未声明时安全默认值为 1 MiB 和 30 秒。Core 会在流式转发期间计算实际字节数，并从请求
+进入开始施加直到 body EOF 的绝对读取期限；这不是收到新分块即可续期的 idle timeout。worker 可以
+使用更严格的限制，但不能放宽 Core 的上限。
+
+Dufs 的全部公开路由均使用 Union 平台认证：Core 验证统一会话、CSRF 和
+`dufs.files.read/write/delete` RBAC 后，覆盖注入 `X-Union-Principal`；worker 只有在
+`gateway-v1` 身份同时验证通过时才信任该 principal。Union 发行中的 Dufs 不保留独立登录、Dufs
+会话 Cookie 或第二套账号认证。
+
+## Web Shell
+
+`web` 只构建统一 Shell：基础布局、认证状态、导航、权限门、模块加载器和错误边界。导航与页面
+来自 `GET /api/platform/modules` 的运行时 catalog；Shell 只加载当前发行已包含、已启用且当前用户
+至少拥有一条页面权限的模块。每个模块包提供自己的 ESM entry、styles 和 Manifest
+route/menu/component 声明；Shell 通过 `activate(hostSdk)` 注入唯一 React runtime 和限定 API
+client。启停模块不需要重建 Web Console，单模块加载/渲染失败不会破坏登录或其他模块。
 
 ## 仓库组成
 
 | 目录 | 职责 |
 |---|---|
-| `server` | Union 网关、认证、catalog、supervisor 与核心系统能力（Linux） |
-| `sunshine-worker` | 从核心拆出的 Sunshine 私有 worker |
-| `host-monitoring-worker` | 从核心拆出的主机监控私有 worker |
-| `agent` | 安装在远端主机的采集 companion，不由 supervisor 启动 |
+| `server` | Core Platform、Plugin Runtime、Gateway、认证/RBAC、配置、审计和生命周期 |
+| `web` | 无业务内置路由的动态 Web Shell |
+| `sunshine-worker` | Sunshine Module 的 Backend、Frontend、Manifest、权限、配置和 migration |
+| `host-monitoring-worker` | Host Module 的 Backend、Frontend、Manifest、权限、配置和 migration |
+| `agent` | 安装在远端主机的采集 companion，不由模块 Runtime 启动 |
 | `protocol` | Host worker 与 Agent 共用的版本化 DTO |
-| `web` | 随 Union 构建的管理前端 |
 
-Union 核心仍使用自己的 `unionc.db` 保存核心审计等平台状态；运行时不再承载 Sunshine 或
-Host 业务域。0.4.0 schema 中可物理保留旧域表作为只读迁移/回滚证据，关闭回滚窗口后再由
-后续 migration 删除。这里的核心 SQLite 与 Dufs 的模块 SQLite 是两份彼此独立的数据库。
+Sentinel、Photo、Dufs 的模块源码位于各自仓库，由 Builder 固定 revision 后组装到同一 Union
+distribution。多仓库只是源码治理选择；发行内包格式和运行边界一致。
 
-Photo 手机客户端和跨平台 Agent 是远端 companion：它们随 Union 兼容矩阵版本化，但不是
-服务端编译模块，也不由 supervisor 启动。模块仓库不发布可独立运行的程序。
+## 数据边界
 
-## 构建与安装
+Core 使用独立控制面 SQLite，只保存平台状态，不承载模块业务表。四个 PostgreSQL 模块各拥有专用
+database/role、独立 migration 和备份责任；它们可以共用 cluster，但不能共用 database，且禁止
+跨 owner 外键、直接查询、运行时 join 和共享事务。Dufs 独占自己的 SQLite 与文件根。旧
+`unionc.db` 中 Sunshine/Host 表只可用于离线迁移/核验/回滚证据，不再进入正常请求路径。
 
-正式组合只使用
-[`union-builder` v1.0.0](https://github.com/isarmg/union-builder/releases/tag/v1.0.0)。
-官方 profile 是 `minimal`、`storage`、`monitoring` 和 `full`；Builder 固定源码 revision、
-执行锁定依赖构建、生成完整校验清单，并提供 `verify`、`stage`、`install` 和 `rollback`。
+模块配置 Schema 必须用 `x-union-resource: postgresql_database` 标注 PostgreSQL URL，用
+`x-union-resource: storage_tree` 标注状态或内容目录。Core 会拒绝同一 PostgreSQL endpoint 上重复的
+database 或 role，以及相同、父子重叠或非绝对规范形式的 storage tree；冲突的磁盘旧配置保留但
+标记为未配置，且不会注入 worker。这是面向声明值的误配置防护，不解析 DNS 别名、符号链接或挂载
+关系，也不替代独立 UID、文件权限、数据库权限、Container 或 Service 隔离。
+
+Photo 和 Dufs 只要求传输链路加密：外部请求必须经过 Union TLS，服务器保存的内容仍是服务可直接
+读取的原始明文字节。摘要用于完整性，不构成端到端或静态内容加密。
+
+整机 CPU、内存、网络、磁盘和挂载点属于 Host Monitoring 业务域。Core 不采集这些指标，也不再
+提供 `/api/system/resources`；Shell 总览只展示 Core 所监管模块的生命周期和服务状态。是否把 Host
+Monitoring 纳入发行由 Builder 决定，是否运行由 Core 在运行期决定。
+
+## 构建与验证
+
+正式发行由 `union-builder` v2 清单固定 Core 和模块 revision，分别构建 Core/Web Shell 与模块包，
+校验 Manifest/摘要，再组装 `minimal`、`storage`、`monitoring` 或 `full` 发行集合：
 
 ```bash
 union-builder check --config profiles/full.toml
 union-builder plan --config profiles/full.toml
-union-builder build --config profiles/full.toml --profile release
+union-builder build --config profiles/full.toml --cargo-profile release
 union-builder verify --release dist/full
-sudo union-builder install --release dist/full --root /opt/union
-sudo union-builder rollback --root /opt/union
 ```
 
-这组命令描述受支持的发行路径，不代表当前工作树已经完成生产环境验收。开发者仍可分别运行
-crate 测试；不能把开发启动方式当作模块独立部署承诺。
+本仓库开发验证：
 
-当前 `v0.4.0` 是正式的架构/构建里程碑 Release，**不是 production-ready 资格声明**。真实
-PostgreSQL/SQLite/文件系统迁移、网关/媒体运行检查、生产服务升级以及服务/数据回滚仍须在部署
-前逐项验收。
+```bash
+cargo fmt --all -- --check
+cargo test --workspace --locked
+cd web
+npm ci
+npm run lint
+npm run typecheck
+npm test
+npm run build
+```
 
 ## 关键边界
 
-- Union 是唯一公网监听者；worker 必须保持回环绑定，前置反代只指向 Union。
-- Sunshine/Host 各自拥有 PostgreSQL schema；Sentinel/Photo 各自拥有专用 PostgreSQL
-  database/role。禁止跨 owner 外键、查询和共享迁移。Dufs 的 SQLite 是有意保留的例外。
-- Photo 只要求传输链路使用 HTTPS；服务器保存的原始文件、缩略图和派生物保持未加密，
-  磁盘加密和备份加密属于部署者责任。
-- 旧版 `unionc.db` 中的 Sunshine/Host 域表只允许被离线导入器读取，并作为导入核验、回滚
-  证据源；新架构不会在线双写，也不会把旧库重新接回运行路径。
-- 服务端不向 Agent 下发命令、脚本、文件或自更新；多租户、插件热装载和任意自定义 worker
-  也不在范围内。
+- Union 是唯一公网监听者；所有模块请求都通过其 TLS、Gateway 和适用的 RBAC/领域授权。
+- Manifest 不执行任意 shell，不接受任意公网 upstream；Runtime 只发现 Builder 纳入当前发行的包。
+- 模块之间不依赖内部源码或数据库。v0.5 不提供通用的进程间 Platform SDK 或 Event Bus 线协议；
+  当前五个 Manifest 不声明业务事件，跨模块交互只能在后续版本化协议落地后增加。
+- 模块禁用会停止进程，并使其 API、前端资源和导航不可用，但不会隐式删除配置或业务数据。
+- `in_process` 只用于随 Core 信任根注册的低风险工厂；现有五个模块均为独立进程。
+- v0.5 的五个进程由 Core 以同一 OS UID 启动，属于同一受信任发行域；进程边界提供崩溃和生命周期
+  隔离，不是抵抗恶意模块的文件或凭据沙箱。
 
-完整需求、部署和迁移边界从[文档中心](docs/README.md)开始阅读。许可证为
-[Apache License 2.0](LICENSE-APACHE)。
+许可证为 [Apache License 2.0](LICENSE-APACHE)。

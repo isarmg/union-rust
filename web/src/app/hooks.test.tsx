@@ -64,8 +64,8 @@ describe("useEventStream", () => {
     expect(result.current.connected).toBe(true);
 
     const services: ServiceStatus[] = [{
-      name: "Sunshine",
-      kind: "sunshine",
+      name: "Example service",
+      kind: "example",
       healthy: true,
       runtime_state: "running",
       pid: 42,
@@ -91,8 +91,8 @@ describe("useEventStream", () => {
     let resolveHttp!: (services: ServiceStatus[]) => void;
     let httpSignal: AbortSignal | undefined;
     const oldServices: ServiceStatus[] = [{
-      name: "Sunshine",
-      kind: "sunshine",
+      name: "Example service",
+      kind: "example",
       healthy: false,
       runtime_state: "stopped",
       pid: null,

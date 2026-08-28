@@ -13,7 +13,7 @@ mod tests {
     fn test_config(directory: PathBuf) -> AgentConfig {
         let config_path = directory.join("config.json");
         AgentConfig {
-            endpoint: "https://unionc.example/api/agent/v1/report".into(),
+            endpoint: "https://unionc.example/api/modules/host-monitoring/agent/v1/report".into(),
             config_path: Some(config_path),
             state_dir: directory,
             ..AgentConfig::default()
@@ -35,20 +35,20 @@ mod tests {
     fn pairing_status_url_appends_path_segments_without_query_or_fragment_ambiguity() {
         let request_id = Uuid::new_v4();
         let endpoint = pairing_status_endpoint(
-            "https://unionc.example/api/agent/v2/pairing-requests/",
+            "https://unionc.example/api/modules/host-monitoring/agent/v2/pairing-requests/",
             request_id,
         )
         .unwrap();
         assert_eq!(
             endpoint.as_str(),
             format!(
-                "https://unionc.example/api/agent/v2/pairing-requests/{request_id}/status"
+                "https://unionc.example/api/modules/host-monitoring/agent/v2/pairing-requests/{request_id}/status"
             )
         );
 
         for invalid in [
-            "https://unionc.example/api/agent/v2/pairing-requests?tenant=one",
-            "https://unionc.example/api/agent/v2/pairing-requests#bootstrap",
+            "https://unionc.example/api/modules/host-monitoring/agent/v2/pairing-requests?tenant=one",
+            "https://unionc.example/api/modules/host-monitoring/agent/v2/pairing-requests#bootstrap",
         ] {
             assert!(pairing_status_endpoint(invalid, request_id).is_err());
         }
@@ -57,7 +57,8 @@ mod tests {
     #[test]
     fn persisted_pairing_endpoints_are_revalidated_before_network_use() {
         let request_id = Uuid::new_v4();
-        let remote_plaintext = "http://192.0.2.10/api/agent/v2/pairing-requests";
+        let remote_plaintext =
+            "http://192.0.2.10/api/modules/host-monitoring/agent/v2/pairing-requests";
         assert!(pairing_status_endpoint(remote_plaintext, request_id).is_err());
         assert!(activation_endpoint(remote_plaintext).is_err());
     }
@@ -67,8 +68,9 @@ mod tests {
         let state = StoredPairingState::Creating {
             version: PAIRING_STATE_VERSION,
             generation: Uuid::new_v4(),
-            pairing_endpoint: "http://192.0.2.10/api/agent/v2/pairing-requests".into(),
-            report_endpoint: "http://192.0.2.10/api/agent/v1/report".into(),
+            pairing_endpoint:
+                "http://192.0.2.10/api/modules/host-monitoring/agent/v2/pairing-requests".into(),
+            report_endpoint: "http://192.0.2.10/api/modules/host-monitoring/agent/v1/report".into(),
             host: test_host(),
             bearer_secret: random_secret(),
             polling_secret: random_secret(),
@@ -92,8 +94,9 @@ mod tests {
         ));
         fs::create_dir_all(&directory).unwrap();
         let pairing_endpoint =
-            "http://127.0.0.1:1/api/agent/v2/pairing-requests".to_string();
-        let report_endpoint = "http://192.0.2.10:1/api/agent/v1/report".to_string();
+            "http://127.0.0.1:1/api/modules/host-monitoring/agent/v2/pairing-requests".to_string();
+        let report_endpoint =
+            "http://192.0.2.10:1/api/modules/host-monitoring/agent/v1/report".to_string();
         let config = AgentConfig {
             endpoint: report_endpoint.clone(),
             pairing_endpoint: Some(pairing_endpoint.clone()),
@@ -105,7 +108,8 @@ mod tests {
         };
         let generation = Uuid::new_v4();
         let request_id = Uuid::new_v4();
-        let activation_url = format!("http://127.0.0.1:1/agent/activate/{request_id}");
+        let activation_url =
+            format!("http://127.0.0.1:1/modules/host-monitoring/activate/{request_id}");
 
         let creating = StoredPairingState::Creating {
             version: PAIRING_STATE_VERSION,
@@ -197,7 +201,7 @@ mod tests {
 
     fn one_shot_pairing_server() -> (String, thread::JoinHandle<()>) {
         one_shot_pairing_server_with_activation_url(|request_id| {
-            format!("/agent/activate/{request_id}")
+            format!("/modules/host-monitoring/activate/{request_id}")
         })
     }
 
@@ -217,7 +221,7 @@ mod tests {
             assert!(
                 std::str::from_utf8(&request[..read])
                     .unwrap()
-                    .starts_with("POST /api/agent/v2/pairing-requests ")
+                    .starts_with("POST /api/modules/host-monitoring/agent/v2/pairing-requests ")
             );
             let body = serde_json::to_vec(&serde_json::json!({
                 "request_id": request_id,
@@ -246,11 +250,13 @@ mod tests {
         ));
         fs::create_dir_all(&directory).unwrap();
         let (server, server_thread) = one_shot_pairing_server_with_activation_url(|request_id| {
-            format!("https://attacker.example/agent/activate/{request_id}")
+            format!("https://attacker.example/modules/host-monitoring/activate/{request_id}")
         });
         let config = AgentConfig {
-            endpoint: format!("{server}/api/agent/v1/report"),
-            pairing_endpoint: Some(format!("{server}/api/agent/v2/pairing-requests")),
+            endpoint: format!("{server}/api/modules/host-monitoring/agent/v1/report"),
+            pairing_endpoint: Some(format!(
+                "{server}/api/modules/host-monitoring/agent/v2/pairing-requests"
+            )),
             state_dir: directory.clone(),
             ..AgentConfig::default()
         };
@@ -335,7 +341,7 @@ mod tests {
             assert!(
                 std::str::from_utf8(&request[..read])
                     .unwrap()
-                    .starts_with("POST /api/agent/v2/activate ")
+                    .starts_with("POST /api/modules/host-monitoring/agent/v2/activate ")
             );
             seen_tx.send(()).unwrap();
             release_rx
@@ -500,7 +506,7 @@ mod tests {
 
     #[test]
     fn non_json_success_points_to_the_server_origin_without_leaking_the_body() {
-        let endpoint = "http://127.0.0.1/api/agent/v2/pairing-requests";
+        let endpoint = "http://127.0.0.1/api/modules/host-monitoring/agent/v2/pairing-requests";
         let body = b"<!doctype html><title>POETIZE private marker</title>";
         let error = parse_pairing_json::<CreatePairingResponse>(
             body,
@@ -511,7 +517,7 @@ mod tests {
         .expect_err("HTML must not be accepted as a pairing response");
         let rendered = format!("{error:#}");
         assert!(rendered.contains("Server origin http://127.0.0.1"));
-        assert!(!rendered.contains("/api/agent/v2/pairing-requests"));
+        assert!(!rendered.contains("/api/modules/host-monitoring/agent/v2/pairing-requests"));
         assert!(rendered.contains("Content-Type: text/html"));
         assert!(rendered.contains("address or port may be wrong"));
         assert!(rendered.contains("including its port"));
@@ -584,7 +590,7 @@ mod tests {
         let marker = "uci_SECRET_MARKER_MUST_NOT_LEAK";
         let body = format!(r#"{{"status":"{marker}"}}"#);
         let endpoint = format!(
-            "https://user:{marker}@unionc.example/api/agent/v2/pairing-requests?key={marker}#{marker}"
+            "https://user:{marker}@unionc.example/api/modules/host-monitoring/agent/v2/pairing-requests?key={marker}#{marker}"
         );
         let error = parse_pairing_json::<PairingStatusResponse>(
             body.as_bytes(),
@@ -618,11 +624,11 @@ mod tests {
     fn relative_activation_url_is_resolved_to_the_console_origin() {
         assert_eq!(
             resolve_activation_url(
-                "https://unionc.example/api/agent/v2/pairing-requests",
-                "/agent/activate/00000000-0000-4000-8000-000000000001",
+                "https://unionc.example/api/modules/host-monitoring/agent/v2/pairing-requests",
+                "/modules/host-monitoring/activate/00000000-0000-4000-8000-000000000001",
             )
             .unwrap(),
-            "https://unionc.example/agent/activate/00000000-0000-4000-8000-000000000001"
+            "https://unionc.example/modules/host-monitoring/activate/00000000-0000-4000-8000-000000000001"
         );
     }
 
@@ -630,22 +636,22 @@ mod tests {
     fn insecure_override_never_applies_to_remote_activation_pages() {
         assert!(
             resolve_activation_url(
-                "http://192.0.2.10/api/agent/v2/pairing-requests",
-                "/agent/activate/00000000-0000-4000-8000-000000000001",
+                "http://192.0.2.10/api/modules/host-monitoring/agent/v2/pairing-requests",
+                "/modules/host-monitoring/activate/00000000-0000-4000-8000-000000000001",
             )
             .is_err()
         );
         assert!(
             resolve_activation_url(
-                "http://127.0.0.1:8081/api/agent/v2/pairing-requests",
-                "/agent/activate/00000000-0000-4000-8000-000000000001",
+                "http://127.0.0.1:8081/api/modules/host-monitoring/agent/v2/pairing-requests",
+                "/modules/host-monitoring/activate/00000000-0000-4000-8000-000000000001",
             )
             .is_ok()
         );
         assert!(
             resolve_activation_url(
-                "http://[::1]:8081/api/agent/v2/pairing-requests",
-                "/agent/activate/00000000-0000-4000-8000-000000000001",
+                "http://[::1]:8081/api/modules/host-monitoring/agent/v2/pairing-requests",
+                "/modules/host-monitoring/activate/00000000-0000-4000-8000-000000000001",
             )
             .is_ok()
         );
@@ -655,21 +661,21 @@ mod tests {
     fn activation_endpoint_and_public_url_stay_bound_to_the_pairing_origin() {
         let request_id = Uuid::new_v4();
         assert_eq!(
-            activation_endpoint("https://unionc.example/prefix/api/agent/v2/pairing-requests")
+            activation_endpoint("https://unionc.example/prefix/api/modules/host-monitoring/agent/v2/pairing-requests")
                 .unwrap()
                 .as_str(),
-            "https://unionc.example/prefix/api/agent/v2/activate"
+            "https://unionc.example/prefix/api/modules/host-monitoring/agent/v2/activate"
         );
         validate_activation_url_request(
-            &format!("https://unionc.example/agent/activate/{request_id}"),
-            "https://unionc.example/prefix/api/agent/v2/pairing-requests",
+            &format!("https://unionc.example/modules/host-monitoring/activate/{request_id}"),
+            "https://unionc.example/prefix/api/modules/host-monitoring/agent/v2/pairing-requests",
             request_id,
         )
         .unwrap();
         assert!(
             validate_activation_url_request(
-                &format!("https://attacker.example/agent/activate/{request_id}"),
-                "https://unionc.example/api/agent/v2/pairing-requests",
+                &format!("https://attacker.example/modules/host-monitoring/activate/{request_id}"),
+                "https://unionc.example/api/modules/host-monitoring/agent/v2/pairing-requests",
                 request_id,
             )
             .is_err()
@@ -687,8 +693,10 @@ mod tests {
         let generation = Uuid::new_v4();
         let request_id = Uuid::new_v4();
         let config = AgentConfig {
-            endpoint: format!("{server}/api/agent/v1/report"),
-            pairing_endpoint: Some(format!("{server}/api/agent/v2/pairing-requests")),
+            endpoint: format!("{server}/api/modules/host-monitoring/agent/v1/report"),
+            pairing_endpoint: Some(format!(
+                "{server}/api/modules/host-monitoring/agent/v2/pairing-requests"
+            )),
             state_dir: directory.clone(),
             allow_insecure_http: true,
             ..AgentConfig::default()
@@ -699,7 +707,7 @@ mod tests {
                 version: PAIRING_STATE_VERSION,
                 generation,
                 request_id,
-                activation_url: format!("{server}/agent/activate/{request_id}"),
+                activation_url: format!("{server}/modules/host-monitoring/activate/{request_id}"),
                 expires_at: Utc::now() + TimeDelta::minutes(10),
                 poll_interval: 1,
                 pairing_endpoint: config.pairing_endpoint(),
@@ -729,7 +737,7 @@ mod tests {
                 version: PAIRING_STATE_VERSION,
                 generation,
                 request_id,
-                activation_url: format!("{server}/agent/activate/{request_id}"),
+                activation_url: format!("{server}/modules/host-monitoring/activate/{request_id}"),
                 instance_id,
                 report_endpoint: config.endpoint.clone(),
                 completed_at: Utc::now(),
@@ -834,13 +842,15 @@ mod tests {
             activation_url: "https://old.example/agent/activate/test".into(),
             expires_at: Utc::now() + TimeDelta::minutes(10),
             poll_interval: 5,
-            pairing_endpoint: "https://old.example/api/agent/v2/pairing-requests".into(),
-            report_endpoint: "https://old.example/api/agent/v1/report".into(),
+            pairing_endpoint:
+                "https://old.example/api/modules/host-monitoring/agent/v2/pairing-requests".into(),
+            report_endpoint: "https://old.example/api/modules/host-monitoring/agent/v1/report"
+                .into(),
             bearer_secret: random_secret(),
             polling_secret: random_secret(),
         };
         persist_state(&config, &state).unwrap();
-        config.endpoint = "https://new.example/api/agent/v1/report".into();
+        config.endpoint = "https://new.example/api/modules/host-monitoring/agent/v1/report".into();
         let error = start_or_resume(&config, &test_host())
             .await
             .expect_err("a live request must stay bound to its original server");
@@ -866,14 +876,16 @@ mod tests {
         let state = StoredPairingState::Creating {
             version: PAIRING_STATE_VERSION,
             generation: Uuid::new_v4(),
-            pairing_endpoint: "https://old.example/api/agent/v2/pairing-requests".into(),
-            report_endpoint: "https://old.example/api/agent/v1/report".into(),
+            pairing_endpoint:
+                "https://old.example/api/modules/host-monitoring/agent/v2/pairing-requests".into(),
+            report_endpoint: "https://old.example/api/modules/host-monitoring/agent/v1/report"
+                .into(),
             host: test_host(),
             bearer_secret: random_secret(),
             polling_secret: random_secret(),
         };
         persist_state(&config, &state).unwrap();
-        config.endpoint = "https://new.example/api/agent/v1/report".into();
+        config.endpoint = "https://new.example/api/modules/host-monitoring/agent/v1/report".into();
         let error = start_or_resume(&config, &test_host())
             .await
             .expect_err("an interrupted create must stay bound to its original server");
@@ -913,9 +925,7 @@ mod tests {
                     version: PAIRING_STATE_VERSION,
                     generation: old_generation,
                     request_id,
-                    activation_url: format!(
-                        "https://unionc.example/agent/activate/{request_id}"
-                    ),
+                    activation_url: format!("https://unionc.example/agent/activate/{request_id}"),
                     expires_at: Utc::now() - TimeDelta::minutes(1),
                     poll_interval: 5,
                     pairing_endpoint: config.pairing_endpoint(),
@@ -947,8 +957,7 @@ mod tests {
             }
 
             config.replace_pending_pairing = true;
-            let PairingStart::Create(replacement) =
-                prepare_start(&config, &test_host()).unwrap()
+            let PairingStart::Create(replacement) = prepare_start(&config, &test_host()).unwrap()
             else {
                 panic!("explicit replacement did not create a fresh generation");
             };
@@ -988,18 +997,23 @@ mod tests {
             ));
             let (server, server_thread) = one_shot_pairing_server();
             let mut config = AgentConfig {
-                endpoint: format!("{server}/api/agent/v1/report"),
+                endpoint: format!("{server}/api/modules/host-monitoring/agent/v1/report"),
                 state_dir: directory.clone(),
                 replace_pending_pairing: true,
                 ..AgentConfig::default()
             };
-            config.pairing_endpoint = Some(format!("{server}/api/agent/v2/pairing-requests"));
+            config.pairing_endpoint = Some(format!(
+                "{server}/api/modules/host-monitoring/agent/v2/pairing-requests"
+            ));
             let state = if old_state == "creating" {
                 StoredPairingState::Creating {
                     version: PAIRING_STATE_VERSION,
                     generation: Uuid::new_v4(),
-                    pairing_endpoint: "https://old.example/api/agent/v2/pairing-requests".into(),
-                    report_endpoint: "https://old.example/api/agent/v1/report".into(),
+                    pairing_endpoint:
+                        "https://old.example/api/modules/host-monitoring/agent/v2/pairing-requests"
+                            .into(),
+                    report_endpoint:
+                        "https://old.example/api/modules/host-monitoring/agent/v1/report".into(),
                     host: test_host(),
                     bearer_secret: random_secret(),
                     polling_secret: random_secret(),
@@ -1012,8 +1026,11 @@ mod tests {
                     activation_url: "https://old.example/agent/activate/test".into(),
                     expires_at: Utc::now() + TimeDelta::minutes(10),
                     poll_interval: 5,
-                    pairing_endpoint: "https://old.example/api/agent/v2/pairing-requests".into(),
-                    report_endpoint: "https://old.example/api/agent/v1/report".into(),
+                    pairing_endpoint:
+                        "https://old.example/api/modules/host-monitoring/agent/v2/pairing-requests"
+                            .into(),
+                    report_endpoint:
+                        "https://old.example/api/modules/host-monitoring/agent/v1/report".into(),
                     bearer_secret: random_secret(),
                     polling_secret: random_secret(),
                 }
@@ -1026,7 +1043,7 @@ mod tests {
             assert!(matches!(
                 load_state(&config).unwrap(),
                 Some(StoredPairingState::Pending { pairing_endpoint, .. })
-                    if pairing_endpoint == format!("{server}/api/agent/v2/pairing-requests")
+                    if pairing_endpoint == format!("{server}/api/modules/host-monitoring/agent/v2/pairing-requests")
             ));
             server_thread.join().unwrap();
             fs::remove_dir_all(directory).unwrap();
@@ -1042,8 +1059,10 @@ mod tests {
         let (old_server, request_seen, release_response, old_thread) =
             delayed_active_server(old_instance_id);
         let old_config_path = directory.join("config.json");
-        let old_pairing_endpoint = format!("{old_server}/api/agent/v2/pairing-requests");
-        let old_report_endpoint = format!("{old_server}/api/agent/v1/report");
+        let old_pairing_endpoint =
+            format!("{old_server}/api/modules/host-monitoring/agent/v2/pairing-requests");
+        let old_report_endpoint =
+            format!("{old_server}/api/modules/host-monitoring/agent/v1/report");
         let old_config = AgentConfig {
             endpoint: old_report_endpoint.clone(),
             pairing_endpoint: Some(old_pairing_endpoint.clone()),
@@ -1079,8 +1098,10 @@ mod tests {
 
         let (new_server, new_thread) = one_shot_pairing_server();
         let mut new_config = AgentConfig {
-            endpoint: format!("{new_server}/api/agent/v1/report"),
-            pairing_endpoint: Some(format!("{new_server}/api/agent/v2/pairing-requests")),
+            endpoint: format!("{new_server}/api/modules/host-monitoring/agent/v1/report"),
+            pairing_endpoint: Some(format!(
+                "{new_server}/api/modules/host-monitoring/agent/v2/pairing-requests"
+            )),
             state_dir: directory.clone(),
             config_path: Some(old_config_path.clone()),
             replace_pending_pairing: true,
@@ -1130,7 +1151,7 @@ mod tests {
             let config_path = directory.join("operator-config");
             fs::create_dir(&config_path).unwrap();
             let mut config = AgentConfig {
-                endpoint: "https://old.example/api/agent/v1/report".into(),
+                endpoint: "https://old.example/api/modules/host-monitoring/agent/v1/report".into(),
                 state_dir: directory.clone(),
                 config_path: Some(config_path.clone()),
                 ..AgentConfig::default()
@@ -1153,8 +1174,11 @@ mod tests {
                     expires_at: Utc::now() + TimeDelta::minutes(10),
                     poll_interval: 1,
                     instance_id,
-                    pairing_endpoint: "https://new.example/api/agent/v2/pairing-requests".into(),
-                    report_endpoint: "https://new.example/api/agent/v1/report".into(),
+                    pairing_endpoint:
+                        "https://new.example/api/modules/host-monitoring/agent/v2/pairing-requests"
+                            .into(),
+                    report_endpoint:
+                        "https://new.example/api/modules/host-monitoring/agent/v1/report".into(),
                     bearer_secret: new_token.clone(),
                 },
             )
@@ -1187,14 +1211,15 @@ mod tests {
                     generation,
                     request_id,
                     instance_id,
-                    report_endpoint: "https://new.example/api/agent/v1/report".into(),
+                    report_endpoint:
+                        "https://new.example/api/modules/host-monitoring/agent/v1/report".into(),
                 })
             );
             let binding_before_status = fs::read(active_binding_path(&config)).unwrap();
             let status = local_status(&config).unwrap();
             assert_eq!(
                 status.active_report_endpoint.as_deref(),
-                Some("https://new.example/api/agent/v1/report")
+                Some("https://new.example/api/modules/host-monitoring/agent/v1/report")
             );
             assert!(status.active_binding_persisted);
             assert_eq!(
@@ -1216,12 +1241,12 @@ mod tests {
                 generation,
                 request_id,
                 instance_id,
-                "https://new.example/api/agent/v1/report",
+                "https://new.example/api/modules/host-monitoring/agent/v1/report",
             )
             .unwrap();
             assert_eq!(
                 config.endpoint,
-                "https://new.example/api/agent/v1/report"
+                "https://new.example/api/modules/host-monitoring/agent/v1/report"
             );
             assert!(config_path.is_dir());
             assert!(matches!(
@@ -1280,7 +1305,11 @@ mod tests {
         assert!(!status.active_binding_persisted);
         assert_eq!(fs::read(state_path(&config)).unwrap(), state_before_status);
         assert!(!active_binding_path(&config).exists());
-        assert!(reporter_for_current_active_state(&config).unwrap().is_some());
+        assert!(
+            reporter_for_current_active_state(&config)
+                .unwrap()
+                .is_some()
+        );
         assert_eq!(
             load_active_binding(&config).unwrap(),
             Some(ActiveBinding {
@@ -1337,7 +1366,8 @@ mod tests {
         };
         persist_active_binding_unlocked(&config, &mismatched).unwrap();
 
-        let status_error = local_status(&config).expect_err("status must reject a mismatched binding");
+        let status_error =
+            local_status(&config).expect_err("status must reject a mismatched binding");
         assert!(status_error.to_string().contains("does not match"));
         let reporter_error = match reporter_for_current_active_state(&config) {
             Ok(_) => panic!("a mismatched binding must fail closed"),
@@ -1349,7 +1379,7 @@ mod tests {
             generation,
             request_id,
             instance_id,
-            "https://unionc.example/api/agent/v1/report",
+            "https://unionc.example/api/modules/host-monitoring/agent/v1/report",
         )
         .expect_err("config synchronization must not replace a mismatched binding");
         assert!(config_error.to_string().contains("does not match"));
@@ -1379,8 +1409,10 @@ mod tests {
             },
         )
         .unwrap();
-        config.endpoint = "https://new.example/api/agent/v1/report".into();
-        config.pairing_endpoint = Some("https://new.example/api/agent/v2/pairing-requests".into());
+        config.endpoint = "https://new.example/api/modules/host-monitoring/agent/v1/report".into();
+        config.pairing_endpoint = Some(
+            "https://new.example/api/modules/host-monitoring/agent/v2/pairing-requests".into(),
+        );
 
         let PairingStart::Create(creating) = prepare_start(&config, &test_host()).unwrap() else {
             panic!("an Active state must allow a new explicitly requested pairing generation");
@@ -1388,7 +1420,7 @@ mod tests {
         assert!(matches!(
             *creating,
             StoredPairingState::Creating { ref report_endpoint, .. }
-                if report_endpoint == "https://new.example/api/agent/v1/report"
+                if report_endpoint == "https://new.example/api/modules/host-monitoring/agent/v1/report"
         ));
         assert_eq!(
             load_active_binding(&config).unwrap(),
@@ -1703,10 +1735,9 @@ mod tests {
             fs::read_to_string(directory.join("agent-token")).unwrap(),
             bearer_secret
         );
-        let binding: ActiveBinding = serde_json::from_slice(
-            &fs::read(directory.join(ACTIVE_BINDING_FILE)).unwrap(),
-        )
-        .unwrap();
+        let binding: ActiveBinding =
+            serde_json::from_slice(&fs::read(directory.join(ACTIVE_BINDING_FILE)).unwrap())
+                .unwrap();
         assert_eq!(
             binding,
             ActiveBinding {

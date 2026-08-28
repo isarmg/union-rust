@@ -196,7 +196,7 @@ async fn backup_restore_and_integrity_use_a_validated_atomic_snapshot() {
     let server_lock = database::acquire_database_lock(&live).unwrap();
     let manifest = database::backup_database(&settings, &backup).await.unwrap();
     drop(server_lock);
-    assert_eq!(manifest.schema_version, 1);
+    assert_eq!(manifest.schema_version, database::current_schema_version());
     assert_eq!(manifest.application_version, env!("CARGO_PKG_VERSION"));
     assert_eq!(manifest.encryption_key_id, "maintenance-test");
     assert!(backup.is_file());
@@ -304,7 +304,7 @@ async fn backup_restore_and_integrity_use_a_validated_atomic_snapshot() {
         .unwrap();
     noncurrent_pool.close().await;
     remove_sidecars(&noncurrent_backup);
-    write_test_manifest(&noncurrent_backup, 1);
+    write_test_manifest(&noncurrent_backup, database::current_schema_version());
     let noncurrent_target = directory.join("noncurrent-restored.db");
     let mut noncurrent_target_settings = Settings::default();
     noncurrent_target_settings.database.url = noncurrent_target.display().to_string();
@@ -371,14 +371,20 @@ async fn backup_restore_and_integrity_use_a_validated_atomic_snapshot() {
         previous_manifest.database_file,
         previous.file_name().unwrap().to_str().unwrap()
     );
-    assert_eq!(previous_manifest.schema_version, 1);
+    assert_eq!(
+        previous_manifest.schema_version,
+        database::current_schema_version()
+    );
     assert_eq!(previous_manifest.encryption_key_id, "maintenance-test");
     assert_eq!(previous_manifest.database_sha256.len(), 64);
     assert_eq!(
         marker_value(&live, "snapshot-value").await.as_deref(),
         Some("before")
     );
-    assert_eq!(database::integrity_check(&settings).await.unwrap(), 1);
+    assert_eq!(
+        database::integrity_check(&settings).await.unwrap(),
+        database::current_schema_version()
+    );
     assert_no_restore_staging_files(&directory);
 
     // The recovery point created by restore is itself a first-class backup:
@@ -413,14 +419,17 @@ async fn backup_restore_and_integrity_use_a_validated_atomic_snapshot() {
         marker_value(&live, "snapshot-value").await.as_deref(),
         Some("after")
     );
-    assert_eq!(database::integrity_check(&settings).await.unwrap(), 1);
+    assert_eq!(
+        database::integrity_check(&settings).await.unwrap(),
+        database::current_schema_version()
+    );
     assert_no_restore_staging_files(&directory);
 
     let bad_metadata = directory.join("bad-metadata.db");
     let bad_metadata_settings = mutate_copy(
         &backup,
         &bad_metadata,
-        "UPDATE schema_metadata SET checksum='tampered' WHERE schema_version=1",
+        "UPDATE schema_metadata SET checksum='tampered'",
     )
     .await;
     let error = database::integrity_check(&bad_metadata_settings)
@@ -448,27 +457,20 @@ async fn backup_restore_and_integrity_use_a_validated_atomic_snapshot() {
         .unwrap_err();
     assert!(error.to_string().contains("schema mismatch"));
 
-    let invalid_host = directory.join("invalid-host.db");
-    std::fs::copy(&backup, &invalid_host).unwrap();
-    let mut invalid_host_settings = Settings::default();
-    invalid_host_settings.database.url = invalid_host.display().to_string();
-    let pool = database::connect(&invalid_host_settings).await.unwrap();
-    query(
-        "INSERT INTO external_hosts(kind,host_id,address,config,secret) \
-         VALUES('sunshine','invalid-host','127.0.0.1','{\"web_port\":\"bad\"}',NULL)",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    let legacy_business_database = directory.join("legacy-business-table.db");
+    std::fs::copy(&backup, &legacy_business_database).unwrap();
+    let mut legacy_business_settings = Settings::default();
+    legacy_business_settings.database.url = legacy_business_database.display().to_string();
+    let pool = database::connect(&legacy_business_settings).await.unwrap();
+    query("CREATE TABLE external_hosts(host_id TEXT PRIMARY KEY) STRICT")
+        .execute(&pool)
+        .await
+        .unwrap();
     pool.close().await;
-    let error = database::integrity_check(&invalid_host_settings)
+    let error = database::integrity_check(&legacy_business_settings)
         .await
         .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("invalid legacy Sunshine host configuration")
-    );
+    assert!(error.to_string().contains("schema mismatch"));
 
     // Build an offline current-database fixture whose latest committed value
     // exists in a non-empty WAL. Restore must preserve/checkpoint that family
@@ -637,7 +639,10 @@ async fn backup_restore_and_integrity_use_a_validated_atomic_snapshot() {
         marker_value(&live, "snapshot-value").await.as_deref(),
         Some("before")
     );
-    assert_eq!(database::integrity_check(&settings).await.unwrap(), 1);
+    assert_eq!(
+        database::integrity_check(&settings).await.unwrap(),
+        database::current_schema_version()
+    );
 
     let before_forensic_rejection = std::fs::metadata(&live).unwrap();
     let error = database::restore_database(&settings, &forensic, true)

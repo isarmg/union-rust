@@ -1,9 +1,16 @@
 # UnionC Sunshine worker
 
-This crate is a compile-time Union module and a runtime private process. It is
+This crate is a Builder-packaged Union runtime module and a private process. It is
 not an independently supported product, public HTTP service, crate or binary
-release. `union-builder` selects and packages it; Union supervises it and is the
-only public gateway.
+release. `union-builder` selects its independent package for a release; Union discovers,
+validates and supervises it without linking business code into Core/Web Shell, and is the only
+public gateway.
+
+The source package contract is described by `manifest.json`, `permissions.json`,
+`config/schema.json`, `version.json`, `frontend/` and the module-owned `migrations/`. Builder
+decides whether this package is present in an immutable Union release; at runtime Union may enable
+or stop only packages already present in that release and never downloads replacement business
+code.
 
 ## Boundary
 
@@ -11,37 +18,36 @@ only public gateway.
 - Any configured non-loopback bind is rejected.
 - Every request, including `/health/live` and `/health/ready`, requires the
   shared `gateway-v1` four-header proof: protocol, audience `sunshine`, the
-  process-scoped 64-hex token and prefix `/modules/sunshine`.
+  process-scoped 64-hex token and prefix `/api/modules/sunshine`.
 - Health responses echo the protocol and audience headers so Union does not
   open its proxy until it has proved the exact worker contract.
 - Browser `Cookie` headers are always rejected. Union consumes its own session,
   signs the internal request and strips browser credentials before forwarding.
-- The worker owns only PostgreSQL schema `sunshine`, its migration history and
-  its encrypted Sunshine upstream passwords. It cannot read Union SQLite,
-  sessions or `AppState`.
+- The worker owns its PostgreSQL database and `sunshine` schema, its migration history and its
+  encrypted Sunshine upstream passwords. It cannot read the Core database, sessions, another
+  module's database or `AppState`.
 
-The worker preserves the existing console route contract under
-`/api/services/sunshine/hosts`. This lets Union use a static proxy adapter while
-the existing frontend stays unchanged.
+The worker preserves its internal route contract under `/api/services/sunshine/hosts`; Manifest
+v1 maps canonical `/api/modules/sunshine/*` routes without a module-specific Core branch.
 
 ## Supervisor-supplied worker environment
 
 ```text
-SUNSHINE_DATABASE_URL=postgresql://sunshine_runtime:...@127.0.0.1/sarmg_platform
+SUNSHINE_DATABASE_URL=postgresql://sunshine_runtime:...@127.0.0.1/sunshine
 UNION_MODULE_PROTOCOL=gateway-v1
 UNION_MODULE_AUDIENCE=sunshine
 UNION_MODULE_TOKEN=<64 lowercase hexadecimal characters; supplied by Union>
-UNION_MODULE_PREFIX=/modules/sunshine
+UNION_MODULE_PREFIX=/api/modules/sunshine
 SUNSHINE_CREDENTIAL_KEY=<base64 32 bytes; module-owned encryption key>
 SUNSHINE_CREDENTIAL_KEY_ID=primary
 SUNSHINE_BIND=127.0.0.1:18104
+UNION_PLUGIN_BIND=127.0.0.1:18104
 SUNSHINE_PRODUCTION=true
 ```
 
-Operators do not launch this binary with that block. They set
-`UNIONC_SUNSHINE_DATABASE_URL`, `UNIONC_SUNSHINE_CREDENTIAL_KEY` and optional
-`UNIONC_SUNSHINE_CREDENTIAL_KEY_ID` on Union; supervisor maps the allowlisted values and creates
-the gateway identity. The expanded names above document the private process contract.
+Operators do not launch this binary with that block. They store values through the module's
+`config/schema.json`; Runtime maps only Manifest-allowlisted fields, supplies the dynamic bind and
+creates the gateway identity. The expanded names above document the private process contract.
 
 The PostgreSQL administrator must create schema `sunshine` owned by the module
 role. Startup applies only migrations from `migrations/`; it deliberately does

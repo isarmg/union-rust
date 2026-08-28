@@ -1,60 +1,19 @@
 /*
  * React 自定义 Hook。
  *
- * 这里集中实现资源历史与实时事件流；SSE 直接写入 React Query 缓存，
+ * 这里集中实现实时事件流；SSE 直接写入 React Query 缓存，
  * HTTP 轮询在断线时接管，因此服务状态只有一个数据源。
  */
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { realtimeApi as api } from "./realtimeApi";
 import { overviewQueryKeys as queryKeys } from "../features/overview/queryKeys";
-import type { ServiceStatus, SystemResources } from "../features/overview/types";
+import type { ServiceStatus } from "../features/overview/types";
 
 interface EventPayload {
   kind: string;
   generated_at: string;
   services: ServiceStatus[];
-}
-
-export interface MetricHistory {
-  cpu: number[];
-  memory: number[];
-  network: number[];
-  disk: number[];
-}
-
-export function useMetricHistory(
-  data: SystemResources | undefined,
-  maxPoints = 180
-): MetricHistory {
-  const [history, setHistory] = useState<MetricHistory>({
-    cpu: [],
-    memory: [],
-    network: [],
-    disk: [],
-  });
-
-  useEffect(() => {
-    if (!data) return;
-    const memPercent =
-      data.memory_total_kib > 0
-        ? (data.memory_used_kib / data.memory_total_kib) * 100
-        : 0;
-    setHistory((prev) => ({
-      cpu: [...prev.cpu.slice(-(maxPoints - 1)), data.cpu_usage_percent],
-      memory: [...prev.memory.slice(-(maxPoints - 1)), memPercent],
-      network: [
-        ...prev.network.slice(-(maxPoints - 1)),
-        data.network.total_bytes_per_second,
-      ],
-      disk: [
-        ...prev.disk.slice(-(maxPoints - 1)),
-        data.disk_throughput.total_bytes_per_second,
-      ],
-    }));
-  }, [data, maxPoints]);
-
-  return history;
 }
 
 /**

@@ -487,7 +487,7 @@ fn validate_pair_ipc_message(message: &PairIpcMessage, server: &str) -> anyhow::
     canonical_uuid(&message.generation, "pairing IPC generation")?;
     let request_id = canonical_uuid(&message.request_id, "pairing IPC request id")?;
     let expected_pairing_endpoint = format!(
-        "{}/api/agent/v2/pairing-requests",
+        "{}/api/modules/host-monitoring/agent/v2/pairing-requests",
         server.trim_end_matches('/')
     );
     ensure!(
@@ -510,7 +510,7 @@ fn validate_pair_ipc_message(message: &PairIpcMessage, server: &str) -> anyhow::
             && activation.password().is_none()
             && activation.query().is_none()
             && activation.fragment().is_none()
-            && activation.path() == format!("/agent/activate/{request_id}"),
+            && activation.path() == format!("/modules/host-monitoring/activate/{request_id}"),
         "Agent activation URL does not match its pairing request id"
     );
     Ok(())

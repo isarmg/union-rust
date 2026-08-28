@@ -18,10 +18,13 @@ pub struct ServeConfig {
 
 impl ServeConfig {
     pub fn from_env() -> anyhow::Result<Self> {
-        let bind = std::env::var("SUNSHINE_BIND").unwrap_or_else(|_| DEFAULT_BIND.to_string());
-        let bind = SocketAddr::from_str(&bind).context("SUNSHINE_BIND must be a socket address")?;
+        let bind = std::env::var("UNION_PLUGIN_BIND")
+            .or_else(|_| std::env::var("SUNSHINE_BIND"))
+            .unwrap_or_else(|_| DEFAULT_BIND.to_string());
+        let bind = SocketAddr::from_str(&bind)
+            .context("UNION_PLUGIN_BIND/SUNSHINE_BIND must be a socket address")?;
         if !bind.ip().is_loopback() {
-            bail!("SUNSHINE_BIND must be a loopback address; the worker is not a public service");
+            bail!("plugin bind must be a loopback address; the worker is not a public service");
         }
         let database_url =
             std::env::var("SUNSHINE_DATABASE_URL").context("SUNSHINE_DATABASE_URL is required")?;
@@ -80,6 +83,6 @@ mod tests {
     fn compiled_gateway_identity_is_fixed() {
         assert_eq!(PROTOCOL, "gateway-v1");
         assert_eq!(AUDIENCE, "sunshine");
-        assert_eq!(PREFIX, "/modules/sunshine");
+        assert_eq!(PREFIX, "/api/modules/sunshine");
     }
 }

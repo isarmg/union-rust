@@ -45,12 +45,11 @@ pub struct Settings {
     pub platform: PlatformSettings,
 }
 
-/// Compile-time module composition has no runtime-selectable upstream URL.
+/// Product-neutral platform settings placeholder.
 ///
-/// This empty settings node intentionally remains in `Settings` so future product-neutral
-/// platform settings do not require another application-state migration. Worker data, database
-/// and secret configuration use module-scoped inputs; bindings, binary locations and gateway
-/// prefixes are compile-time constants.
+/// Module configuration is persisted separately by the runtime registry. Package locations,
+/// executables and gateway routes come only from Builder-bundled, validated Manifests rather than
+/// arbitrary upstream URLs in the Core configuration.
 #[derive(Clone, Default)]
 pub struct PlatformSettings;
 

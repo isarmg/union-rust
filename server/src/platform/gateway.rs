@@ -1,269 +1,254 @@
-#![cfg_attr(
-    not(any(
-        feature = "module-sentinel-monitor",
-        feature = "module-photo-backup",
-        feature = "module-dufs",
-        feature = "module-sunshine",
-        feature = "module-host-monitoring"
-    )),
-    allow(dead_code, unused_imports)
-)]
-
 use axum::{
     Json, Router,
     body::Body,
-    extract::{OriginalUri, Request, State},
+    extract::{OriginalUri, Path, Request, State},
     http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header},
-    response::{IntoResponse, Redirect, Response},
+    response::{IntoResponse, Response},
     routing::any,
 };
+use sarmg_platform_gateway::{PRINCIPAL_HEADER, insert_principal};
 use serde_json::json;
 
-use super::ExternalService;
-#[cfg(test)]
-use super::spec::compiled_specs;
+use super::{AuthenticatedPrincipal, PluginBackend};
 use crate::state::AppState;
 
-pub(super) const PROTOCOL_VERSION: &str = "gateway-v1";
-pub(super) const PROTOCOL_HEADER: &str = "x-union-module-protocol";
-pub(super) const AUDIENCE_HEADER: &str = "x-union-module-audience";
-pub(super) const TOKEN_HEADER: &str = "x-union-module-token";
-pub(super) const PREFIX_HEADER: &str = "x-forwarded-prefix";
+const PROTOCOL_VERSION: &str = "gateway-v1";
+const PROTOCOL_HEADER: &str = "x-union-module-protocol";
+const AUDIENCE_HEADER: &str = "x-union-module-audience";
+const TOKEN_HEADER: &str = "x-union-module-token";
+const PREFIX_HEADER: &str = "x-forwarded-prefix";
+const MAX_FRONTEND_ASSET_BYTES: u64 = 32 * 1024 * 1024;
 
-pub(crate) fn gateway_router() -> Router<AppState> {
-    let router = Router::new();
-    #[cfg(feature = "module-sentinel-monitor")]
-    let router = router
-        .route(
-            "/modules/sentinel-monitor",
-            any(|| async { Redirect::permanent("/modules/sentinel-monitor/") }),
-        )
-        .route("/modules/sentinel-monitor/{*path}", any(sentinel_monitor));
-    #[cfg(feature = "module-photo-backup")]
-    let router = router
-        .route(
-            "/modules/photo-backup",
-            any(|| async { Redirect::permanent("/modules/photo-backup/") }),
-        )
-        .route("/modules/photo-backup/{*path}", any(photo_backup));
-    #[cfg(feature = "module-dufs")]
-    let router = router
-        .route(
-            "/modules/dufs",
-            any(|| async { Redirect::permanent("/modules/dufs/") }),
-        )
-        .route("/modules/dufs/{*path}", any(dufs));
-    router
+pub(crate) fn module_api_router() -> Router<AppState> {
+    Router::new()
+        .route("/api/modules/{module}", any(api_root))
+        .route("/api/modules/{module}/{*path}", any(api_path))
 }
 
-/// Browser-console module APIs live at their historical paths so the web UI does not need a
-/// migration flag. This router is deliberately mounted *inside* Union's session + CSRF layer.
-pub(crate) fn console_gateway_router() -> Router<AppState> {
-    let router = Router::new();
-    #[cfg(feature = "module-sunshine")]
-    let router = router
-        .route("/api/services/sunshine", any(sunshine_console))
-        .route("/api/services/sunshine/{*path}", any(sunshine_console));
-    #[cfg(feature = "module-host-monitoring")]
-    let router = router
-        .route("/api/monitoring", any(host_monitoring_console))
-        .route("/api/monitoring/{*path}", any(host_monitoring_console));
-    router
+pub(crate) fn module_asset_router() -> Router<AppState> {
+    Router::new().route("/modules/{module}/assets/{*path}", any(asset))
 }
 
-/// Agent endpoints use their protocol credentials and must remain reachable before a browser
-/// administrator session exists. Only these fixed paths bypass the console middleware.
-pub(crate) fn public_worker_router() -> Router<AppState> {
-    let router = Router::new();
-    #[cfg(feature = "module-host-monitoring")]
-    let router = router
-        .route("/api/agent", any(host_monitoring_agent))
-        .route("/api/agent/{*path}", any(host_monitoring_agent));
-    router
-}
-
-#[cfg(feature = "module-sunshine")]
-async fn sunshine_console(
+async fn api_root(
     State(state): State<AppState>,
-    OriginalUri(uri): OriginalUri,
-    request: Request,
-) -> Response {
-    proxy(state, "sunshine", uri, request, ProxyPath::Original, None).await
-}
-
-#[cfg(feature = "module-host-monitoring")]
-async fn host_monitoring_console(
-    State(state): State<AppState>,
+    principal: Option<axum::Extension<AuthenticatedPrincipal>>,
+    Path(module): Path<String>,
     OriginalUri(uri): OriginalUri,
     request: Request,
 ) -> Response {
     proxy(
         state,
-        "host-monitoring",
+        principal.map(|value| value.0),
+        module,
+        "/",
         uri,
         request,
-        ProxyPath::Original,
-        None,
     )
     .await
 }
 
-#[cfg(feature = "module-host-monitoring")]
-async fn host_monitoring_agent(
+async fn api_path(
     State(state): State<AppState>,
+    principal: Option<axum::Extension<AuthenticatedPrincipal>>,
+    Path((module, path)): Path<(String, String)>,
     OriginalUri(uri): OriginalUri,
     request: Request,
 ) -> Response {
     proxy(
         state,
-        "host-monitoring",
+        principal.map(|value| value.0),
+        module,
+        &format!("/{path}"),
         uri,
         request,
-        ProxyPath::Original,
-        None,
     )
     .await
-}
-
-#[cfg(feature = "module-sentinel-monitor")]
-async fn sentinel_monitor(
-    State(state): State<AppState>,
-    OriginalUri(uri): OriginalUri,
-    request: Request,
-) -> Response {
-    proxy(
-        state,
-        "sentinel-monitor",
-        uri,
-        request,
-        ProxyPath::StripCompiledPrefix,
-        Some("/modules/sentinel-monitor"),
-    )
-    .await
-}
-
-#[cfg(feature = "module-photo-backup")]
-async fn photo_backup(
-    State(state): State<AppState>,
-    OriginalUri(uri): OriginalUri,
-    request: Request,
-) -> Response {
-    proxy(
-        state,
-        "photo-backup",
-        uri,
-        request,
-        ProxyPath::StripCompiledPrefix,
-        Some("/modules/photo-backup"),
-    )
-    .await
-}
-
-#[cfg(feature = "module-dufs")]
-async fn dufs(
-    State(state): State<AppState>,
-    OriginalUri(uri): OriginalUri,
-    request: Request,
-) -> Response {
-    proxy(
-        state,
-        "dufs",
-        uri,
-        request,
-        ProxyPath::StripCompiledPrefix,
-        Some("/modules/dufs"),
-    )
-    .await
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ProxyPath {
-    #[cfg(any(feature = "module-sunshine", feature = "module-host-monitoring"))]
-    Original,
-    StripCompiledPrefix,
 }
 
 async fn proxy(
     state: AppState,
-    module: &'static str,
+    principal: Option<AuthenticatedPrincipal>,
+    module: String,
+    suffix: &str,
     original_uri: axum::http::Uri,
-    request: Request,
-    path_mode: ProxyPath,
-    public_prefix: Option<&'static str>,
+    mut request: Request,
 ) -> Response {
     let client = match crate::auth::http::require_reverse_proxy_contract(
         &state,
         request.headers(),
-        "模块网关",
+        "plugin gateway",
     ) {
         Ok(client) => client,
         Err(error) => return error.into_response(),
     };
-    let Some(service) = state.platform.service_for_gateway(module).await else {
-        return gateway_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "module_gateway_unavailable",
-            "模块尚未通过 worker 存活、就绪和 gateway-v1 内部凭据门禁",
-        );
-    };
-    let suffix = match path_mode {
-        #[cfg(any(feature = "module-sunshine", feature = "module-host-monitoring"))]
-        ProxyPath::Original => original_uri.path(),
-        ProxyPath::StripCompiledPrefix => {
-            let Some(suffix) = original_uri
-                .path()
-                .strip_prefix(service.spec.gateway_prefix)
-            else {
-                return gateway_error(
-                    StatusCode::NOT_FOUND,
-                    "module_gateway_path_invalid",
-                    "请求不属于已编译模块的固定网关前缀",
-                );
-            };
-            suffix
-        }
-    };
-    if !suffix.starts_with('/') {
-        return gateway_error(
-            StatusCode::NOT_FOUND,
-            "module_gateway_path_invalid",
-            "模块网关路径必须位于固定前缀之下",
-        );
-    }
-    let mut upstream = format!("http://{}{}", service.spec.bind, suffix);
-    if let Some(query) = original_uri.query() {
-        upstream.push('?');
-        upstream.push_str(query);
-    }
-
-    let (parts, body) = request.into_parts();
-    let arrived_over_https = parts
-        .headers
+    let arrived_over_https = request
+        .headers()
         .get("x-forwarded-proto")
         .and_then(|value| value.to_str().ok())
         == Some("https");
-    let mut headers = sanitize_request_headers(parts.headers);
+    let Some(backend) = state.platform.backend(&module).await else {
+        return gateway_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "plugin_unavailable",
+            "module is disabled, unhealthy or absent from this distribution",
+        );
+    };
+    let Some(route) = backend.route_for(request.method(), suffix) else {
+        return gateway_error(
+            StatusCode::NOT_FOUND,
+            "plugin_route_not_registered",
+            "the plugin manifest did not register this method and path",
+        );
+    };
+    let route_auth = route.auth;
+    let route_id = route.id.to_owned();
+    let permission = route.permission.map(str::to_owned);
+    let request_max_bytes = route.request_body.max_bytes;
+    let upstream_path = route.upstream_path;
+    if route_auth == sarmg_platform_core::RouteAuth::Platform {
+        let Some(principal) = principal.as_ref() else {
+            return gateway_error(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "a platform session is required for this plugin route",
+            );
+        };
+        let Some(permission) = permission.as_deref() else {
+            return gateway_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "plugin_route_invalid",
+                "platform-authenticated route has no permission",
+            );
+        };
+        if !state
+            .platform
+            .permissions
+            .allows(&principal.username, permission)
+            .await
+        {
+            return gateway_error(
+                StatusCode::FORBIDDEN,
+                "plugin_permission_denied",
+                "the authenticated principal lacks the route permission",
+            );
+        }
+    }
+
+    let query = original_uri
+        .query()
+        .map(|query| format!("?{query}"))
+        .unwrap_or_default();
+    let rewritten = match format!("{upstream_path}{query}").parse() {
+        Ok(uri) => uri,
+        Err(_) => {
+            return gateway_error(
+                StatusCode::BAD_REQUEST,
+                "plugin_path_invalid",
+                "the plugin path could not be represented as an upstream URI",
+            );
+        }
+    };
+    *request.uri_mut() = rewritten;
+    let mut headers = sanitize_request_headers(std::mem::take(request.headers_mut()));
     set_trusted_header(&mut headers, PROTOCOL_HEADER, PROTOCOL_VERSION);
-    set_trusted_header(&mut headers, AUDIENCE_HEADER, service.spec.id);
+    set_trusted_header(&mut headers, AUDIENCE_HEADER, &module);
     set_trusted_header(
         &mut headers,
-        TOKEN_HEADER,
-        service.credential.token.as_ref(),
+        PREFIX_HEADER,
+        &format!("/api/modules/{module}"),
     );
-    set_trusted_header(&mut headers, PREFIX_HEADER, service.spec.gateway_prefix);
-    let forwarded_proto = if state.settings.production || arrived_over_https {
-        "https"
-    } else {
-        "http"
-    };
-    set_trusted_header(&mut headers, "x-forwarded-proto", forwarded_proto);
+    if let Some(principal) = principal.as_ref()
+        && insert_principal(&mut headers, &principal.username).is_err()
+    {
+        return gateway_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "platform_principal_invalid",
+            "the authenticated platform principal cannot be forwarded",
+        );
+    }
+    set_trusted_header(
+        &mut headers,
+        "x-forwarded-proto",
+        if state.settings.production || arrived_over_https {
+            "https"
+        } else {
+            "http"
+        },
+    );
     if let Some(client) = client {
         set_trusted_header(&mut headers, "x-forwarded-for", &client.to_string());
     }
+    *request.headers_mut() = headers;
 
+    if backend.endpoint().is_none() {
+        let actor = if let Some(principal) = principal.as_ref() {
+            let correlation_id = request
+                .headers()
+                .get("x-request-id")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned)
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            Some(super::sdk_bridge::actor(
+                principal.username.clone(),
+                state
+                    .platform
+                    .permissions
+                    .permissions_for(&principal.username)
+                    .await,
+                correlation_id,
+            ))
+        } else {
+            None
+        };
+        let mut response = backend
+            .call(request, route_id, request_max_bytes, actor)
+            .await;
+        sanitize_response_headers(response.headers_mut(), &module);
+        return response;
+    }
+    if backend.protocol() != sarmg_platform_core::ServiceProtocol::Http {
+        return gateway_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "plugin_protocol_not_http",
+            "gRPC services are available to platform adapters but cannot be proxied to browsers",
+        );
+    }
+    proxy_http(state, backend, &module, &upstream_path, query, request).await
+}
+
+async fn proxy_http(
+    state: AppState,
+    backend: PluginBackend,
+    module: &str,
+    suffix: &str,
+    query: String,
+    request: Request,
+) -> Response {
+    let endpoint = backend
+        .endpoint()
+        .expect("external backend has an endpoint");
+    let mut upstream = match endpoint.base_url.join(suffix.trim_start_matches('/')) {
+        Ok(url) => url,
+        Err(_) => {
+            return gateway_error(
+                StatusCode::BAD_GATEWAY,
+                "plugin_endpoint_invalid",
+                "the trusted service endpoint could not resolve the registered route",
+            );
+        }
+    };
+    upstream.set_query(query.strip_prefix('?'));
+    let (parts, body) = request.into_parts();
+    let mut headers = parts.headers;
+    for (name, value) in &endpoint.headers {
+        set_trusted_header_dynamic(&mut headers, name, value);
+        if name.eq_ignore_ascii_case("x-union-plugin-token") {
+            set_trusted_header(&mut headers, TOKEN_HEADER, value);
+        }
+    }
     let response = state
         .platform
-        .gateway_client
+        .gateway_client()
         .request(parts.method, upstream)
         .headers(headers)
         .body(reqwest::Body::wrap_stream(body.into_data_stream()))
@@ -274,40 +259,95 @@ async fn proxy(
         Err(error) if error.is_connect() => {
             return gateway_error(
                 StatusCode::BAD_GATEWAY,
-                "module_worker_connection_failed",
-                "私有 worker 连接失败；supervisor 将重新探测或重启",
+                "plugin_connection_failed",
+                "the registered plugin service refused the connection",
             );
         }
         Err(_) => {
             return gateway_error(
                 StatusCode::BAD_GATEWAY,
-                "module_worker_request_failed",
-                "私有 worker 请求失败",
+                "plugin_request_failed",
+                "the registered plugin service request failed",
             );
         }
     };
-
-    proxy_response(response, &service, public_prefix)
-}
-
-fn proxy_response(
-    response: reqwest::Response,
-    service: &ExternalService,
-    public_prefix: Option<&str>,
-) -> Response {
     let status = response.status();
     let mut headers = response.headers().clone();
-    sanitize_response_headers(&mut headers);
-    if let Some(prefix) = public_prefix {
-        debug_assert_eq!(prefix, service.spec.gateway_prefix);
-        rewrite_location(&mut headers, prefix);
-        rewrite_set_cookie_paths(&mut headers, prefix);
-    }
-    let body = Body::from_stream(response.bytes_stream());
-    let mut proxied = Response::new(body);
+    sanitize_response_headers(&mut headers, module);
+    let mut proxied = Response::new(Body::from_stream(response.bytes_stream()));
     *proxied.status_mut() = status;
     *proxied.headers_mut() = headers;
     proxied
+}
+
+async fn asset(
+    State(state): State<AppState>,
+    Path((module, path)): Path<(String, String)>,
+) -> Response {
+    let Some(path) = (match state.platform.asset(&module, &path).await {
+        Ok(path) => path,
+        Err(_) => {
+            return gateway_error(
+                StatusCode::NOT_FOUND,
+                "plugin_asset_not_found",
+                "plugin asset path is invalid or unavailable",
+            );
+        }
+    }) else {
+        return gateway_error(
+            StatusCode::NOT_FOUND,
+            "plugin_asset_not_found",
+            "plugin asset is unavailable",
+        );
+    };
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) if metadata.is_file() && metadata.len() <= MAX_FRONTEND_ASSET_BYTES => {
+            metadata
+        }
+        _ => {
+            return gateway_error(
+                StatusCode::NOT_FOUND,
+                "plugin_asset_not_found",
+                "plugin asset is unavailable",
+            );
+        }
+    };
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) if bytes.len() as u64 == metadata.len() => bytes,
+        _ => {
+            return gateway_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "plugin_asset_changed",
+                "plugin asset changed while it was being read",
+            );
+        }
+    };
+    let content_type = match path.extension().and_then(|extension| extension.to_str()) {
+        Some("js" | "mjs") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("json") => "application/json",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        Some("woff2") => "font/woff2",
+        _ => "application/octet-stream",
+    };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, HeaderValue::from_static(content_type)),
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("private, no-cache"),
+            ),
+            (
+                header::X_CONTENT_TYPE_OPTIONS,
+                HeaderValue::from_static("nosniff"),
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
 }
 
 fn sanitize_request_headers(mut headers: HeaderMap) -> HeaderMap {
@@ -324,6 +364,8 @@ fn sanitize_request_headers(mut headers: HeaderMap) -> HeaderMap {
         PROTOCOL_HEADER,
         AUDIENCE_HEADER,
         TOKEN_HEADER,
+        PRINCIPAL_HEADER,
+        "x-union-plugin-token",
         "x-unionc-proxy-secret",
         "x-csrf-token",
     ] {
@@ -333,16 +375,153 @@ fn sanitize_request_headers(mut headers: HeaderMap) -> HeaderMap {
     headers
 }
 
-fn sanitize_response_headers(headers: &mut HeaderMap) {
+fn sanitize_response_headers(headers: &mut HeaderMap, module: &str) {
     remove_hop_by_hop_headers(headers);
     for name in [
         PROTOCOL_HEADER,
         AUDIENCE_HEADER,
         TOKEN_HEADER,
         PREFIX_HEADER,
+        PRINCIPAL_HEADER,
+        "x-union-plugin-token",
+        header::CONTENT_SECURITY_POLICY.as_str(),
+        header::X_FRAME_OPTIONS.as_str(),
+        header::X_CONTENT_TYPE_OPTIONS.as_str(),
+        header::REFERRER_POLICY.as_str(),
+        header::STRICT_TRANSPORT_SECURITY.as_str(),
+        "cross-origin-resource-policy",
+        "cross-origin-opener-policy",
+        "cross-origin-embedder-policy",
+        "content-security-policy-report-only",
+        "permissions-policy",
+        "origin-agent-cluster",
+        "x-permitted-cross-domain-policies",
+        "access-control-allow-origin",
+        "access-control-allow-credentials",
+        "access-control-allow-headers",
+        "access-control-allow-methods",
+        "access-control-expose-headers",
+        "access-control-max-age",
+        "clear-site-data",
     ] {
         headers.remove(name);
     }
+    constrain_module_location(headers, module);
+    filter_module_response_cookies(headers, module);
+}
+
+fn constrain_module_location(headers: &mut HeaderMap, module: &str) {
+    let Some(value) = headers
+        .get(header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+    else {
+        headers.remove(header::LOCATION);
+        return;
+    };
+    let base = match url::Url::parse(&format!("https://union.invalid/api/modules/{module}/")) {
+        Ok(base) => base,
+        Err(_) => {
+            headers.remove(header::LOCATION);
+            return;
+        }
+    };
+    let Ok(resolved) = base.join(value) else {
+        headers.remove(header::LOCATION);
+        return;
+    };
+    let prefix = format!("/api/modules/{module}");
+    if resolved.scheme() != "https"
+        || resolved.host_str() != Some("union.invalid")
+        || !(resolved.path() == prefix || resolved.path().starts_with(&format!("{prefix}/")))
+    {
+        headers.remove(header::LOCATION);
+        return;
+    }
+    let mut scoped = resolved.path().to_owned();
+    if let Some(query) = resolved.query() {
+        scoped.push('?');
+        scoped.push_str(query);
+    }
+    if let Some(fragment) = resolved.fragment() {
+        scoped.push('#');
+        scoped.push_str(fragment);
+    }
+    match HeaderValue::from_str(&scoped) {
+        Ok(value) => {
+            headers.insert(header::LOCATION, value);
+        }
+        Err(_) => {
+            headers.remove(header::LOCATION);
+        }
+    }
+}
+
+/// Modules share Union's public origin, so they may only set a cookie whose name is namespaced to
+/// the module and whose scope cannot reach Core or another module. Clear-Site-Data is stripped
+/// above because it cannot be scoped to a module path.
+fn filter_module_response_cookies(headers: &mut HeaderMap, module: &str) {
+    let retained = headers
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter(|value| module_cookie_is_scoped(value, module))
+        .cloned()
+        .collect::<Vec<_>>();
+    headers.remove(header::SET_COOKIE);
+    for value in retained {
+        headers.append(header::SET_COOKIE, value);
+    }
+}
+
+fn module_cookie_is_scoped(value: &HeaderValue, module: &str) -> bool {
+    let Ok(value) = value.to_str() else {
+        return false;
+    };
+    if value.len() > 4096 {
+        return false;
+    }
+    let mut parts = value.split(';').map(str::trim);
+    let Some((name, _)) = parts.next().and_then(|pair| pair.split_once('=')) else {
+        return false;
+    };
+    if !name.starts_with(&format!("__Secure-{module}-")) && !name.starts_with(&format!("{module}-"))
+    {
+        return false;
+    }
+
+    let mut secure = false;
+    let mut http_only = false;
+    let mut same_site_strict = false;
+    let mut scoped_path = false;
+    let mut same_site_seen = false;
+    let mut path_seen = false;
+    for attribute in parts {
+        let (name, value) = attribute
+            .split_once('=')
+            .map_or((attribute, None), |(name, value)| (name, Some(value)));
+        if name.eq_ignore_ascii_case("domain") {
+            return false;
+        }
+        if name.eq_ignore_ascii_case("secure") && value.is_none() {
+            secure = true;
+        } else if name.eq_ignore_ascii_case("httponly") && value.is_none() {
+            http_only = true;
+        } else if name.eq_ignore_ascii_case("samesite") {
+            if same_site_seen {
+                return false;
+            }
+            same_site_seen = true;
+            same_site_strict = value.is_some_and(|value| value.eq_ignore_ascii_case("strict"));
+        } else if name.eq_ignore_ascii_case("path") {
+            if path_seen {
+                return false;
+            }
+            path_seen = true;
+            let expected = format!("/api/modules/{module}");
+            scoped_path =
+                value.is_some_and(|value| value == expected || value == format!("{expected}/"));
+        }
+    }
+    secure && http_only && same_site_strict && scoped_path
 }
 
 fn remove_hop_by_hop_headers(headers: &mut HeaderMap) {
@@ -394,71 +573,21 @@ fn filter_union_cookies(headers: &mut HeaderMap) {
     }
 }
 
-fn rewrite_location(headers: &mut HeaderMap, prefix: &str) {
-    let Some(location) = headers
-        .get(header::LOCATION)
-        .and_then(|value| value.to_str().ok())
-    else {
+fn set_trusted_header(headers: &mut HeaderMap, name: &'static str, value: &str) {
+    let Ok(value) = HeaderValue::from_str(value) else {
         return;
     };
-    if location.starts_with('/') && !location.starts_with(prefix) {
-        let rewritten = format!("{prefix}{location}");
-        if let Ok(value) = HeaderValue::from_str(&rewritten) {
-            headers.insert(header::LOCATION, value);
-        }
-    }
-}
-
-fn rewrite_set_cookie_paths(headers: &mut HeaderMap, prefix: &str) {
-    let cookies = headers
-        .get_all(header::SET_COOKIE)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .map(|cookie| rewrite_cookie_path(cookie, prefix))
-        .collect::<Vec<_>>();
-    if cookies.is_empty() {
-        return;
-    }
-    headers.remove(header::SET_COOKIE);
-    for cookie in cookies {
-        if let Ok(value) = HeaderValue::from_str(&cookie) {
-            headers.append(header::SET_COOKIE, value);
-        }
-    }
-}
-
-fn rewrite_cookie_path(cookie: &str, prefix: &str) -> String {
-    let name = cookie.split('=').next().unwrap_or_default().trim();
-    // The __Host- contract requires Path=/ exactly. These module cookies have distinct names and
-    // the gateway filters Union's own __Host-session before forwarding to any worker.
-    if name.starts_with("__Host-") {
-        return cookie.to_string();
-    }
-    cookie
-        .split(';')
-        .map(|attribute| {
-            let trimmed = attribute.trim();
-            let Some(path) = trimmed
-                .strip_prefix("Path=")
-                .or_else(|| trimmed.strip_prefix("path="))
-            else {
-                return trimmed.to_string();
-            };
-            if path.starts_with(prefix) {
-                trimmed.to_string()
-            } else if path.starts_with('/') {
-                format!("Path={prefix}{path}")
-            } else {
-                trimmed.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-fn set_trusted_header(headers: &mut HeaderMap, name: &'static str, value: &str) {
-    let value = HeaderValue::from_str(value).expect("compiled gateway values are header-safe");
     headers.insert(HeaderName::from_static(name), value);
+}
+
+fn set_trusted_header_dynamic(headers: &mut HeaderMap, name: &str, value: &str) {
+    let (Ok(name), Ok(value)) = (
+        HeaderName::from_bytes(name.as_bytes()),
+        HeaderValue::from_str(value),
+    ) else {
+        return;
+    };
+    headers.insert(name, value);
 }
 
 fn gateway_error(status: StatusCode, code: &'static str, message: &'static str) -> Response {
@@ -470,68 +599,109 @@ mod tests {
     use super::*;
 
     #[test]
-    fn request_sanitization_removes_union_identity_but_keeps_module_identity() {
+    fn request_sanitization_removes_platform_identity_and_keeps_plugin_identity() {
         let mut headers = HeaderMap::new();
         headers.insert(
             header::COOKIE,
-            HeaderValue::from_static(
-                "session=union; csrf=union-csrf; monitor_session=worker; __Host-dufs-session=dufs",
-            ),
-        );
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer module-user-token"),
+            HeaderValue::from_static("session=union; module_session=plugin"),
         );
         headers.insert(TOKEN_HEADER, HeaderValue::from_static("attacker"));
-        headers.insert("x-forwarded-for", HeaderValue::from_static("203.0.113.8"));
-        let sanitized = sanitize_request_headers(headers);
-        assert_eq!(
-            sanitized[header::COOKIE],
-            "monitor_session=worker; __Host-dufs-session=dufs"
-        );
-        assert_eq!(sanitized[header::AUTHORIZATION], "Bearer module-user-token");
-        assert!(!sanitized.contains_key(TOKEN_HEADER));
-        assert!(!sanitized.contains_key("x-forwarded-for"));
-    }
-
-    #[test]
-    fn connection_named_headers_are_not_forwarded() {
-        let mut headers = HeaderMap::new();
         headers.insert(
-            header::CONNECTION,
-            HeaderValue::from_static("keep-alive, x-private-hop"),
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer plugin"),
         );
-        headers.insert("x-private-hop", HeaderValue::from_static("secret"));
-        headers.insert("x-end-to-end", HeaderValue::from_static("kept"));
         let sanitized = sanitize_request_headers(headers);
-        assert!(!sanitized.contains_key(header::CONNECTION));
-        assert!(!sanitized.contains_key("x-private-hop"));
-        assert_eq!(sanitized["x-end-to-end"], "kept");
+        assert_eq!(sanitized[header::COOKIE], "module_session=plugin");
+        assert_eq!(sanitized[header::AUTHORIZATION], "Bearer plugin");
+        assert!(!sanitized.contains_key(TOKEN_HEADER));
     }
 
     #[test]
-    fn cookies_and_redirects_are_scoped_to_the_compiled_prefix() {
-        assert_eq!(
-            rewrite_cookie_path(
-                "photo_backup_admin=value; Path=/admin; HttpOnly",
-                "/modules/photo-backup"
-            ),
-            "photo_backup_admin=value; Path=/modules/photo-backup/admin; HttpOnly"
-        );
-        assert_eq!(
-            rewrite_cookie_path("__Host-dufs-session=value; Path=/; Secure", "/modules/dufs"),
-            "__Host-dufs-session=value; Path=/; Secure"
-        );
+    fn response_sanitization_removes_platform_headers_and_unsafe_cookies() {
         let mut headers = HeaderMap::new();
-        headers.insert(header::LOCATION, HeaderValue::from_static("/admin"));
-        rewrite_location(&mut headers, "/modules/photo-backup");
-        assert_eq!(headers[header::LOCATION], "/modules/photo-backup/admin");
+        headers.append(
+            header::SET_COOKIE,
+            HeaderValue::from_static(
+                "__Secure-dufs-session=safe; Path=/api/modules/dufs/; HttpOnly; Secure; SameSite=Strict",
+            ),
+        );
+        headers.append(
+            header::SET_COOKIE,
+            HeaderValue::from_static("session=stolen; Path=/; HttpOnly; Secure; SameSite=Strict"),
+        );
+        headers.append(
+            header::SET_COOKIE,
+            HeaderValue::from_static("dufs-wide=unsafe; Path=/; HttpOnly; Secure; SameSite=Strict"),
+        );
+        for (name, value) in [
+            ("clear-site-data", "\"cookies\""),
+            ("content-security-policy", "default-src *"),
+            ("x-frame-options", "ALLOWALL"),
+            ("x-content-type-options", "off"),
+            ("referrer-policy", "unsafe-url"),
+            ("cross-origin-resource-policy", "cross-origin"),
+            ("cross-origin-opener-policy", "unsafe-none"),
+            ("permissions-policy", "camera=*, microphone=*"),
+            ("access-control-allow-origin", "*"),
+            ("strict-transport-security", "max-age=0"),
+        ] {
+            headers.insert(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_static(value),
+            );
+        }
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
+
+        sanitize_response_headers(&mut headers, "dufs");
+
+        let cookies = headers
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|value| value.to_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(cookies.len(), 1);
+        assert!(cookies[0].starts_with("__Secure-dufs-session="));
+        assert_eq!(headers[header::CONTENT_TYPE], "text/html");
+        for name in [
+            "clear-site-data",
+            "content-security-policy",
+            "x-frame-options",
+            "x-content-type-options",
+            "referrer-policy",
+            "cross-origin-resource-policy",
+            "cross-origin-opener-policy",
+            "permissions-policy",
+            "access-control-allow-origin",
+            "strict-transport-security",
+        ] {
+            assert!(!headers.contains_key(name), "{name} survived sanitization");
+        }
     }
 
     #[test]
-    fn compiled_gateway_specs_match_protocol_prefixes() {
-        for spec in compiled_specs() {
-            assert!(spec.gateway_prefix.ends_with(spec.id));
+    fn module_redirects_are_resolved_only_inside_their_gateway_prefix() {
+        for (location, expected) in [
+            (
+                "child?download=1",
+                Some("/api/modules/dufs/child?download=1"),
+            ),
+            ("/api/modules/dufs/", Some("/api/modules/dufs/")),
+            ("../photo-backup", None),
+            ("/api/settings", None),
+            ("https://attacker.invalid/", None),
+            ("//attacker.invalid/", None),
+            ("%2e%2e/settings", None),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::LOCATION, HeaderValue::from_str(location).unwrap());
+            sanitize_response_headers(&mut headers, "dufs");
+            assert_eq!(
+                headers
+                    .get(header::LOCATION)
+                    .and_then(|value| value.to_str().ok()),
+                expected,
+                "location={location}"
+            );
         }
     }
 }
