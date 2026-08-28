@@ -146,7 +146,9 @@ slot，`install` 切换完整发行并保留 previous；`rollback` 只切回文�
 `union-<version>-full-linux-arm64.tar.gz`，并用一个外层 `SHA256SUMS` 覆盖两者。每份完整包都必须
 包含精确五个 worker、保留 Core/worker 可执行位且不含 Agent；内部 `SHA256SUMS` 覆盖发行文件。
 `union-release.json` 的 `distribution.platform` 必须为 `linux`，`architecture` 必须与包名及运行
-Core 的 `amd64|arm64` 架构一致。发布门禁通过仍不等同于生产可用验收。
+Core 的 `amd64|arm64` 架构一致。`stage` 可跨机预置，`install`/`rollback` 在切换指针前拒绝
+与当前 Linux 主机不匹配的包。正式包由 Ubuntu 24.04 原生 GNU runner 链接，其 glibc/系统 ABI
+是当前兼容基线；目标枚举不自动承诺任意旧 Linux 发行版。发布门禁通过仍不等同于生产可用验收。
 
 ## 健康与故障
 

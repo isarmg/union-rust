@@ -27,6 +27,8 @@
   可执行位、通过内部摘要验证，并由一个外层 `SHA256SUMS` 覆盖。
 - Builder schema v2 的 distribution 元数据新增必填 `platform=linux` 和
   `architecture=amd64|arm64`；Release 门禁和 Core 激活均拒绝与目标包/当前进程架构不一致的清单。
+- Builder 可跨机 stage，但 install/rollback 在指针切换前拒绝跨架构激活；明确正式 GNU 包以
+  Ubuntu 24.04 runner 的 glibc/系统 ABI 为当前兼容基线，不泛化为任意旧 Linux 发行版。
 
 ### Web 与管理
 

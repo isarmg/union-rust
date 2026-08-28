@@ -78,6 +78,9 @@ Union Core 和完整服务器发行只支持 Linux `amd64`（Rust `x86_64`）与
 两份包各自包含 Core、Web Shell 和精确五个私有 worker，不含 Agent，并共同由 Release 根目录的
 `SHA256SUMS` 覆盖。包内 `union-release.json` 必须声明 `platform=linux` 及匹配的
 `architecture=amd64|arm64`；Core 启动时再次校验清单目标与自身架构，不能跨架构误用发行包。
+Builder 的 `install`/`rollback` 还会在修改活动指针前执行同一宿主目标门禁，`stage` 则可为另一台
+机器预置已验证包。正式二进制使用 Ubuntu 24.04 原生 GNU 工具链链接，当前运行兼容基线因此是
+该 runner 的 glibc/系统 ABI，而不是未经验证的任意旧 Linux 发行版。
 这些制品仍是架构/构建里程碑，不代表已经完成生产环境迁移、升级、回滚和运行验收。
 
 ## 数据边界
