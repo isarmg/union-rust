@@ -8,7 +8,7 @@ Sentinel Monitor、Photo Backup 和 Dufs 均作为 Runtime 监管的本地私有
 
 ## 不可变发行布局
 
-Union Builder 2.0 生成并验证以下发行：
+Union Builder 2.1 生成并验证以下发行：
 
 ```text
 <install-root>/
@@ -129,7 +129,7 @@ Photo 上传、下载和 API 只能通过 Union HTTPS 入口。服务器端原�
 
 ## 构建、安装与回滚
 
-正式组合入口是 `union-builder` 2.0 的 schema v2 profile：
+正式组合入口是 `union-builder` 2.1 的 schema v2 profile：
 
 ```bash
 union-builder check --config profiles/full.toml --server-target linux-amd64

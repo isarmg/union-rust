@@ -61,14 +61,16 @@ client。启停模块不需要重建 Web Console，单模块加载/渲染失败�
 这些拆分只改变源码所有权，不改变产品和部署边界：模块不作为独立公网服务发布，仍由 Builder
 固定各仓库 revision、组装进同一 Union distribution，并由 Plugin Runtime 作为回环私有进程监管。
 正式 `full` 服务器发行包含 Host worker，不包含需要在目标主机独立安装的 Agent；Agent 是 Host
-仓库产出的 companion artifact，不是 Union 公网服务，也不属于 Core 的私有 worker 进程树。
+仓库维护、由 Union Builder Release 集中产出的 companion artifact，不是 Union 公网服务，
+也不属于 Core 的私有 worker 进程树。Photo 移动客户端同样由 Photo 仓库维护、
+由 Builder 集中发布，不进入服务器 distribution。
 
 ## 支持平台与发行
 
 Union Core 和完整服务器发行只支持 Linux `amd64`（Rust `x86_64`）与 Linux `arm64`（Rust
 `aarch64`）。CI 在 GitHub 官方固定版本的原生 AMD64、ARM64 runner 上分别执行 Core Clippy 和
 测试；其他操作系统或 CPU 架构会在 Core 编译边界直接失败。这个限制不适用于 Host 仓库单独交付
-的远端 Agent。
+源码、但由 Union Builder Release 集中交付的远端 Agent 和 Photo 客户端。
 
 正式标签只发布两个完整 `full` 服务器包：
 

@@ -4,7 +4,7 @@
 
 Union 必须作为唯一服务端产品交付，并满足：
 
-1. Builder 2.0 的 `minimal`、`storage`、`monitoring`、`full` profile 形成确定、可验证的发行包含集合；
+1. Builder 2.1 的 `minimal`、`storage`、`monitoring`、`full` profile 形成确定、可验证的发行包含集合；
 2. Core/Web 不编译业务实现，五个标准模块作为发行内独立私有进程运行；
 3. Core 是唯一公网入口，统一实施 TLS 反代信任、登录、RBAC、CSRF、请求清洗、审计和 Gateway；
 4. Runtime 只发现 Builder 纳入当前发行的只读模块包，并按 Manifest 注册路由、权限、配置、
@@ -57,7 +57,8 @@ Dufs 与 Photo 可以共享稳定的 blob-transfer 合同、错误 envelope、�
   媒体等领域凭据授权，但同样必须通过 Union。
 - gateway token 是 Core→worker 的进程 capability，不是用户、设备或管理员身份。
 - Agent 零入站端口，服务端不执行远程命令、脚本、文件传输或 Agent 自更新。
-- Photo 手机客户端与 Agent 是远端 companion，不进入服务器模块包或进程树。
+- Photo 手机客户端与 Agent 是由 Builder Release 集中发布的远端 companion，不进入
+  服务器模块包或进程树。
 - 模块配置不能改变 worker executable、bind、API base、audience 或包字节。
 
 ## 非目标

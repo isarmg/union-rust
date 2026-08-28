@@ -1,8 +1,9 @@
 # Agent 生命周期
 
 Agent 是 [`host-monitoring`](https://github.com/isarmg/host-monitoring) 仓库产出的跨平台远端
-companion artifact，Union supervisor 不管理它，Builder `full` 服务器发行也不包含它。组织通过
-可信包管理/MDM 渠道独立安装与更新，并按照 Union Release compatibility matrix 选择版本。
+companion artifact，Union supervisor 不管理它，Builder `full` 服务器发行也不包含它。
+Agent 的官方产物由 Union Builder Release 从锁定 Host revision 集中构建；组织再通过
+可信包管理/MDM 渠道独立安装与更新，并按照 compatibility matrix 选择版本。
 
 ## 安装与配对
 
@@ -31,4 +32,4 @@ Union 的 `/api/modules/host-monitoring/agent/*` 网关。
 Union Release 的 compatibility matrix 应记录每个平台 Agent 版本、协议版本与验证日期。
 目标平台的安装器与生命周期测试在 Host 仓库中维护，Agent 可以作为 companion artifact 发布，
 但不能被描述成独立公网服务、服务器模块 Release 或 Core 私有 worker。文档中的通用流程不代表
-Linux DEB/RPM、Windows MSI 或 macOS pkg 已在当前发布候选上完成验收。
+Linux DEB/RPM、Windows MSI 或 macOS pkg 已建立生产签名、公证或 MDM 信任链。

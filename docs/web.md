@@ -5,7 +5,7 @@ origin 提供 Shell、平台 API、模块 API、SSE 和模块静态资源。
 
 ## Shell 与模块前端边界
 
-Builder 2.0 只构建一次 Core Web Shell，并将其放入 `share/union/web`。Shell 只包含基础布局、
+Builder 2.1 只构建一次 Core Web Shell，并将其放入 `share/union/web`。Shell 只包含基础布局、
 登录状态、核心导航、权限门、设置、动态模块加载器和错误边界，不导入 Sunshine、Host、Sentinel、
 Photo 或 Dufs 的业务页面。
 

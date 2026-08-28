@@ -27,7 +27,7 @@ cargo run -p unionc
 
 ## 发行级联调
 
-完整联调应让 Union Builder 2.0 用 schema v2 配置构建一个 debug 发行。配置决定哪些模块包被
+完整联调应让 Union Builder 2.1 用 schema v2 配置构建一个 debug 发行。配置决定哪些模块包被
 纳入，并为每个来源锁定 revision；它不决定模块运行时是否启用。
 
 ```bash

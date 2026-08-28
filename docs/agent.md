@@ -9,7 +9,8 @@ Agent 不是服务端模块：
 - 不由 Union supervisor 启动、停止或更新；
 - 不进入 Union `full` 服务器 distribution，必须在目标主机独立安装；
 - 随 Union Release 的 compatibility matrix 记录兼容版本；
-- 由 Host 仓库产出 companion artifact，可经包管理、MDM 或组织软件中心分发，但不是独立公网
+- 由 Host 仓库维护，由 Union Builder Release 集中构建和发布 companion artifact，可经
+  包管理、MDM 或组织软件中心分发，但不是独立公网
   服务或服务器模块 Release。
 
 Agent 不监听远端端口，不实现命令执行、脚本/配置下发、文件传输或自更新。长期设备 secret
@@ -22,8 +23,10 @@ database/role（库内 `host_monitoring` schema）；旧 Union SQLite 只可能�
 
 Host worker、双方共用的 `unionc-protocol` 与 `unionc-agent` 均由独立
 [`host-monitoring`](https://github.com/isarmg/host-monitoring) 仓库权威维护。Builder `full` profile
-以不可变 revision 纳入其中的 Host worker；Agent 则从 Host 仓库作为跨平台 companion artifact
-构建和独立安装，不由 Builder 当作服务器 worker 打包。
+以不可变 revision 纳入其中的 Host worker；Builder Release 从同一锁定 Host revision
+另行构建 Agent，但绝不把 Agent 混入服务器 worker 包。当前集中产物为 Linux
+amd64/arm64 DEB/RPM、Windows amd64 未签名 MSI、macOS arm64 未签名 PKG；
+Android/iOS/iPadOS 只有宿主应用可嵌入的 Rust 源码 SDK，尚无可声称的 APK/IPA。
 
 Agent 开发验证必须在 `host-monitoring` 仓库根目录执行，而不是在 Union 仓库执行：
 

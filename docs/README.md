@@ -26,7 +26,7 @@
 | 模块 Manifest 契约 | `sarmg-platform` Manifest schema/parser 与各模块根 `manifest.json` |
 | Host worker、Agent 与双方 DTO | `host-monitoring` 仓库及其合同测试 |
 | 模块数据库 | 各 worker migration；禁止以旧 Union SQLite schema 作为当前规范 |
-| 发行包含与安装 | `union-builder` 2.0 官方 profiles、`union-release.json` 与 `SHA256SUMS` |
+| 发行包含与安装 | `union-builder` 2.1 官方 profiles、`union-release.json` 与 `SHA256SUMS` |
 | 服务器平台 | 仅 Linux amd64/arm64；CI 使用原生固定 runner，Release 分别发布两份完整 `full` 包 |
 
 源码和自动化测试决定程序行为。文档中的命令是受支持流程，不等于某台生产主机已经通过
@@ -43,6 +43,7 @@
   入口。
 - 数据变更必须写清 schema owner、备份单元、离线导入和不可逆点。
 - Agent/手机文档明确其为远端 companion。Builder `full` 服务器发行包含 Host worker，但 Agent
-  由 Host 仓库产出并在远端独立安装，不能把它列入 Union distribution 或 supervisor 图。
+  和 Photo 客户端由各模块仓库维护、由 Builder Release 集中产出，不能把它们列入
+  Union Server distribution 或 supervisor 图。
 - `docs/history/` 只保留历史证据；旧 Cargo-feature 组合、静态 spec、SQLite 共享设计和旧
   Actions 不能作为当前操作手册。
