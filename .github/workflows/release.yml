@@ -59,12 +59,12 @@ jobs:
       contents: read
     # Builder v2 owns schema-v2 composition.
     # The reusable workflow and its checkout are pinned to the same immutable reviewed commit.
-    uses: isarmg/union-builder/.github/workflows/build-union.yml@59cc5421bc844b0aadf11f52379d9e3e057abeda
+    uses: isarmg/union-builder/.github/workflows/build-union.yml@9e965516d87d700850e747301363470ed8ae403e
     with:
       # Select Builder's versioned official graph instead of duplicating it here.
       profile: full
       artifact-name: union-distribution
-      builder-revision: 59cc5421bc844b0aadf11f52379d9e3e057abeda
+      builder-revision: 9e965516d87d700850e747301363470ed8ae403e
       materialize-caller-source: true
       caller-revision: ${{ github.sha }}
 
