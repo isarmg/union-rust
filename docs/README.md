@@ -27,6 +27,7 @@
 | Host worker、Agent 与双方 DTO | `host-monitoring` 仓库及其合同测试 |
 | 模块数据库 | 各 worker migration；禁止以旧 Union SQLite schema 作为当前规范 |
 | 发行包含与安装 | `union-builder` 2.0 官方 profiles、`union-release.json` 与 `SHA256SUMS` |
+| 服务器平台 | 仅 Linux amd64/arm64；CI 使用原生固定 runner，Release 分别发布两份完整 `full` 包 |
 
 源码和自动化测试决定程序行为。文档中的命令是受支持流程，不等于某台生产主机已经通过
 验收；验收结论必须附目标平台、release id、profile、测试输出和时间。

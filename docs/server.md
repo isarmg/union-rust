@@ -1,8 +1,10 @@
 # Union 服务端
 
-Union Core 仅支持 Linux，是系统唯一公网入口和 Web 管理平台。前置 TLS 反代只连接 Core 的
-loopback listener；Sunshine、Host Monitoring、Sentinel Monitor、Photo Backup 和 Dufs 均作为
-Runtime 监管的本地私有进程运行，不能直接暴露或单独发布。
+Union Core 仅支持 Linux `amd64`（`x86_64`）和 Linux `arm64`（`aarch64`），是系统唯一公网入口
+和 Web 管理平台。前置 TLS 反代只连接 Core 的 loopback listener；Sunshine、Host Monitoring、
+Sentinel Monitor、Photo Backup 和 Dufs 均作为 Runtime 监管的本地私有进程运行，不能直接暴露或
+单独发布。其他操作系统/CPU 架构在 Core 编译边界被拒绝；远端 Agent 的平台范围由 Host 仓库单独
+维护，不改变服务器发行边界。
 
 ## 不可变发行布局
 
@@ -124,19 +126,27 @@ Photo 上传、下载和 API 只能通过 Union HTTPS 入口。服务器端原�
 正式组合入口是 `union-builder` 2.0 的 schema v2 profile：
 
 ```bash
-union-builder check --config profiles/full.toml
-union-builder plan --config profiles/full.toml
-union-builder build --config profiles/full.toml --cargo-profile release
-union-builder verify --release dist/full
+union-builder check --config profiles/full.toml --server-target linux-amd64
+union-builder plan --config profiles/full.toml --server-target linux-amd64
+union-builder build --config profiles/full.toml --cargo-profile release --server-target linux-amd64
+union-builder verify --release dist/full --server-target linux-amd64
 sudo union-builder stage --release dist/full --root /opt/union
 sudo union-builder install --release dist/full --root /opt/union
 sudo union-builder rollback --root /opt/union
 ```
 
+ARM64 构建和验证必须把全部 `--server-target` 一致替换为 `linux-arm64`，并使用独立输出目录。
+
 profile 是锁定 revision 的发行包含集合，不映射 Cargo feature，也不保存 enabled 状态。仓库中带
 `TODO(release)` 的 revision 在正式发布前必须替换并通过 `check`。`stage` 放入已验证的不可变
 slot，`install` 切换完整发行并保留 previous；`rollback` 只切回文件 slot。本文不声称这些命令或
 任何官方 profile 已在当前目标主机完成生产验收。
+
+正式 GitHub Release 同时组装 `union-<version>-full-linux-amd64.tar.gz` 与
+`union-<version>-full-linux-arm64.tar.gz`，并用一个外层 `SHA256SUMS` 覆盖两者。每份完整包都必须
+包含精确五个 worker、保留 Core/worker 可执行位且不含 Agent；内部 `SHA256SUMS` 覆盖发行文件。
+`union-release.json` 的 `distribution.platform` 必须为 `linux`，`architecture` 必须与包名及运行
+Core 的 `amd64|arm64` 架构一致。发布门禁通过仍不等同于生产可用验收。
 
 ## 健康与故障
 

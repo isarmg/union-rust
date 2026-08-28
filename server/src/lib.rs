@@ -23,8 +23,13 @@
 //! 跨功能共享的东西只有三样，放在 crate 根：`state`（共享状态）、`error`（统一错误）、
 //! `startup`（启动编排）。
 
-#[cfg(not(target_os = "linux"))]
-compile_error!("unionc server supports Linux only");
+// Keep every module visible to rust-analyzer while making an unsupported Core build fail at the
+// crate boundary. Remote Agents have a wider platform matrix, but they live in host-monitoring.
+#[cfg(not(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+)))]
+compile_error!("unionc Core supports only Linux amd64 (x86_64) and arm64 (aarch64)");
 
 pub mod auth;
 pub mod config;

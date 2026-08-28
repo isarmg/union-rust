@@ -37,7 +37,7 @@ then
   fail 'workflow runners must not use mutable *-latest labels'
 fi
 if grep -En 'runs-on:[[:space:]]+' "$ci_workflow" "$release_workflow" |
-  grep -Ev 'runs-on:[[:space:]]+(ubuntu-24\.04|windows-2025|macos-26|\$\{\{ matrix\.os \}\})$'
+  grep -Ev 'runs-on:[[:space:]]+(ubuntu-24\.04|ubuntu-24\.04-arm|windows-2025|macos-26|\$\{\{ matrix\.(os|runner) \}\})$'
 then
   fail 'workflow runners must use reviewed concrete labels'
 fi
@@ -77,6 +77,10 @@ grep -Fq '# Builder v2 owns schema-v2 composition.' "$release_workflow" ||
   fail 'release must document that Builder v2 owns schema-v2 inclusion'
 grep -Fq '      profile: full' "$release_workflow" ||
   fail 'release must select the Builder official full profile'
+grep -Fq '        server_target: [linux-amd64, linux-arm64]' "$release_workflow" &&
+  grep -Fq '      server-target: ${{ matrix.server_target }}' "$release_workflow" &&
+  grep -Fq '      artifact-name-prefix: union-distribution' "$release_workflow" ||
+  fail 'release must request exactly the two supported Linux server targets from Builder'
 
 for required in \
   'name: schema-v2 composition boundary' \
@@ -85,6 +89,28 @@ do
   grep -Fq "$required" "$ci_workflow" ||
     fail "CI is missing required composition coverage: $required"
 done
+[ "$(grep -Fxc '          - architecture: amd64' "$ci_workflow")" -eq 1 ] &&
+  [ "$(grep -Fxc '          - architecture: arm64' "$ci_workflow")" -eq 1 ] &&
+  [ "$(grep -Ec '^          - architecture:' "$ci_workflow")" -eq 2 ] &&
+  [ "$(grep -Fxc '            runner: ubuntu-24.04' "$ci_workflow")" -eq 1 ] &&
+  [ "$(grep -Fxc '            runner: ubuntu-24.04-arm' "$ci_workflow")" -eq 1 ] &&
+  [ "$(grep -Fxc '            uname-machine: x86_64' "$ci_workflow")" -eq 1 ] &&
+  [ "$(grep -Fxc '            uname-machine: aarch64' "$ci_workflow")" -eq 1 ] ||
+  fail 'Core CI must run natively on exactly Linux amd64 and Linux arm64'
+grep -Fq 'name: server (linux/${{ matrix.architecture }})' "$ci_workflow" &&
+  grep -Fq '    runs-on: ${{ matrix.runner }}' "$ci_workflow" &&
+  grep -Fq '[[ "$(uname -m)" == "$EXPECTED_MACHINE" ]]' "$ci_workflow" ||
+  fail 'Core CI must reject an unexpected native runner architecture'
+grep -Fq 'target_arch = "x86_64"' server/src/lib.rs &&
+  grep -Fq 'target_arch = "aarch64"' server/src/lib.rs &&
+  grep -Fq 'compile_error!("unionc Core supports only Linux amd64 (x86_64) and arm64 (aarch64)");' \
+    server/src/lib.rs ||
+  fail 'Core source must reject every target except Linux amd64 and Linux arm64'
+grep -Fq '    platform: String,' server/src/platform/package_store.rs &&
+  grep -Fq '    architecture: String,' server/src/platform/package_store.rs &&
+  grep -Fq '        validate_release_platform(' server/src/platform/package_store.rs &&
+  grep -Fq 'Builder release target mismatch:' server/src/platform/package_store.rs ||
+  fail 'Core must reject a Builder distribution for a different platform or architecture'
 if grep -En '(features:[[:space:]]*module-|--features[^[:space:]]*[[:space:]]+module-)' \
   "$ci_workflow" "$release_workflow" server/Cargo.toml; then
   fail 'Cargo feature selection must not encode the schema-v2 module graph'
@@ -105,6 +131,11 @@ grep -Fq 'if [[ "$manifest_version" != "$version" ]]; then' "$release_workflow" 
   fail 'manifest version must match the tag'
 grep -Fq 'if [[ "$manifest_revision" != "$release_commit" ]]; then' "$release_workflow" ||
   fail 'manifest revision must match the tag commit'
+grep -Fq "manifest_platform=\"\$(jq -er '.distribution.platform' \"\$manifest\")\"" "$release_workflow" &&
+  grep -Fq "manifest_architecture=\"\$(jq -er '.distribution.architecture' \"\$manifest\")\"" "$release_workflow" &&
+  grep -Fq 'if [[ "$manifest_platform" != linux || "$manifest_architecture" != "$expected_architecture" ]]; then' \
+    "$release_workflow" ||
+  fail 'each release manifest must match its Linux amd64/arm64 artifact'
 grep -Fq '.schema_version == 2 and' "$release_workflow" ||
   fail 'release must require the Builder v2 release-manifest schema'
 grep -Fq '["dufs", "host-monitoring", "photo-backup", "sentinel-monitor", "sunshine"]' "$release_workflow" ||
@@ -119,17 +150,26 @@ if grep -Fq ".modules[].executable" "$release_workflow"; then
 fi
 grep -Fq 'sha256sum --check SHA256SUMS' "$release_workflow" ||
   fail 'Builder distribution checksums must be verified'
-grep -Fq 'union-distribution.tar' "$release_workflow" &&
+grep -Fq 'union-distribution-$server_target.tar' "$release_workflow" &&
   grep -Fq 'test -x "$distribution/bin/unionc"' "$release_workflow" ||
-  fail 'the release must preserve and verify executable modes across artifact transport'
+  fail 'both releases must preserve and verify executable modes across artifact transport'
+grep -Fq 'Remote Agent must not be present in a Union server distribution' "$release_workflow" ||
+  fail 'the Server release must explicitly reject a bundled remote Agent'
 grep -Fq 'bash .github/scripts/create-reproducible-tar.sh' "$release_workflow" ||
   fail 'the Union distribution must use the reproducible archive helper'
-grep -Fq 'sha256sum "$archive_dir.tar.gz" > SHA256SUMS' "$release_workflow" ||
-  fail 'the published archive must have an outer SHA256SUMS'
+for archive in \
+  'union-${VERSION}-full-linux-amd64.tar.gz' \
+  'union-${VERSION}-full-linux-arm64.tar.gz'
+do
+  [ "$(grep -Fc "$archive" "$release_workflow")" -ge 2 ] ||
+    fail "release must checksum and publish $archive"
+done
+grep -Fq '"union-${VERSION}-full-linux-arm64.tar.gz" > SHA256SUMS' "$release_workflow" ||
+  fail 'the two published archives must share one outer SHA256SUMS'
 [ "$(grep -c 'gh release create' "$release_workflow")" -eq 1 ] ||
   fail 'release must create exactly one GitHub Release'
 
-for forbidden in server-linux unionc-agent nFPM nfpm '\.deb' '\.rpm' '\.msi' '\.pkg'; do
+for forbidden in server-linux nFPM nfpm '\.deb' '\.rpm' '\.msi' '\.pkg'; do
   if grep -Eiq "$forbidden" "$release_workflow"; then
     fail "release must not publish a standalone Server, worker, or companion artifact: $forbidden"
   fi

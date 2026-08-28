@@ -288,6 +288,8 @@ struct StoredReleaseDistribution {
     name: String,
     version: String,
     revision: String,
+    platform: String,
+    architecture: String,
     executable: String,
     web_shell: String,
 }
@@ -334,6 +336,10 @@ impl ReleaseInventory {
                 env!("CARGO_PKG_VERSION")
             );
         }
+        validate_release_platform(
+            &stored.distribution.platform,
+            &stored.distribution.architecture,
+        )?;
         validate_release_name(&stored.distribution.name)?;
         validate_revision(&stored.distribution.revision)?;
         validate_release_relative_path(&stored.distribution.executable)?;
@@ -552,6 +558,23 @@ fn validate_release_name(value: &str) -> anyhow::Result<()> {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
     {
         bail!("invalid Builder release name");
+    }
+    Ok(())
+}
+
+fn validate_release_platform(platform: &str, architecture: &str) -> anyhow::Result<()> {
+    let expected_architecture = match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        other => bail!("unsupported Union Core architecture: {other}"),
+    };
+    if std::env::consts::OS != "linux" {
+        bail!("unsupported Union Core platform: {}", std::env::consts::OS);
+    }
+    if platform != "linux" || architecture != expected_architecture {
+        bail!(
+            "Builder release target mismatch: release={platform}/{architecture}, core=linux/{expected_architecture}"
+        );
     }
     Ok(())
 }
@@ -981,6 +1004,12 @@ mod tests {
                 "name": "unionc-test",
                 "version": env!("CARGO_PKG_VERSION"),
                 "revision": DISTRIBUTION_REVISION,
+                "platform": "linux",
+                "architecture": match std::env::consts::ARCH {
+                    "x86_64" => "amd64",
+                    "aarch64" => "arm64",
+                    other => panic!("unsupported test architecture: {other}"),
+                },
                 "executable": "bin/unionc",
                 "web_shell": "share/union/web"
             },
@@ -1123,6 +1152,28 @@ mod tests {
                 .as_deref(),
             Some(MODULE_REVISION)
         );
+    }
+
+    #[test]
+    fn production_release_rejects_a_different_platform_or_architecture() {
+        for (field, value) in [("platform", "windows"), ("architecture", "mismatched")] {
+            let temporary = tempfile::tempdir().unwrap();
+            let release = temporary.path().join("release");
+            write_production_release(&release, MODULE_REVISION);
+            let path = release.join("union-release.json");
+            let mut manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            manifest["distribution"][field] = value.into();
+            std::fs::write(
+                path,
+                format!("{}\n", serde_json::to_string_pretty(&manifest).unwrap()),
+            )
+            .unwrap();
+            write_release_checksums(&release);
+
+            let error = ReleaseInventory::load(&release).unwrap_err().to_string();
+            assert!(error.contains("release target mismatch"), "{error}");
+        }
     }
 
     #[test]

@@ -18,6 +18,16 @@
   revision 并纳入 worker，Runtime 继续监管它；Agent 则由 Host 仓库产出 companion artifact、在
   远端独立安装，不属于 Union 服务器发行或 Core 私有 worker。
 
+### 发行与平台
+
+- Core 与服务器发行平台收敛为 Linux amd64、Linux arm64；其他 OS/CPU 架构在编译边界拒绝，CI
+  分别在固定版本的原生 GitHub Linux AMD64/ARM64 runner 上执行 Core 检查和测试。
+- 正式 Release 分别生成 `union-0.5.0-full-linux-amd64.tar.gz` 与
+  `union-0.5.0-full-linux-arm64.tar.gz`。两份完整包都要求精确五个 worker、不含 Agent、保留所有
+  可执行位、通过内部摘要验证，并由一个外层 `SHA256SUMS` 覆盖。
+- Builder schema v2 的 distribution 元数据新增必填 `platform=linux` 和
+  `architecture=amd64|arm64`；Release 门禁和 Core 激活均拒绝与目标包/当前进程架构不一致的清单。
+
 ### Web 与管理
 
 - Web 改为无业务内置页面的 Shell + Dynamic Module Loading；模块 ESM 通过

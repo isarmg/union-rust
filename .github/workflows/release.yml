@@ -53,8 +53,12 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   build-union:
-    name: build official full distribution
+    name: build official full distribution (${{ matrix.server_target }})
     needs: [verify-release-ref, full-ci]
+    strategy:
+      fail-fast: false
+      matrix:
+        server_target: [linux-amd64, linux-arm64]
     permissions:
       contents: read
     # Builder v2 owns schema-v2 composition.
@@ -63,13 +67,14 @@ jobs:
     with:
       # Select Builder's versioned official graph instead of duplicating it here.
       profile: full
-      artifact-name: union-distribution
+      server-target: ${{ matrix.server_target }}
+      artifact-name-prefix: union-distribution
       builder-revision: 9e965516d87d700850e747301363470ed8ae403e
       materialize-caller-source: true
       caller-revision: ${{ github.sha }}
 
   release:
-    name: publish one Union distribution
+    name: publish two Linux Union distributions
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build-union
     runs-on: ubuntu-24.04
@@ -80,123 +85,158 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - name: Download Linux amd64 Builder distribution
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: union-distribution
-          path: dist/builder-artifact
-      - name: Extract the mode-preserving Builder payload
+          name: union-distribution-linux-amd64
+          path: dist/builder-artifacts/linux-amd64
+      - name: Download Linux arm64 Builder distribution
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: union-distribution-linux-arm64
+          path: dist/builder-artifacts/linux-arm64
+      - name: Extract the two mode-preserving Builder payloads
         shell: bash
         run: |
           set -euo pipefail
-          archive=dist/builder-artifact/union-distribution.tar
-          test -f "$archive"
-          test ! -L "$archive"
-          tar -tf "$archive" | while IFS= read -r entry; do
-            case "$entry" in
-              union-distribution|union-distribution/*) ;;
-              *) echo "unsafe Builder archive entry: $entry" >&2; exit 1 ;;
-            esac
-            case "/$entry/" in
-              */../*) echo "parent traversal in Builder archive: $entry" >&2; exit 1 ;;
-            esac
+          for server_target in linux-amd64 linux-arm64; do
+            artifact="dist/builder-artifacts/$server_target"
+            archive="$artifact/union-distribution-$server_target.tar"
+            destination="dist/extracted/$server_target"
+            test -f "$archive"
+            test ! -L "$archive"
+            tar -tf "$archive" | while IFS= read -r entry; do
+              case "$entry" in
+                union-distribution|union-distribution/*) ;;
+                *) echo "unsafe Builder archive entry: $entry" >&2; exit 1 ;;
+              esac
+              case "/$entry/" in
+                */../*) echo "parent traversal in Builder archive: $entry" >&2; exit 1 ;;
+              esac
+            done
+            mkdir -p "$destination"
+            tar --extract --file "$archive" --directory "$destination" --no-same-owner
           done
-          tar --extract --file "$archive" --directory dist --no-same-owner
-      - name: Validate manifest, version, and distribution checksums
+      - name: Validate both manifests, architectures, inventories, modes, and checksums
         id: release_metadata
         shell: bash
         run: |
           set -euo pipefail
-          distribution=dist/union-distribution
-          manifest="$distribution/union-release.json"
-          test -f "$manifest"
-          test -f "$distribution/SHA256SUMS"
-          test -x "$distribution/bin/unionc"
-          if find "$distribution" ! -type f ! -type d -print -quit | grep -q .; then
-            echo "Builder distribution contains a symlink or special file" >&2
-            exit 1
-          fi
-          find "$distribution" -type f ! -name SHA256SUMS -printf '%P\n' \
-            | LC_ALL=C sort > "$RUNNER_TEMP/actual-files"
-          sed 's/^[0-9a-f]\{64\}  //' "$distribution/SHA256SUMS" \
-            | LC_ALL=C sort > "$RUNNER_TEMP/checksummed-files"
-          cmp "$RUNNER_TEMP/actual-files" "$RUNNER_TEMP/checksummed-files"
-
           version="${GITHUB_REF_NAME#v}"
-          manifest_version="$(jq -er '.distribution.version' "$manifest")"
-          manifest_name="$(jq -er '.distribution.name' "$manifest")"
-          manifest_revision="$(jq -er '.distribution.revision' "$manifest")"
           release_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
-          if [[ "$manifest_name" != "unionc" ]]; then
-            echo "Expected Union distribution name unionc, found $manifest_name" >&2
-            exit 1
-          fi
-          if [[ "$manifest_version" != "$version" ]]; then
-            echo "Tag version $version does not match union-release.json version $manifest_version" >&2
-            exit 1
-          fi
-          if [[ "$manifest_revision" != "$release_commit" ]]; then
-            echo "Manifest revision $manifest_revision does not match tag commit $release_commit" >&2
-            exit 1
-          fi
-          jq -e '
-            .schema_version == 2 and
-            ([.modules[].id] | sort) ==
-              ["dufs", "host-monitoring", "photo-backup", "sentinel-monitor", "sunshine"]
-          ' "$manifest" >/dev/null
-          jq -er '.modules[] | [.id, .package, .manifest] | @tsv' "$manifest" |
-            while IFS=$'\t' read -r module_id package module_manifest_path; do
-            expected_package="modules/$module_id"
-            expected_manifest="$expected_package/manifest.json"
-            if [[ "$package" != "$expected_package" || "$module_manifest_path" != "$expected_manifest" ]]; then
-              echo "Invalid package/manifest location for module $module_id" >&2
-              exit 1
-            fi
-
-            module_manifest="$distribution/$module_manifest_path"
-            test -f "$module_manifest"
-            manifest_module_id="$(jq -er '.id' "$module_manifest")"
-            if [[ "$manifest_module_id" != "$module_id" ]]; then
-              echo "Module manifest identity $manifest_module_id does not match $module_id" >&2
-              exit 1
-            fi
-            executable="$(jq -er '
-              if .execution.mode == "process" and
-                 (.execution.executable | type == "string" and length > 0)
-              then .execution.executable
-              else error("module execution must be a process with an executable")
-              end
-            ' "$module_manifest")"
-            case "$executable" in
-              /*|..|../*|*/../*|*/..)
-                echo "Unsafe executable path for module $module_id: $executable" >&2
-                exit 1
-                ;;
+          for server_target in linux-amd64 linux-arm64; do
+            case "$server_target" in
+              linux-amd64) expected_architecture=amd64 ;;
+              linux-arm64) expected_architecture=arm64 ;;
+              *) echo "unsupported server target: $server_target" >&2; exit 1 ;;
             esac
-            executable_path="$distribution/$package/$executable"
-            test -f "$executable_path"
-            test -x "$executable_path"
+            distribution="dist/extracted/$server_target/union-distribution"
+            manifest="$distribution/union-release.json"
+            test -f "$manifest"
+            test -f "$distribution/SHA256SUMS"
+            test -x "$distribution/bin/unionc"
+            if find "$distribution" ! -type f ! -type d -print -quit | grep -q .; then
+              echo "Builder distribution contains a symlink or special file: $server_target" >&2
+              exit 1
+            fi
+            if find "$distribution" -type f \
+              \( -name unionc-agent -o -name 'unionc-agent.*' \) -print -quit | grep -q .; then
+              echo "Remote Agent must not be present in a Union server distribution" >&2
+              exit 1
+            fi
+            find "$distribution" -type f ! -name SHA256SUMS -printf '%P\n' \
+              | LC_ALL=C sort > "$RUNNER_TEMP/actual-files-$server_target"
+            sed 's/^[0-9a-f]\{64\}  //' "$distribution/SHA256SUMS" \
+              | LC_ALL=C sort > "$RUNNER_TEMP/checksummed-files-$server_target"
+            cmp "$RUNNER_TEMP/actual-files-$server_target" \
+              "$RUNNER_TEMP/checksummed-files-$server_target"
+
+            manifest_version="$(jq -er '.distribution.version' "$manifest")"
+            manifest_name="$(jq -er '.distribution.name' "$manifest")"
+            manifest_revision="$(jq -er '.distribution.revision' "$manifest")"
+            manifest_platform="$(jq -er '.distribution.platform' "$manifest")"
+            manifest_architecture="$(jq -er '.distribution.architecture' "$manifest")"
+            if [[ "$manifest_name" != "unionc" ]]; then
+              echo "Expected Union distribution name unionc, found $manifest_name" >&2
+              exit 1
+            fi
+            if [[ "$manifest_version" != "$version" ]]; then
+              echo "Tag version $version does not match union-release.json version $manifest_version" >&2
+              exit 1
+            fi
+            if [[ "$manifest_revision" != "$release_commit" ]]; then
+              echo "Manifest revision $manifest_revision does not match tag commit $release_commit" >&2
+              exit 1
+            fi
+            if [[ "$manifest_platform" != linux || "$manifest_architecture" != "$expected_architecture" ]]; then
+              echo "Manifest target $manifest_platform/$manifest_architecture does not match $server_target" >&2
+              exit 1
+            fi
+            jq -e '
+              .schema_version == 2 and
+              ([.modules[].id] | sort) ==
+                ["dufs", "host-monitoring", "photo-backup", "sentinel-monitor", "sunshine"]
+            ' "$manifest" >/dev/null
+            jq -er '.modules[] | [.id, .package, .manifest] | @tsv' "$manifest" |
+              while IFS=$'\t' read -r module_id package module_manifest_path; do
+              expected_package="modules/$module_id"
+              expected_manifest="$expected_package/manifest.json"
+              if [[ "$package" != "$expected_package" || "$module_manifest_path" != "$expected_manifest" ]]; then
+                echo "Invalid package/manifest location for module $module_id" >&2
+                exit 1
+              fi
+
+              module_manifest="$distribution/$module_manifest_path"
+              test -f "$module_manifest"
+              manifest_module_id="$(jq -er '.id' "$module_manifest")"
+              if [[ "$manifest_module_id" != "$module_id" ]]; then
+                echo "Module manifest identity $manifest_module_id does not match $module_id" >&2
+                exit 1
+              fi
+              executable="$(jq -er '
+                if .execution.mode == "process" and
+                   (.execution.executable | type == "string" and length > 0)
+                then .execution.executable
+                else error("module execution must be a process with an executable")
+                end
+              ' "$module_manifest")"
+              case "$executable" in
+                /*|..|../*|*/../*|*/..)
+                  echo "Unsafe executable path for module $module_id: $executable" >&2
+                  exit 1
+                  ;;
+              esac
+              executable_path="$distribution/$package/$executable"
+              test -f "$executable_path"
+              test -x "$executable_path"
+            done
+            (
+              cd "$distribution"
+              sha256sum --check SHA256SUMS
+            )
           done
-          (
-            cd "$distribution"
-            sha256sum --check SHA256SUMS
-          )
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - name: Create reproducible Union archive and outer checksum
+      - name: Create two reproducible Union archives and one outer checksum manifest
         shell: bash
         env:
           VERSION: ${{ steps.release_metadata.outputs.version }}
         run: |
           set -euo pipefail
-          archive_dir="union-${VERSION}-full-linux-x86_64"
-          mv dist/union-distribution "dist/$archive_dir"
           source_date_epoch="$(git show -s --format=%ct "${GITHUB_SHA}^{commit}")"
-          bash .github/scripts/create-reproducible-tar.sh \
-            "dist/$archive_dir" \
-            "dist/$archive_dir.tar.gz" \
-            "$source_date_epoch"
+          for server_target in linux-amd64 linux-arm64; do
+            archive_dir="union-${VERSION}-full-${server_target}"
+            mv "dist/extracted/$server_target/union-distribution" "dist/$archive_dir"
+            bash .github/scripts/create-reproducible-tar.sh \
+              "dist/$archive_dir" \
+              "dist/$archive_dir.tar.gz" \
+              "$source_date_epoch"
+          done
           (
             cd dist
-            sha256sum "$archive_dir.tar.gz" > SHA256SUMS
+            sha256sum \
+              "union-${VERSION}-full-linux-amd64.tar.gz" \
+              "union-${VERSION}-full-linux-arm64.tar.gz" > SHA256SUMS
+            sha256sum --check SHA256SUMS
           )
       - name: Create GitHub Release
         shell: bash
@@ -209,9 +249,9 @@ jobs:
             This is a formal architecture/build milestone Release. It is **not production-ready** and does not approve production deployment. Production promotion still requires real database/filesystem migration, runtime gateway/media checks, service upgrade, and service/data rollback evidence.
         run: |
           set -euo pipefail
-          archive="dist/union-${VERSION}-full-linux-x86_64.tar.gz"
           gh release create "$GITHUB_REF_NAME" \
-            "$archive" \
+            "dist/union-${VERSION}-full-linux-amd64.tar.gz" \
+            "dist/union-${VERSION}-full-linux-arm64.tar.gz" \
             dist/SHA256SUMS \
             --verify-tag \
             --title "Union ${VERSION}" \

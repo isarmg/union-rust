@@ -63,6 +63,23 @@ client。启停模块不需要重建 Web Console，单模块加载/渲染失败�
 正式 `full` 服务器发行包含 Host worker，不包含需要在目标主机独立安装的 Agent；Agent 是 Host
 仓库产出的 companion artifact，不是 Union 公网服务，也不属于 Core 的私有 worker 进程树。
 
+## 支持平台与发行
+
+Union Core 和完整服务器发行只支持 Linux `amd64`（Rust `x86_64`）与 Linux `arm64`（Rust
+`aarch64`）。CI 在 GitHub 官方固定版本的原生 AMD64、ARM64 runner 上分别执行 Core Clippy 和
+测试；其他操作系统或 CPU 架构会在 Core 编译边界直接失败。这个限制不适用于 Host 仓库单独交付
+的远端 Agent。
+
+正式标签只发布两个完整 `full` 服务器包：
+
+- `union-<version>-full-linux-amd64.tar.gz`
+- `union-<version>-full-linux-arm64.tar.gz`
+
+两份包各自包含 Core、Web Shell 和精确五个私有 worker，不含 Agent，并共同由 Release 根目录的
+`SHA256SUMS` 覆盖。包内 `union-release.json` 必须声明 `platform=linux` 及匹配的
+`architecture=amd64|arm64`；Core 启动时再次校验清单目标与自身架构，不能跨架构误用发行包。
+这些制品仍是架构/构建里程碑，不代表已经完成生产环境迁移、升级、回滚和运行验收。
+
 ## 数据边界
 
 Core 使用独立控制面 SQLite，只保存平台状态，不承载模块业务表。四个 PostgreSQL 模块各拥有专用
@@ -89,11 +106,13 @@ Monitoring 纳入发行由 Builder 决定，是否运行由 Core 在运行期决
 校验 Manifest/摘要，再组装 `minimal`、`storage`、`monitoring` 或 `full` 发行集合：
 
 ```bash
-union-builder check --config profiles/full.toml
-union-builder plan --config profiles/full.toml
-union-builder build --config profiles/full.toml --cargo-profile release
-union-builder verify --release dist/full
+union-builder check --config profiles/full.toml --server-target linux-amd64
+union-builder plan --config profiles/full.toml --server-target linux-amd64
+union-builder build --config profiles/full.toml --cargo-profile release --server-target linux-amd64
+union-builder verify --release dist/full --server-target linux-amd64
 ```
+
+构建 ARM64 时将四处目标统一替换为 `linux-arm64`；同一发行目录不能混用两个架构。
 
 本仓库开发验证：
 

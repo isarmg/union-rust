@@ -12,6 +12,8 @@ Union 必须作为唯一服务端产品交付，并满足：
 5. 管理员可在运行期配置、启用和停用发行内模块，但不能安装、升级、卸载或上传模块代码；
 6. 模块只绑定 loopback，并验证每进程 `gateway-v1` protocol/audience/token/prefix；
 7. 每个模块拥有独立数据 owner、migration、存储目录和备份恢复责任，不在线双写或跨模块访问。
+8. Core/服务器发行只支持 Linux amd64 与 Linux arm64；两个目标分别构建完整 `full` 包，包内不含
+   远端 Agent，且发行清单目标必须与运行 Core 的平台和架构一致。
 
 ## 模块能力
 
