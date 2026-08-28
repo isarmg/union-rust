@@ -8,7 +8,7 @@ UnionC-Agent-<version>-x64.msi
 
 终端用户可以双击安装，并在 Windows“设置 → 应用 → 已安装的应用”中卸载。安装、同版本
 重装、服务注册和卸载均由 Windows Installer 与原生维护程序完成，**不要求系统安装或启用
-PowerShell**。0.4.0 不提供跨版本升级或状态迁移；检测到同一 UpgradeCode 的其他版本时会
+PowerShell**。0.5.0 不提供跨版本升级或状态迁移；检测到同一 UpgradeCode 的其他版本时会
 fail closed，必须用与已安装产品同版本的可信 MSI 执行同一次 `/x ... PURGE=1` 永久清理，
 再安装、创建新实例并配对。
 
@@ -31,7 +31,7 @@ fail closed，必须用与已安装产品同版本的可信 MSI 执行同一次 
 - 开始菜单：`UnionC Agent`
 
 全新安装由原生维护程序在受保护状态根中写入一份不含凭据的最小默认
-`config.json`；它只用于让尚未配对的服务健康常驻，随后由 `pair` 原子更新。同一 0.4.0
+`config.json`；它只用于让尚未配对的服务健康常驻，随后由 `pair` 原子更新。同一 0.5.0
 包的重装和普通卸载都不覆盖已有配置。
 
 Agent 是原生 Windows Service，处理 SCM 的 Stop 和 Shutdown 控制。安装器把 service SID
@@ -66,7 +66,7 @@ Agent 是原生 Windows Service，处理 SCM 的 Stop 和 Shutdown 控制。安�
 交互安装可直接双击 MSI。无人值守安装使用管理员终端：
 
 ```cmd
-msiexec.exe /i UnionC-Agent-0.4.0-x64.msi /qn /norestart /l*v "%TEMP%\unionc-agent-install.log"
+msiexec.exe /i UnionC-Agent-0.5.0-x64.msi /qn /norestart /l*v "%TEMP%\unionc-agent-install.log"
 ```
 
 交互双击全新安装成功、且没有映像等待重启替换时，MSI 会在当前用户会话中启动托盘；
@@ -86,14 +86,14 @@ sc.exe start UnionCAgent
 ```
 
 WiX 只用 `UpgradeVersion OnlyDetect=yes` 检测同一产品族的其他版本，不编排
-`RemoveExistingProducts`，也没有 major-upgrade rollback 或故障注入路径。0.4.0 的 repair/
+`RemoveExistingProducts`，也没有 major-upgrade rollback 或故障注入路径。0.5.0 的 repair/
 reinstall 仍使用相同 ProductCode 和当前事务快照。repair 和卸载会在 Windows Installer
 事务开始后、`StopServices`、`RemoveShortcuts` 和 `RemoveFiles` 之前，向托盘发送 `WM_CLOSE`
 并等待其优雅退出；不强杀跨会话进程，文件仍被占用时走 Windows Installer 标准重启机制。
 只有 fresh interactive install 会在事务提交后通过 WiX unelevated ShellExecute helper 启动
 托盘；repair、卸载、静默/SYSTEM 部署不启动。
 
-安装前原生维护程序只检查当前 0.4.0 SCM 服务、固定程序路径和当前精确 ACL。任何同名但
+安装前原生维护程序只检查当前 0.5.0 SCM 服务、固定程序路径和当前精确 ACL。任何同名但
 ImagePath、参数、账户或类型不同的服务都会使安装 fail closed；计划任务和旧脚本部署不会被
 识别、停止、接管、删除或迁移。
 
@@ -103,7 +103,7 @@ ImagePath、参数、账户或类型不同的服务都会使安装 fail closed�
 `config.json` 收紧 ACL 后交给 LocalService 使用，原生维护程序只接受以下状态之一：
 
 - 本轮开始时目录不存在；
-- 存在当前 0.4.0 创建的、版本绑定的 managed-state marker，且其内容、owner、精确 DACL、
+- 存在当前 0.5.0 创建的、版本绑定的 managed-state marker，且其内容、owner、精确 DACL、
   文件类型、link count 和状态根目录全部通过联合检查。这只用于普通卸载后的同版本重装。
 
 状态根若是普通文件、junction、符号链接或 dangling reparse point，或者状态树含特殊文件、
@@ -123,20 +123,20 @@ service-only 三 ACE 程序 ACL 均被拒绝，不会原地改写为当前格式
 凭据、配对进度及未发送 spool：
 
 ```cmd
-msiexec.exe /x UnionC-Agent-0.4.0-x64.msi /qn /norestart /l*v "%TEMP%\unionc-agent-uninstall.log"
+msiexec.exe /x UnionC-Agent-0.5.0-x64.msi /qn /norestart /l*v "%TEMP%\unionc-agent-uninstall.log"
 ```
 
 普通卸载会递归移除可由管理员重建的 service SID ACE，只留下 SYSTEM、Administrators 和
-OWNER RIGHTS 安全边界。同一 0.4.0 包重装时通过版本绑定 marker 复用身份；其他版本不能接管。
+OWNER RIGHTS 安全边界。同一 0.5.0 包重装时通过版本绑定 marker 复用身份；其他版本不能接管。
 
 永久退役必须先在 UnionC Web 管理台永久删除实例，再显式传入唯一允许的 `PURGE=1`：
 
 ```cmd
-msiexec.exe /x UnionC-Agent-0.4.0-x64.msi PURGE=1 /qn /norestart /l*v "%TEMP%\unionc-agent-purge.log"
+msiexec.exe /x UnionC-Agent-0.5.0-x64.msi PURGE=1 /qn /norestart /l*v "%TEMP%\unionc-agent-purge.log"
 ```
 
 Purge 先完整扫描状态树并拒绝所有 reparse point，然后在同一卷原子移动到受保护的固定
-隔离名称 `%ProgramData%\UnionC Agent.purge-quarantine-0.4.0`。在事务进入 commit 之前，任一
+隔离名称 `%ProgramData%\UnionC Agent.purge-quarantine-0.5.0`。在事务进入 commit 之前，任一
 失败都会回滚该 rename 并恢复完整状态；commit 阶段的递归删除则是不可逆操作。为避免把已
 卸载的产品回滚到部分删除的状态树，commit 删除错误不会再触发 MSI 产品回滚，因而
 `msiexec` 成功只证明产品已卸载，**不能单独证明本地凭据已经清空**。
@@ -153,7 +153,7 @@ ProgramData 中的身份、通信凭据、配对状态和 spool。
 自动化在 purge 后必须同时确认原状态目录和上述隔离目录均不存在。若受占用、磁盘或安全
 软件影响而留下受保护的隔离目录，应保留 MSI 日志，先重启释放占用，再由管理员只针对这个
 固定路径核实并清理；在隔离目录消失前不得把退役标记为完成。若已做过普通卸载而后决定永久
-清理，可先重新安装可信的 0.4.0 MSI（版本 marker 与精确 ACL 联合验证后接管），再执行带
+清理，可先重新安装可信的 0.5.0 MSI（版本 marker 与精确 ACL 联合验证后接管），再执行带
 `PURGE=1` 的卸载。
 
 ## 构建与签名
@@ -163,7 +163,7 @@ WiX 工程位于 `agent/packaging/windows/wix/`，固定使用 WiX Toolset 4.0.6
 
 ```cmd
 cargo build --release -p unionc-agent --target x86_64-pc-windows-msvc --bin unionc-agent --bin unionc-agent-maintenance --bin unionc-agent-tray
-agent\packaging\windows\wix\build-msi.cmd 0.4.0 ^
+agent\packaging\windows\wix\build-msi.cmd 0.5.0 ^
   target\x86_64-pc-windows-msvc\release\unionc-agent.exe ^
   target\x86_64-pc-windows-msvc\release\unionc-agent-maintenance.exe ^
   target\x86_64-pc-windows-msvc\release\unionc-agent-tray.exe
@@ -173,7 +173,7 @@ agent\packaging\windows\wix\build-msi.cmd 0.4.0 ^
 MSI；四者必须具有同一有效签名者。`unionc-agent.exe` 必须是 Console PE，维护程序与托盘必须
 是 Windows GUI PE，避免闪出命令窗口。WiX 构建不得关闭 ICE validation；tag 发布缺少证书
 时必须失败，不能降级成未签名包。构建入口和 WiX 工程都会执行 Agent 的 `--version`，并要求
-其输出精确等于 `unionc-agent 0.4.0`；不能用其他版本号包装当前二进制。
+其输出精确等于 `unionc-agent 0.5.0`；不能用其他版本号包装当前二进制。
 
 ## 验证
 
@@ -190,14 +190,14 @@ PE 校验默认读取仓库的 `target\x86_64-pc-windows-msvc\release`，也可�
 
 ```powershell
 .\agent\packaging\windows\tests\Test-MsiLifecycle.ps1 `
-  -ProductVersion 0.4.0 -ArtifactDirectory .\dist
+  -ProductVersion 0.5.0 -ArtifactDirectory .\dist
 ```
 
 脚本会真实安装、卸载并 purge 软件；它会先拒绝不干净的机器，不能在生产或需要保留
 UnionC Agent 状态的主机上执行。
 
 发布前还必须在一次性、干净的 x64 Windows VM 中执行：恶意预置状态拒绝、同名 service
-碰撞拒绝、其他 UpgradeCode 版本 fail closed、fresh install、同一 0.4.0 repair/reinstall、浏览器
+碰撞拒绝、其他 UpgradeCode 版本 fail closed、fresh install、同一 0.5.0 repair/reinstall、浏览器
 配对、托盘单实例/本地 capability URL、登录自启动、运行中托盘的优雅卸载、fresh-install
 rollback、普通卸载/当前 marker 重装、显式 purge，以及 program/state root junction 防护。
 测试需同时核对 SCM 配置、service SID 类型、托盘不是

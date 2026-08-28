@@ -57,14 +57,14 @@ jobs:
     needs: [verify-release-ref, full-ci]
     permissions:
       contents: read
-    # Builder v2 owns schema-v2 composition. Replace this single sentinel with the reviewed,
-    # immutable Builder v2 commit before merging or publishing a release.
-    uses: isarmg/union-builder/.github/workflows/build-union.yml@UNION_BUILDER_V2_COMMIT_SHA_TO_PIN
+    # Builder v2 owns schema-v2 composition.
+    # The reusable workflow and its checkout are pinned to the same immutable reviewed commit.
+    uses: isarmg/union-builder/.github/workflows/build-union.yml@59cc5421bc844b0aadf11f52379d9e3e057abeda
     with:
       # Select Builder's versioned official graph instead of duplicating it here.
       profile: full
       artifact-name: union-distribution
-      builder-revision: UNION_BUILDER_V2_COMMIT_SHA_TO_PIN
+      builder-revision: 59cc5421bc844b0aadf11f52379d9e3e057abeda
       materialize-caller-source: true
       caller-revision: ${{ github.sha }}
 

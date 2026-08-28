@@ -84,24 +84,21 @@ mod tests {
             .is_err()
         );
 
-        assert!(
-            serde_json::from_str::<PairEvent>(
-                r#"{"event":"pairing_waiting","version":"0.4.0","request_id":"request","generation":"generation","activation_url":"https://server.example/modules/host-monitoring/activate/request","pairing_endpoint":"https://server.example/api/modules/host-monitoring/agent/v2/pairing-requests","expires_at":"2026-08-20T00:00:00Z","poll_interval":2}"#
-            )
-            .is_ok()
+        let waiting_event = format!(
+            r#"{{"event":"pairing_waiting","version":"{}","request_id":"request","generation":"generation","activation_url":"https://server.example/modules/host-monitoring/activate/request","pairing_endpoint":"https://server.example/api/modules/host-monitoring/agent/v2/pairing-requests","expires_at":"2026-08-20T00:00:00Z","poll_interval":2}}"#,
+            env!("CARGO_PKG_VERSION")
         );
-        assert!(
-            serde_json::from_str::<PairEvent>(
-                r#"{"event":"pairing_waiting","version":"0.4.0","request_id":"request","generation":"generation","activation_url":"https://server.example/modules/host-monitoring/activate/request","pairing_endpoint":"https://server.example/api/modules/host-monitoring/agent/v2/pairing-requests","poll_interval":2}"#
-            )
-            .is_err()
+        assert!(serde_json::from_str::<PairEvent>(&waiting_event).is_ok());
+        let waiting_event_without_expiry = format!(
+            r#"{{"event":"pairing_waiting","version":"{}","request_id":"request","generation":"generation","activation_url":"https://server.example/modules/host-monitoring/activate/request","pairing_endpoint":"https://server.example/api/modules/host-monitoring/agent/v2/pairing-requests","poll_interval":2}}"#,
+            env!("CARGO_PKG_VERSION")
         );
-        assert!(
-            serde_json::from_str::<PairEvent>(
-                r#"{"event":"paired","version":"0.4.0","request_id":"request","instance_id":"instance","endpoint":"https://server.example/api/modules/host-monitoring/agent/v1/report","legacy":true}"#
-            )
-            .is_err()
+        assert!(serde_json::from_str::<PairEvent>(&waiting_event_without_expiry).is_err());
+        let paired_event_with_legacy_field = format!(
+            r#"{{"event":"paired","version":"{}","request_id":"request","instance_id":"instance","endpoint":"https://server.example/api/modules/host-monitoring/agent/v1/report","legacy":true}}"#,
+            env!("CARGO_PKG_VERSION")
         );
+        assert!(serde_json::from_str::<PairEvent>(&paired_event_with_legacy_field).is_err());
         assert!(
             serde_json::from_str::<PairEvent>(r#"{"event":"pairing_cancelled","version":1}"#)
                 .is_err()
@@ -111,21 +108,22 @@ mod tests {
                 .is_err()
         );
 
-        assert!(
-            serde_json::from_str::<ServerHealthResponse>(
-                r#"{"status":"ok","version":"0.4.0","uptime_seconds":1}"#
-            )
-            .is_ok()
+        let health_response = format!(
+            r#"{{"status":"ok","version":"{}","uptime_seconds":1}}"#,
+            env!("CARGO_PKG_VERSION")
         );
+        assert!(serde_json::from_str::<ServerHealthResponse>(&health_response).is_ok());
         assert!(
             serde_json::from_str::<ServerHealthResponse>(r#"{"status":"ok","uptime_seconds":1}"#)
                 .is_err()
         );
+        let health_response_with_legacy_field = format!(
+            r#"{{"status":"ok","version":"{}","uptime_seconds":1,"legacy":true}}"#,
+            env!("CARGO_PKG_VERSION")
+        );
         assert!(
-            serde_json::from_str::<ServerHealthResponse>(
-                r#"{"status":"ok","version":"0.4.0","uptime_seconds":1,"legacy":true}"#
-            )
-            .is_err()
+            serde_json::from_str::<ServerHealthResponse>(&health_response_with_legacy_field)
+                .is_err()
         );
     }
 
