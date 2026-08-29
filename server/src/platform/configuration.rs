@@ -946,10 +946,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn incompatible_persisted_configuration_can_be_replaced_after_upgrade() {
+    async fn invalid_persisted_configuration_is_withheld_until_fully_replaced() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("example.json");
-        let original = br#"{"legacy":"do-not-expose"}"#;
+        let original = br#"{"unknown":"do-not-expose"}"#;
         std::fs::write(&path, original).unwrap();
         #[cfg(unix)]
         {
@@ -973,10 +973,10 @@ mod tests {
             .await
             .unwrap();
 
-        let incompatible = registry.get("example").await.unwrap();
-        assert!(!incompatible.configured);
-        assert_eq!(incompatible.value, None);
-        let error = incompatible.validation_error.unwrap();
+        let invalid = registry.get("example").await.unwrap();
+        assert!(!invalid.configured);
+        assert_eq!(invalid.value, None);
+        let error = invalid.validation_error.unwrap();
         assert!(error.contains("schema v2"));
         assert!(!error.contains("do-not-expose"));
         assert_eq!(std::fs::read(&path).unwrap(), original);

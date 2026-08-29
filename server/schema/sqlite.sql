@@ -8,7 +8,7 @@ CREATE TABLE audit_logs (
     id         INTEGER PRIMARY KEY,
     action     TEXT NOT NULL CHECK (length(action) BETWEEN 1 AND 128),
     target     TEXT NOT NULL CHECK (length(target) BETWEEN 1 AND 128),
-    detail     TEXT,
+    detail     TEXT CHECK (detail IS NULL OR length(detail) <= 512),
     actor      TEXT NOT NULL DEFAULT 'system',
     request_id TEXT,
     created_at INTEGER NOT NULL

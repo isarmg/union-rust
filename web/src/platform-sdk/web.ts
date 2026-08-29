@@ -2,9 +2,9 @@ import type * as ReactRuntime from "react";
 import type { ComponentType } from "react";
 
 /** Versions implemented by this Web Shell. Manifest ranges are checked against these values. */
-export const CORE_VERSION = "0.5.0";
+export const CORE_VERSION = "0.6.0";
 export const PLATFORM_API_VERSION = "1.0.0";
-export const PLUGIN_API_VERSION = "1.0.0";
+export const PLUGIN_API_VERSION = "2.0.0";
 
 export interface ModuleRouteLocation {
   pathname: string;

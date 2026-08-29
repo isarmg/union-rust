@@ -51,7 +51,7 @@ export interface ModuleFrontend {
 
 /** Runtime projection returned by GET /api/platform/modules. */
 export interface PlatformModule {
-  manifest_version: 1;
+  manifest_version: 2;
   id: string;
   display_name: string;
   description: string;
@@ -195,7 +195,7 @@ function parsePlatformModule(value: unknown, index: number): PlatformModule {
   if (!isRecord(value)) throw new Error(`catalog item ${index} must be an object`);
   const id = requiredString(value.id, `catalog item ${index}.id`);
   if (!MODULE_ID.test(id)) throw new Error("module id is invalid");
-  if (value.manifest_version !== 1) throw new Error("manifest_version is not supported");
+  if (value.manifest_version !== 2) throw new Error("manifest_version is not supported");
   if (!isRecord(value.compatibility)) throw new Error("compatibility must be an object");
   const permissions = Array.isArray(value.permissions) ? value.permissions.map((item, permissionIndex) => {
     if (!isRecord(item)) throw new Error(`permissions[${permissionIndex}] must be an object`);
@@ -216,7 +216,7 @@ function parsePlatformModule(value: unknown, index: number): PlatformModule {
     }
   }
   return {
-    manifest_version: 1,
+    manifest_version: 2,
     id,
     display_name: requiredString(value.display_name, "display_name"),
     description: requiredString(value.description, "description"),

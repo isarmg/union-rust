@@ -62,7 +62,8 @@ postgresql://union_sunshine_runtime:<URL-encoded-secret>@<db-host>/union_sunshin
 ```
 
 具体 TLS 参数、CA 路径和其他字段以模块 `config/schema.json` 与部署网络为准。不要把 URL 放入
-Core environment、systemd unit 或模块包；配置中心按 Manifest `config_pointer` 只注入目标进程。
+Core environment、systemd unit 或模块包；配置中心只生成当前 Schema 的私有 JSON，并通过标准
+`UNION_PLUGIN_CONFIG` 路径交给目标进程。
 配置 GET 返回的 `***` 不能作为 PUT 值，修改时必须从 secret manager 提供完整新值。
 
 ## 只读验收

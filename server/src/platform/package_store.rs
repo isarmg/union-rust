@@ -1101,7 +1101,7 @@ mod tests {
 
     #[test]
     fn production_package_root_is_fixed_to_the_current_release() {
-        let release = PathBuf::from("/opt/union/releases/0.5.0");
+        let release = PathBuf::from("/opt/union/releases/0.6.0");
         assert_eq!(
             select_bundled_root(
                 true,

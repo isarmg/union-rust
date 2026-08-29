@@ -1522,8 +1522,8 @@ dependencies = [
 
 [[package]]
 name = "sarmg-platform-core"
-version = "0.2.0"
-source = "git+https://github.com/isarmg/sarmg-platform.git?rev=c788db2c349f159ad91df93f494c8ef72747a0d0#c788db2c349f159ad91df93f494c8ef72747a0d0"
+version = "0.3.0"
+source = "git+https://github.com/isarmg/sarmg-platform.git?rev=e7332a13d8ad5a08c7d7115a58a0fa47582c0bef#e7332a13d8ad5a08c7d7115a58a0fa47582c0bef"
 dependencies = [
  "semver",
  "serde",
@@ -1533,8 +1533,8 @@ dependencies = [
 
 [[package]]
 name = "sarmg-platform-events"
-version = "0.2.0"
-source = "git+https://github.com/isarmg/sarmg-platform.git?rev=c788db2c349f159ad91df93f494c8ef72747a0d0#c788db2c349f159ad91df93f494c8ef72747a0d0"
+version = "0.3.0"
+source = "git+https://github.com/isarmg/sarmg-platform.git?rev=e7332a13d8ad5a08c7d7115a58a0fa47582c0bef#e7332a13d8ad5a08c7d7115a58a0fa47582c0bef"
 dependencies = [
  "semver",
  "serde",
@@ -1544,8 +1544,8 @@ dependencies = [
 
 [[package]]
 name = "sarmg-platform-gateway"
-version = "0.2.0"
-source = "git+https://github.com/isarmg/sarmg-platform.git?rev=c788db2c349f159ad91df93f494c8ef72747a0d0#c788db2c349f159ad91df93f494c8ef72747a0d0"
+version = "0.3.0"
+source = "git+https://github.com/isarmg/sarmg-platform.git?rev=e7332a13d8ad5a08c7d7115a58a0fa47582c0bef#e7332a13d8ad5a08c7d7115a58a0fa47582c0bef"
 dependencies = [
  "http",
  "subtle",
@@ -1554,8 +1554,8 @@ dependencies = [
 
 [[package]]
 name = "sarmg-platform-sdk"
-version = "0.2.0"
-source = "git+https://github.com/isarmg/sarmg-platform.git?rev=c788db2c349f159ad91df93f494c8ef72747a0d0#c788db2c349f159ad91df93f494c8ef72747a0d0"
+version = "0.3.0"
+source = "git+https://github.com/isarmg/sarmg-platform.git?rev=e7332a13d8ad5a08c7d7115a58a0fa47582c0bef#e7332a13d8ad5a08c7d7115a58a0fa47582c0bef"
 dependencies = [
  "sarmg-platform-core",
  "sarmg-platform-events",
@@ -2142,7 +2142,7 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 
 [[package]]
 name = "unionc"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aes-gcm",
  "anyhow",

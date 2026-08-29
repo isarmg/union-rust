@@ -31,7 +31,7 @@ use super::{
     tasks::TaskScheduler,
 };
 
-pub const CORE_VERSION: &str = "0.5.0";
+pub const CORE_VERSION: &str = "0.6.0";
 
 pub type PluginFuture<T> = Pin<Box<dyn Future<Output = anyhow::Result<T>> + Send>>;
 pub type PluginResponseFuture = Pin<Box<dyn Future<Output = Response> + Send>>;
@@ -927,28 +927,12 @@ impl PlatformState {
             Execution::Process {
                 executable,
                 args,
-                environment: _,
                 bind,
             } => {
-                let configuration = self
-                    .configuration
-                    .raw_value(&manifest.id)
-                    .await
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "module configuration disappeared while starting {}",
-                            manifest.id
-                        )
-                    })?;
-                let environment =
-                    sarmg_platform_sdk::resolve_environment_bindings(manifest, &configuration)?
-                        .into_iter()
-                        .collect();
                 let process = ManagedProcess::start(
                     &record.package,
                     executable,
                     args,
-                    environment,
                     bind,
                     self.store
                         .configuration_directory()
@@ -1868,7 +1852,6 @@ impl ManagedProcess {
         package: &SelectedPackage,
         executable: &str,
         args: &[String],
-        environment: Vec<(String, String)>,
         bind: &sarmg_platform_core::ProcessBind,
         configuration_path: PathBuf,
     ) -> anyhow::Result<Self> {
@@ -1921,8 +1904,6 @@ impl ManagedProcess {
         let manifest = package.manifest.clone();
         let package_root = package.root.clone();
         let arguments = args.to_vec();
-        let configured_environment = environment;
-        let bind_environment = bind.environment.clone();
         let task_endpoint = endpoint.clone();
         let task = tokio::spawn(async move {
             let mut restarts = 0_u64;
@@ -1935,7 +1916,6 @@ impl ManagedProcess {
                 command
                     .args(&arguments)
                     .env_clear()
-                    .envs(configured_environment.iter().cloned())
                     .env("UNION_PLUGIN_ID", &manifest.id)
                     .env("UNION_PLUGIN_VERSION", &manifest.version)
                     .env(
@@ -1961,9 +1941,6 @@ impl ManagedProcess {
                     .kill_on_drop(true);
                 #[cfg(unix)]
                 command.process_group(0);
-                if let Some(name) = &bind_environment {
-                    command.env(name, address.to_string());
-                }
                 let mut child = match command.spawn() {
                     Ok(child) => child,
                     Err(error) => {
@@ -2254,7 +2231,7 @@ mod tests {
             },
         );
         serde_json::to_string_pretty(&serde_json::json!({
-            "manifest_version": 1,
+            "manifest_version": 2,
             "id": id,
             "display_name": format!("{id} test plugin"),
             "description": "Runtime integration-test plugin",
@@ -2267,7 +2244,7 @@ mod tests {
             "compatibility": {
                 "core": core,
                 "platform_api": "^1.0",
-                "plugin_api": "^1.0"
+                "plugin_api": "^2.0"
             },
             "dependencies": dependency,
             "execution": {
@@ -2449,7 +2426,7 @@ mod tests {
     #[tokio::test]
     async fn periodic_health_degrades_recovers_and_is_cancelled() {
         let plugin_manifest =
-            PluginManifest::parse_json(&manifest("health", None, "^0.5")).unwrap();
+            PluginManifest::parse_json(&manifest("health", None, "^0.6")).unwrap();
         let ready = Arc::new(AtomicBool::new(false));
         let health_calls = Arc::new(AtomicUsize::new(0));
         let plugin: Arc<dyn sarmg_platform_sdk::InProcessPlugin> = Arc::new(FakePlugin {
@@ -2501,7 +2478,7 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let bundled = temporary.path().join("bundled");
         for id in ["wasi", "process", "container", "service"] {
-            write_package(&bundled, id, None, "^0.5");
+            write_package(&bundled, id, None, "^0.6");
         }
         rewrite_execution(
             &bundled,
@@ -2520,7 +2497,6 @@ mod tests {
                 "mode":"process",
                 "executable":"backend/missing-worker",
                 "args":[],
-                "environment":[],
                 "bind":{"host":"127.0.0.1","port":0}
             }),
         );
@@ -2573,8 +2549,8 @@ mod tests {
     async fn runtime_end_to_end_discovers_validates_registers_and_rolls_back_state_changes() {
         let temporary = tempfile::tempdir().unwrap();
         let bundled = temporary.path().join("bundled");
-        write_package(&bundled, "base", None, "^0.5");
-        write_package(&bundled, "child", Some("base"), "^0.5");
+        write_package(&bundled, "base", None, "^0.6");
+        write_package(&bundled, "child", Some("base"), "^0.6");
         let store = PackageStore::new(bundled.clone(), temporary.path().join("state"));
         let runtime = PlatformState::new(store, "admin").unwrap();
         let starts = Arc::new(AtomicUsize::new(0));
@@ -2726,8 +2702,8 @@ mod tests {
     async fn one_enabled_module_failure_does_not_prevent_core_or_siblings_from_starting() {
         let temporary = tempfile::tempdir().unwrap();
         let bundled = temporary.path().join("bundled");
-        write_package(&bundled, "bad", None, "^0.5");
-        write_package(&bundled, "good", None, "^0.5");
+        write_package(&bundled, "bad", None, "^0.6");
+        write_package(&bundled, "good", None, "^0.6");
         rewrite_execution(
             &bundled,
             "bad",
@@ -2735,7 +2711,6 @@ mod tests {
                 "mode":"process",
                 "executable":"backend/missing-worker",
                 "args":[],
-                "environment":[],
                 "bind":{"host":"127.0.0.1","port":0}
             }),
         );

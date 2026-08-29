@@ -11,15 +11,15 @@ import { SettingsView } from "./SettingsView";
 const clients: QueryClient[] = [];
 
 const disabledModule: PlatformModule = {
-  manifest_version: 1,
+  manifest_version: 2,
   id: "example-module",
   display_name: "Example Module",
   description: "Neutral module fixture",
   version: "0.1.0",
   compatibility: {
-    core: ">=0.5.0, <0.6.0",
+    core: ">=0.6.0, <0.7.0",
     platform_api: "^1.0.0",
-    plugin_api: "^1.0.0",
+    plugin_api: "^2.0.0",
   },
   dependencies: [],
   permissions: [{ id: "example-module.read", description: "Read example data" }],

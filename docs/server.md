@@ -53,16 +53,16 @@ Core 的主要部署环境变量：
 
 这些变量不能选择发行模块，也不能改变模块 binary、bind、路由或公共 prefix。模块数据库 URL、
 密钥、存储目录和领域参数由包内 `config/schema.json` 定义，通过 Web“模块管理”或平台配置 API
-保存到 Core 私有状态目录。Runtime 按 Manifest `config_pointer` 只向目标进程传入允许的环境项，
-并另外注入保留的 `UNION_PLUGIN_*`/`UNION_MODULE_*` 上下文。
+保存到 Core 私有状态目录。Runtime 只向目标进程注入保留的 `UNION_PLUGIN_*`/`UNION_MODULE_*`
+上下文，业务配置由 worker 从 `UNION_PLUGIN_CONFIG` 指向的受控 JSON 文件读取。
 
 模块配置是完整 JSON 值。GET 会把 Manifest 声明的 secret 字段显示为 `***`；PUT 不会把该标记
 与旧秘密合并，更新时必须提供所有隐藏字段的完整新值。平台状态目录和文件系统权限是当前静态
 保护边界，文档不把脱敏等同于配置文件静态加密。
 
-若新发行的配置 Schema 拒绝旧值，Core 保留旧文件但不会注入 worker，并通过配置 API 返回有界、
-不含配置值的 `validation_error`；模块保持未配置，管理员可按新 Schema PUT 完整替代值。这样升级
-不会因为旧配置不兼容而失去修复入口。
+配置文件若不符合当前 Schema，Core 保留文件作为诊断证据但不会交给 worker，并通过配置 API
+返回有界、不含配置值的 `validation_error`；模块保持未配置，管理员必须按当前 Schema PUT 完整
+替代值。0.6 不转换旧配置。
 
 Core 对所有 `x-union-resource: storage_tree` 声明执行同目录和父子目录冲突检查，并把实际解析后的
 `UNIONC_DATA_DIR` 与 Plugin Runtime 状态根作为保留树。旧模块目录若覆盖保留根、位于其中或包含
@@ -83,7 +83,7 @@ Core 对所有 `x-union-resource: storage_tree` 声明执行同目录和父子�
 由 Builder 产生并激活新发行。
 
 Runtime 从 Manifest 注册权限、配置 Schema、服务/事件元数据、后端路由和 Web 资源，校验版本、
-依赖及配置后启动进程。五个标准模块均使用 `process` execution；v0.5 Manifest 为它们保留互不
+依赖及配置后启动进程。五个标准模块均使用 `process` execution；v0.6 Manifest 为它们保留互不
 冲突的固定 loopback 端口，以避免选取临时端口与子进程 bind 之间的竞争窗口。端口仍不是公共接口；公网调用永远使用
 `/api/modules/<id>/*`。Manifest 未声明、模块 disabled、启动失败或不健康的路由不可用。
 
@@ -104,13 +104,12 @@ Core 使用独立 SQLite，只保存认证、审计和其他平台状态，不�
 migration；Core 不以另一个 ledger 重复执行同一 SQL。Dufs 的 embedded/SQLite migration 仍由
 Dufs 自己负责。
 
-这些边界保证所有权和运维单元分离，但 v0.5 直接启动的 worker 默认仍与 Core 使用同一 OS UID，
+这些边界保证所有权和运维单元分离，但 v0.6 直接启动的 worker 默认仍与 Core 使用同一 OS UID，
 所以它们是同一受信任发行域，不构成抵抗恶意模块的内核级数据隔离。低信任模块必须先通过受信任
 service/container adapter 获得独立 UID、凭据和文件 ACL，不能直接加入标准 process profile。
 
-从旧版迁移时，先停止旧写入并保存旧 `unionc.db` 的只读快照，再使用各模块的离线 importer 和
-verify 流程。导入后不在线双写；旧域表只能作为核验与回滚证据，不能重新挂到 Core 请求路径。
-源码存在 importer 或测试不代表真实数据迁移已通过。
+v0.6 是不提供数据升级路径的断代发行：Core 与五个模块必须使用全新状态和数据库。旧数据库只能
+由部署者另行归档，当前二进制不包含 importer、verify、rollback 或在线双写入口。
 
 Core 的 `backup`、`restore`、`integrity-check` 只覆盖 Core SQLite，不覆盖四个 PostgreSQL
 database、Dufs SQLite/文件根或 Photo 内容。生产备份必须分别记录每个 owner 的一致性点，恢复时
@@ -166,5 +165,5 @@ readiness。
 ## 非目标
 
 多 Server active-active、在线模块市场、模块独立 systemd/公网入口、跨模块数据库访问、从管理台
-修改 worker 地址、服务端远程执行 Agent 命令，以及承诺任意旧数据库自动升级，都不在 v0.5
+修改 worker 地址、服务端远程执行 Agent 命令，以及承诺任意旧数据库自动升级，都不在 v0.6
 范围内。

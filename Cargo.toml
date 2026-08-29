@@ -8,7 +8,7 @@ members = [
 # 独立验证。正式服务器发行图由 Union Builder 以不可变 revision 组合。
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 authors = ["sarmg <isarmg@163.com>"]
 license = "Apache-2.0"

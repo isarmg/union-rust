@@ -19,15 +19,15 @@ import { moduleRuntimeEnvironment } from "./moduleRuntime";
 
 const platformModules: PlatformModule[] = [
   {
-    manifest_version: 1,
+    manifest_version: 2,
     id: "inventory",
     display_name: "Inventory",
     description: "Neutral inventory fixture",
     version: "0.1.0",
     compatibility: {
-      core: ">=0.5.0, <0.6.0",
+      core: ">=0.6.0, <0.7.0",
       platform_api: "^1.0.0",
-      plugin_api: "^1.0.0",
+      plugin_api: "^2.0.0",
     },
     dependencies: [],
     permissions: [{ id: "inventory.items.read", description: "Read inventory" }],
@@ -61,15 +61,15 @@ const platformModules: PlatformModule[] = [
     },
   },
   {
-    manifest_version: 1,
+    manifest_version: 2,
     id: "reports",
     display_name: "Reports",
     description: "Neutral reports fixture",
     version: "0.1.0",
     compatibility: {
-      core: ">=0.5.0, <0.6.0",
+      core: ">=0.6.0, <0.7.0",
       platform_api: "^1.0.0",
-      plugin_api: "^1.0.0",
+      plugin_api: "^2.0.0",
     },
     dependencies: [],
     permissions: [{ id: "reports.read", description: "Read reports" }],
@@ -99,12 +99,12 @@ const platformModules: PlatformModule[] = [
 ];
 
 const invalidRemoteModule = {
-  manifest_version: 1,
+  manifest_version: 2,
   id: "unsafe-entry",
   display_name: "Unsafe entry",
   description: "Invalid cross-origin fixture",
   version: "0.1.0",
-  compatibility: { core: ">=0.5.0, <0.6.0", platform_api: "^1.0.0", plugin_api: "^1.0.0" },
+  compatibility: { core: ">=0.6.0, <0.7.0", platform_api: "^1.0.0", plugin_api: "^2.0.0" },
   dependencies: [],
   permissions: [],
   frontend: {
@@ -181,7 +181,7 @@ function mockAuthenticatedApp() {
     return {
       manifest,
       entry: {
-        pluginApiVersion: "1.0.0",
+        pluginApiVersion: "2.0.0",
         moduleId: manifest.id,
         version: manifest.version,
         activate: () => activation,

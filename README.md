@@ -4,7 +4,7 @@ Union 是一个基于 Rust 的自托管统一服务管理平台，采用“中�
 模块化架构。Union Core 是系统唯一公网入口和 Web 管理平台，统一负责身份认证、RBAC、配置、
 控制面审计、模块注册、反向代理、进程监管、健康检查和生命周期管理，不直接承载业务逻辑。
 
-v0.5 的标准模块均为独立进程。当前进程模块契约只覆盖 Manifest、配置注入、回环网关、健康检查
+v0.6 的标准模块均为独立进程。当前进程模块契约只覆盖 Manifest v2、标准配置文件、回环网关、健康检查
 和生命周期；Core 内部的 Rust SDK、Event Bus、任务、通知、服务发现与 SDK 审计抽象不是 worker
 可远程调用的线协议。若后续开放这些能力，必须先定义带版本和双向认证的进程协议。
 
@@ -89,8 +89,8 @@ Builder 的 `install`/`rollback` 还会在修改活动指针前执行同一宿�
 
 Core 使用独立控制面 SQLite，只保存平台状态，不承载模块业务表。四个 PostgreSQL 模块各拥有专用
 database/role、独立 migration 和备份责任；它们可以共用 cluster，但不能共用 database，且禁止
-跨 owner 外键、直接查询、运行时 join 和共享事务。Dufs 独占自己的 SQLite 与文件根。旧
-`unionc.db` 中 Sunshine/Host 表只可用于离线迁移/核验/回滚证据，不再进入正常请求路径。
+跨 owner 外键、直接查询、运行时 join 和共享事务。Dufs 独占自己的 SQLite 与文件根。v0.6
+只支持全新 Core/模块数据库；旧数据库不导入、不转换，也不会进入正常请求路径。
 
 模块配置 Schema 必须用 `x-union-resource: postgresql_database` 标注 PostgreSQL URL，用
 `x-union-resource: storage_tree` 标注状态或内容目录。Core 会拒绝同一 PostgreSQL endpoint 上重复的
@@ -138,11 +138,11 @@ npm run build
 
 - Union 是唯一公网监听者；所有模块请求都通过其 TLS、Gateway 和适用的 RBAC/领域授权。
 - Manifest 不执行任意 shell，不接受任意公网 upstream；Runtime 只发现 Builder 纳入当前发行的包。
-- 模块之间不依赖内部源码或数据库。v0.5 不提供通用的进程间 Platform SDK 或 Event Bus 线协议；
+- 模块之间不依赖内部源码或数据库。v0.6 不提供通用的进程间 Platform SDK 或 Event Bus 线协议；
   当前五个 Manifest 不声明业务事件，跨模块交互只能在后续版本化协议落地后增加。
 - 模块禁用会停止进程，并使其 API、前端资源和导航不可用，但不会隐式删除配置或业务数据。
 - `in_process` 只用于随 Core 信任根注册的低风险工厂；现有五个模块均为独立进程。
-- v0.5 的五个进程由 Core 以同一 OS UID 启动，属于同一受信任发行域；进程边界提供崩溃和生命周期
+- v0.6 的五个进程由 Core 以同一 OS UID 启动，属于同一受信任发行域；进程边界提供崩溃和生命周期
   隔离，不是抵抗恶意模块的文件或凭据沙箱。
 
 许可证为 [Apache License 2.0](LICENSE-APACHE)。

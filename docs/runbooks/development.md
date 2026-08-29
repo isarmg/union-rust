@@ -22,7 +22,7 @@ export UNIONC_ENV=development
 cargo run -p unionc
 ```
 
-这会运行同一个 v0.5 Core，但当前发行模块目录为空，适合认证、平台 API 和基础设施单元调试。
+这会运行同一个 v0.6 Core，但当前发行模块目录为空，适合认证、平台 API 和基础设施单元调试。
 不要用 Cargo feature 把业务代码链接进 Core；服务端不存在 `module-*` 业务 feature。
 
 ## 发行级联调

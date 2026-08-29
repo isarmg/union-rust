@@ -182,7 +182,7 @@ mod tests {
             parse_command(["--version".to_string()]).unwrap(),
             Command::Version
         );
-        assert_eq!(version_line(), "unionc 0.5.0");
+        assert_eq!(version_line(), "unionc 0.6.0");
         assert_eq!(LINUX_PACKAGE_VERSION_MARKER.last(), Some(&0));
         assert!(parse_command(["-V".to_string()]).is_err());
         assert!(parse_command(["--version".to_string(), "extra".to_string()]).is_err());

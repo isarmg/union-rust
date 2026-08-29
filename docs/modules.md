@@ -1,6 +1,6 @@
 # 发行模块与私有进程
 
-Union v0.5 把“发行包含”和“运行状态”分成两个阶段：
+Union v0.6 把“发行包含”和“运行状态”分成两个阶段：
 
 | 阶段 | 负责组件 | 可以改变什么 |
 |---|---|---|
@@ -27,11 +27,12 @@ modules/<id>/
 ```
 
 `manifest.json` 是运行契约的事实源，声明模块身份和版本、Core/Platform/Plugin API 兼容范围、
-依赖、进程入口、配置到环境的映射、回环 bind、后端路由、权限、前端贡献、migration、健康探针、
+依赖、进程入口、标准配置 Schema/文件、回环 bind、后端路由、权限、前端贡献、migration、健康探针、
 重启策略、服务和事件。Builder 校验单包及整个发行的依赖图、兼容范围、文件引用和摘要；Runtime
 只发现当前发行中 `distribution=bundled` 的本地只读包。
 
-v0.5 已实现的**进程模块契约**仅包括 Manifest/兼容与依赖校验、配置到环境的受控注入、回环
+v0.6 已实现的**进程模块契约**仅包括 Manifest v2/兼容与依赖校验、`UNION_PLUGIN_CONFIG`
+指向的受控 JSON 配置、回环
 `gateway-v1` 路由、健康探针、启停、故障重启和关闭。Core 内部虽然有 Rust SDK 及 Event Bus、任务、
 通知、服务发现、审计等抽象，但没有把它们暴露为独立进程可调用的远程线协议。五个标准进程模块的
 `publishes/subscribes` 因而均为空；只有后续定义带版本、授权和双向认证的进程协议后，worker 才能
@@ -41,9 +42,9 @@ v0.5 已实现的**进程模块契约**仅包括 Manifest/兼容与依赖校验�
 enable/disable 状态保存在 Core 数据目录，配置读取时对声明的敏感字段脱敏；这些状态不会修改发行
 包。重新扫描只重新读取当前发行的本地包并校验/应用模块图，不会访问网络或引入新代码。
 
-升级后的 Schema 若不再接受旧配置，Core 会保留原文件但把模块标记为未配置，既不向 worker 注入
-旧值，也不回显其中的秘密；管理界面会显示兼容错误和新 Schema，管理员可提交一份完整新配置来
-恢复。配置 Schema 的破坏性变化仍应提升 `configuration.version` 并在发行说明中给出转换步骤。
+配置必须精确通过当前 Schema。无效文件只保留用于诊断，模块会被标记为未配置，值和秘密不会传给
+worker；管理员只能提交一份符合当前 Schema 的完整配置。0.6 不转换旧配置，破坏性变化必须提升
+`configuration.version` 并要求重新配置。
 
 配置 Schema 使用封闭的资源注解声明所有权：
 
@@ -93,8 +94,9 @@ Union 不提供整机资源监控。Core 总览只展示模块生命周期和服
 转发给 worker 的内部 `upstream_path`。Runtime 只为已启用且健康可用的模块解析这些路由，拒绝
 未声明路径；模块进程只绑定 loopback，具体内部端口不是公共兼容契约。
 
-每次启动进程时，Runtime 清空继承环境，只注入 Manifest 映射的配置和保留的 `UNION_PLUGIN_*` /
-`UNION_MODULE_*` 上下文。`gateway-v1` 的 protocol、audience、每进程随机 token 和 API prefix
+每次启动进程时，Runtime 清空继承环境，只注入保留的 `UNION_PLUGIN_*` / `UNION_MODULE_*`
+上下文；业务配置仅从 `UNION_PLUGIN_CONFIG` 指向的只读 JSON 文件读取，不存在模块专属环境变量
+别名。`gateway-v1` 的 protocol、audience、每进程随机 token 和 API prefix
 用于证明请求来自当前 Union 实例；token 不落盘、不跨进程重启复用，也不能替代管理员会话、
 CSRF、Agent/移动端凭据或其他模块领域授权。
 

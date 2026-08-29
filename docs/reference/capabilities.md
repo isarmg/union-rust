@@ -65,7 +65,7 @@ Dufs 与 Photo 可以共享稳定的 blob-transfer 合同、错误 envelope、�
 
 动态代码市场、运行时安装/热替换、模块独立公网部署/Release、多 Server active-active、多租户隔离、
 跨模块事务、自动接管任意旧数据库、应用层端到端照片加密和内置 PostgreSQL/MediaMTX 运维，均不在
-v0.5 承诺范围内。平台 RBAC 是当前公共能力，不属于非目标。
+v0.6 承诺范围内。平台 RBAC 是当前公共能力，不属于非目标。
 
 ## 完成判定
 
@@ -75,7 +75,7 @@ v0.5 承诺范围内。平台 RBAC 是当前公共能力，不属于非目标。
 - 未纳入模块在 `modules/`、release manifest、catalog、路由和资源中均缺席；
 - 纳入但 disabled/unconfigured 的模块不会启动或暴露 API/Frontend，配置后可启停；
 - 五个 worker 的 gateway 拒绝、健康回显、崩溃退避和优雅关机测试；
-- 四个专用 PostgreSQL database、Core/Dufs SQLite、模块 migration、离线 import/verify 和备份恢复；
+- 四个专用 PostgreSQL database、Core/Dufs SQLite、模块 fresh-schema 初始化和备份恢复；
 - Photo HTTPS 传输与服务器端明文读取验证；
 - 两个完整发行间 install/rollback、Manifest/摘要篡改拒绝和数据兼容判断；
 - 目标 Linux、PostgreSQL、反代、文件系统及 companion 版本矩阵。

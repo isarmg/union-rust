@@ -17,13 +17,11 @@ then
   fail 'CI and release Cargo commands must use --locked'
 fi
 
-# Normal actions use immutable commits. During the coordinated v2 migration only,
-# the Builder workflow may carry one conspicuous sentinel which must be replaced
-# by its reviewed 40-hex commit before release.
+# Every external action, including the Builder workflow, uses an immutable commit.
 if grep -En 'uses:[[:space:]]+[^.[:space:]]' "$ci_workflow" "$release_workflow" |
-  grep -Ev 'uses:[[:space:]]+[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}([[:space:]]+#.*)?$|uses:[[:space:]]+isarmg/union-builder/\.github/workflows/build-union\.yml@UNION_BUILDER_V2_COMMIT_SHA_TO_PIN$'
+  grep -Ev 'uses:[[:space:]]+[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}([[:space:]]+#.*)?$'
 then
-  fail 'external actions must use immutable commits (or the one reviewed Builder v2 pin sentinel)'
+  fail 'external actions must use immutable commits'
 fi
 
 if grep -En '^[[:space:]]+image:[[:space:]]+' "$ci_workflow" "$release_workflow" |
@@ -62,9 +60,7 @@ builder_uses=$(grep -E '^[[:space:]]+uses: isarmg/union-builder/\.github/workflo
 [ "$(printf '%s\n' "$builder_uses" | grep -c .)" -eq 1 ] ||
   fail 'release must call exactly one Union Builder workflow'
 builder_ref=${builder_uses##*@}
-if [ "$builder_ref" != UNION_BUILDER_V2_COMMIT_SHA_TO_PIN ] &&
-  ! printf '%s\n' "$builder_ref" | grep -Eq '^[0-9a-f]{40}$'
-then
+if ! printf '%s\n' "$builder_ref" | grep -Eq '^[0-9a-f]{40}$'; then
   fail 'release must pin the Builder v2 workflow to a reviewed commit'
 fi
 [ "$(grep -Fxc "      builder-revision: $builder_ref" "$release_workflow")" -eq 1 ] ||

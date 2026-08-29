@@ -15,15 +15,15 @@ import { canLoadModuleFrontend } from "./useModuleRuntime";
 
 function manifest(overrides: Partial<PlatformModule> = {}): PlatformModule {
   return {
-    manifest_version: 1,
+    manifest_version: 2,
     id: "example",
     display_name: "Example",
     description: "Example runtime module",
     version: "1.2.3",
     compatibility: {
-      core: ">=0.5.0, <0.6.0",
+      core: ">=0.6.0, <0.7.0",
       platform_api: "^1.0.0",
-      plugin_api: "^1.0.0",
+      plugin_api: "^2.0.0",
     },
     dependencies: [],
     permissions: [{ id: "example.read", description: "Read Example" }],
@@ -57,7 +57,7 @@ describe("runtime Web module contract", () => {
     const ExampleView = () => React.createElement("p", null, "example");
     const importModule = vi.fn().mockResolvedValue({
       default: {
-        pluginApiVersion: "1.0.0",
+        pluginApiVersion: "2.0.0",
         moduleId: "example",
         version: "1.2.3",
         activate: (host: { react: unknown; api: { basePath: string } }) => {
@@ -86,7 +86,7 @@ describe("runtime Web module contract", () => {
   it("rejects a legacy direct-component entry instead of accepting a possible second React", async () => {
     const importModule = vi.fn().mockResolvedValue({
       default: {
-        pluginApiVersion: "1.0.0",
+        pluginApiVersion: "2.0.0",
         moduleId: "example",
         version: "1.2.3",
         components: { ExampleView: () => null },
@@ -107,7 +107,7 @@ describe("runtime Web module contract", () => {
       loadStylesheet: vi.fn().mockResolvedValue(disposeStyle),
       importModule: vi.fn().mockResolvedValue({
         default: {
-          pluginApiVersion: "1.0.0",
+          pluginApiVersion: "2.0.0",
           moduleId: "example",
           version: "1.2.3",
           activate: () => ({
@@ -128,11 +128,11 @@ describe("runtime Web module contract", () => {
     const importModule = vi.fn();
     const loadStylesheet = vi.fn();
     const incompatible = manifest({
-      compatibility: { core: ">=0.6.0, <0.7.0", platform_api: "^1.0.0", plugin_api: "^1.0.0" },
+      compatibility: { core: ">=0.7.0, <0.8.0", platform_api: "^1.0.0", plugin_api: "^2.0.0" },
     });
 
     await expect(loadWebModule(incompatible, { importModule, loadStylesheet }))
-      .rejects.toThrow("Core 0.5.0");
+      .rejects.toThrow("Core 0.6.0");
     expect(importModule).not.toHaveBeenCalled();
     expect(loadStylesheet).not.toHaveBeenCalled();
   });
@@ -144,7 +144,7 @@ describe("runtime Web module contract", () => {
       loadStylesheet: vi.fn(),
       importModule: vi.fn().mockResolvedValue({
         default: {
-          pluginApiVersion: "1.0.0",
+          pluginApiVersion: "2.0.0",
           moduleId: "example",
           version: "1.2.3",
           activate: () => ({ components: { ExampleView: () => null } }),
@@ -186,11 +186,11 @@ describe("catalog, paths and permissions", () => {
     expect(() => api.request("/%2e%2e/platform/modules")).toThrow();
   });
 
-  it("supports Manifest v1 semantic-version requirements", () => {
-    expect(satisfiesSemverRange("0.5.0", ">=0.5.0, <0.6.0")).toBe(true);
-    expect(satisfiesSemverRange("1.4.2", "^1.0.0")).toBe(true);
-    expect(satisfiesSemverRange("2.0.0", "^1.0.0")).toBe(false);
-    expect(satisfiesSemverRange("not-semver", "^1.0.0")).toBe(false);
+  it("supports Manifest v2 semantic-version requirements", () => {
+    expect(satisfiesSemverRange("0.6.0", ">=0.6.0, <0.7.0")).toBe(true);
+    expect(satisfiesSemverRange("2.4.2", "^2.0.0")).toBe(true);
+    expect(satisfiesSemverRange("3.0.0", "^2.0.0")).toBe(false);
+    expect(satisfiesSemverRange("not-semver", "^2.0.0")).toBe(false);
   });
 
   it("shows public contributions and only explicitly granted protected contributions", () => {
