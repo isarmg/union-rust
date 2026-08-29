@@ -1,6 +1,6 @@
-# Host Monitoring Agent
+# host-m-agent
 
-`unionc-agent` 是安装在远端 Linux/Windows/macOS 主机上的只读遥测 companion。它采集 CPU、
+`host-m-agent` 是安装在远端 Linux/Windows/macOS 主机上的只读遥测 companion。它采集 CPU、
 内存、网络、磁盘、温度和可用 GPU 指标，主动通过 HTTPS 向 Union 上报。
 
 Agent 不是服务端模块：
@@ -21,7 +21,7 @@ Agent 不监听远端端口，不实现命令执行、脚本/配置下发、文�
 Agent 不知道 worker 的 loopback 地址或 gateway token。Host 数据存储在模块专用 PostgreSQL
 database/role（库内 `host_monitoring` schema）；旧 Union SQLite 只可能作为一次性离线导入源。
 
-Host worker、双方共用的 `unionc-protocol` 与 `unionc-agent` 均由独立
+Host worker、双方共用的 `unionc-protocol` 与 `host-m-agent` 均由独立
 [`host-monitoring`](https://github.com/isarmg/host-monitoring) 仓库权威维护。Builder `full` profile
 以不可变 revision 纳入其中的 Host worker；Builder Release 从同一锁定 Host revision
 另行构建 Agent，但绝不把 Agent 混入服务器 worker 包。当前集中产物为 Linux
@@ -31,8 +31,8 @@ Android/iOS/iPadOS 只有宿主应用可嵌入的 Rust 源码 SDK，尚无可声
 Agent 开发验证必须在 `host-monitoring` 仓库根目录执行，而不是在 Union 仓库执行：
 
 ```bash
-cargo test -p unionc-agent
-cargo run -p unionc-agent -- probe
+cargo test -p host-m-agent
+cargo run -p host-m-agent -- probe
 ```
 
 这不构成目标平台安装验收。正式 Release 必须声明 Agent 版本/协议兼容范围，并分别验证目标

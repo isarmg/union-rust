@@ -21,6 +21,11 @@ Core 从 Manifest 生成 `/modules/<id>/assets/*` 资源映射。Shell 校验运
 客户端，不能注册 Manifest 未声明的页面或把自己的 React/ReactDOM 副本带入运行时。单模块下载、
 激活或渲染失败由模块错误边界隔离，不应破坏登录、设置页或其他模块。
 
+模块可以为某个已声明组件注册一个 Shell 主操作按钮。该贡献必须声明组件、标签以及可选的
+模块自有 permission；Shell 只向拥有该 permission 的用户显示按钮，再以单调递增的
+`actionRequest` 通知组件。模块完成消费后调用 `onActionRequestHandled`，避免路由往返或
+重新渲染重复执行创建操作。
+
 同源 ESM 是 Builder 验证并纳入发行的受信任供应链代码，不是浏览器沙箱。`hostSdk` 只是支持的
 编程接口，不能阻止脚本直接调用同源 `fetch` 或读取非 HttpOnly 的 CSRF token；前端 route/API base/
 permission 检查也只改善兼容性和界面行为。安全授权必须始终由 Core 的会话、RBAC、CSRF、Manifest

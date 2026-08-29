@@ -83,7 +83,7 @@ Host worker、protocol、Agent feature、真实 Collector 和跨平台安装器�
 - `host-monitoring` 仓库的 `protocol/src/report.rs` 与
   `host-monitoring-worker/src/model.rs`：HTTP 报文中的**实测间隔**权威契约为
   `[0.1, 3600]`；
-- `host-monitoring` 仓库的 `agent/src/config.rs`：配置是整数秒（最小 1），并保证 jitter 后最坏实测周期不超过 3600，
+- `host-monitoring` 仓库的 `host-m-agent/src/config.rs`：配置是整数秒（最小 1），并保证 jitter 后最坏实测周期不超过 3600，
   `MIN/MAX_REPORT_INTERVAL_SECONDS` 保护生成报文；
 - `host-monitoring` 仓库的 `host-monitoring-worker/migrations/`：模块 PostgreSQL 存储约束用于
   拦截损坏数据，不能代替 Rust 入口校验。

@@ -106,7 +106,7 @@
 并非全绿：Frontend、Agent macOS、Agent Ubuntu、Server 和 OTLP 完成，Agent Windows
 失败。
 
-- Windows 使用 Rust 1.98.0，在 `cargo clippy -p unionc-agent --all-targets -- -D warnings`
+- Windows 使用 Rust 1.98.0，在 `cargo clippy -p host-m-agent --all-targets -- -D warnings`
   停止：maintenance helper 的 `.chunks_exact(4)` 触发新
   `chunks_exact_to_as_chunks` lint；tray 的五个 `version` 字段在 Windows target 被判定未读。
   Windows Agent Job 后续的 Agent 测试、三组 feature check、release binary、PE、WiX
@@ -189,7 +189,7 @@ Frontend 成功；Agent Windows 只在 `validate WiX MSI authoring` 失败。整
 - 修正首项并继续完整执行脚本后，又发现两条此前被前置异常遮蔽的陈旧断言：脚本仍寻找旧的
   `send('/pair')` 调用，并要求 release workflow 硬编码两个版本号。现改为验证授权密钥输入在
   当前 `startOperation('/pair', ...)` 前被清空；版本测试则验证 Windows MSI 从
-  `unionc-agent` Cargo metadata 取得单一版本源、tag 不一致时 fail closed，并把解析结果传给
+  `host-m-agent` Cargo metadata 取得单一版本源、tag 不一致时 fail closed，并把解析结果传给
   unsigned build、signed build 和 lifecycle 三个步骤。
 - 修改后的完整 `Test-WixAuthoring.ps1` 已在与 CI 相同的 Windows PowerShell 5.1 中独立
   运行两次，均输出 lifecycle、tray、service、rollback 与 purge 检查通过并以 0 退出；
@@ -222,7 +222,7 @@ MSI 实际构建成功。合入测试修复后须重跑 Windows Job，以补齐 
 
 涉及位置包括：
 
-- `agent/src/collectors/mod.rs:455`
+- `host-m-agent/src/collectors/mod.rs:455`
 - `server/src/sunshine/http/hosts.rs:10`
 - `server/src/sunshine/logs.rs:88`
 - `server/src/system/http.rs:362`
@@ -318,9 +318,9 @@ driver://user@db/database?password=********
 
 ### 6. Spool 连续失败保护可能永远不会触发
 
-Agent 主循环在 `agent/src/main.rs:154` 中，只要 `pending_count()` 成功，就会把 `SpoolHealth` 的连续失败计数清零。
+Agent 主循环在 `host-m-agent/src/main.rs:154` 中，只要 `pending_count()` 成功，就会把 `SpoolHealth` 的连续失败计数清零。
 
-随后，`agent/src/main.rs:304` 的 spool 写入如果失败，只会把计数从 0 增加到 1。
+随后，`host-m-agent/src/main.rs:304` 的 spool 写入如果失败，只会把计数从 0 增加到 1。
 
 在“目录仍可读取，但磁盘已满、文件系统只读或写权限丢失”的场景中，每轮流程都会变成：
 
@@ -360,16 +360,16 @@ server/src/infra/paths.rs:78
 
 ## 中低优先级问题
 
-### 8. `unionc-agent once` 不补传既有 spool，也不会自愈失效凭据
+### 8. `host-m-agent once` 不补传既有 spool，也不会自愈失效凭据
 
-`agent/src/main.rs:45` 的 `once` 模式只采集并发送当前报文，不调用 `flush_spool`。
+`host-m-agent/src/main.rs:45` 的 `once` 模式只采集并发送当前报文，不调用 `flush_spool`。
 
 结果是：
 
 - 之前失败保留的报文不会在后续 `once` 运行中补传；
 - 当前发送成功也不会清理历史积压；
 - 收到 401/403 时只把报文写入 spool 后退出；
-- 下一次运行仍会从 `agent-token` 加载被拒绝的旧 token，见 `agent/src/transport.rs:39`。
+- 下一次运行仍会从 `agent-token` 加载被拒绝的旧 token，见 `host-m-agent/src/transport.rs:39`。
 
 建议：让 `once` 在发送当前采样前或后补传有限数量的积压，并复用 `run` 模式的重新注册逻辑；或者明确禁止将 `once` 用于定时任务，并修正文档中“失败时报文留在 spool”可能造成的恢复预期。
 
@@ -399,9 +399,9 @@ server/src/infra/paths.rs:78
 
 以下路径会完整读取响应体：
 
-- 注册：`agent/src/transport.rs:90` 使用 `bytes()`
-- UnionC 上报：`agent/src/transport.rs:143` 使用 `text()`
-- OTLP 上报：`agent/src/transport.rs:181` 使用 `text()`
+- 注册：`host-m-agent/src/transport.rs:90` 使用 `bytes()`
+- UnionC 上报：`host-m-agent/src/transport.rs:143` 使用 `text()`
+- OTLP 上报：`host-m-agent/src/transport.rs:181` 使用 `text()`
 
 请求超时只能限制时间，不能限制响应体大小。恶意、被劫持或错误配置的端点可以返回超大响应，消耗 Agent 内存。
 
@@ -411,7 +411,7 @@ server/src/infra/paths.rs:78
 
 `server/src/monitoring/http.rs:147` 会在 report ID 已属于另一台主机时返回 409，并明确注明同一个 ID 重试永远不会成功。
 
-Agent 在 `agent/src/transport.rs:332` 中只把 400、413 和 422 归类为永久错误，409 会被视为瞬时错误。
+Agent 在 `host-m-agent/src/transport.rs:332` 中只把 400、413 和 422 归类为永久错误，409 会被视为瞬时错误。
 
 结果是冲突报文可能永久留在 spool 队首，阻塞后续正常报文。
 
@@ -515,9 +515,9 @@ otel/opentelemetry-collector-contrib:latest
 ### 已通过
 
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- `cargo check -p unionc-agent --no-default-features --all-targets`
-- `cargo check -p unionc-agent --no-default-features --features otlp --all-targets`
-- `cargo check -p unionc-agent --no-default-features --features nvidia --all-targets`
+- `cargo check -p host-m-agent --no-default-features --all-targets`
+- `cargo check -p host-m-agent --no-default-features --features otlp --all-targets`
+- `cargo check -p host-m-agent --no-default-features --features nvidia --all-targets`
 - `cargo test --workspace` 中能够在当前环境执行的测试
 - 前端 TypeScript 类型检查
 - 前端生产构建到临时目录
@@ -531,9 +531,9 @@ otel/opentelemetry-collector-contrib:latest
 
 ### 当前环境未真实执行的测试
 
-- 2 个 OTLP Collector 集成测试：未设置 `UNIONC_AGENT_TEST_OTLP_ENDPOINT`
+- 2 个 OTLP Collector 集成测试：未设置 `HOST_M_AGENT_TEST_OTLP_ENDPOINT`
 
-CI 已通过 `UNIONC_TEST_REQUIRE_DATABASE=1` 和 `UNIONC_AGENT_TEST_REQUIRE_OTLP=1` 强制相应环境不能静默跳过，因此这是本次本地审查的验证边界，不代表 CI 配置完全缺失。
+CI 已通过 `UNIONC_TEST_REQUIRE_DATABASE=1` 和 `HOST_M_AGENT_TEST_REQUIRE_OTLP=1` 强制相应环境不能静默跳过，因此这是本次本地审查的验证边界，不代表 CI 配置完全缺失。
 
 ### 测试覆盖概况
 

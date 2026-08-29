@@ -131,7 +131,7 @@ Sunshine 返回的 HTTP 3xx 会按上游失败处理，不会请求 `Location` �
 - Linux/macOS 只删除 root-only ownership marker 能证明由本包创建、且属性仍匹配的专用
   账户；Windows 只删除固定 Program Files/ProgramData 子路径，并拒绝接管同名非 UnionC
   服务或不可信的预存状态目录。
-- Windows 状态 ACL 使用服务专属 `NT SERVICE\UnionCAgent` SID，不把长期凭据授权给共享
+- Windows 状态 ACL 使用服务专属 `NT SERVICE\HostMAgent` SID，不把长期凭据授权给共享
   LOCAL SERVICE SID；程序与状态分别位于 Program Files 和 ProgramData。
 - 正式 tag 发布缺少签名凭据时失败：Windows 使用 Authenticode，macOS 使用 Developer ID、
   Hardened Runtime、notarytool 和 staple；全部制品另有 GPG 签名清单与 provenance

@@ -35,6 +35,8 @@ export interface WebModuleComponentProps {
 export interface WebModulePrimaryAction {
   component: string;
   label: string;
+  /** Optional module-owned permission required before the Shell exposes the action. */
+  permission?: string;
 }
 
 /**

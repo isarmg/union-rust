@@ -9,7 +9,7 @@ Agent 的官方产物由 Union Builder Release 从锁定 Host revision 集中构
 
 1. 在 Union Web 创建待激活实例和短时授权值；
 2. 在目标主机安装兼容 Agent；
-3. 执行 `unionc-agent pair --server https://union.example.com`；
+3. 执行 `host-m-agent pair --server https://union.example.com`；
 4. 核对设备摘要并激活；
 5. 用 `status`、`doctor` 和 Union 主机页验证上报。
 

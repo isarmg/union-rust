@@ -14,6 +14,6 @@ system ABI define the current compatibility baseline; older Linux distributions 
 
 `linux/unionc.service` and `linux/unionc.env.example` are deployment templates for that complete
 distribution. They must not be used to construct a `/usr/bin/unionc` package or to install Core
-without its Builder inventory. Host Agent packaging is maintained in the
+without its Builder inventory. host-m-agent packaging is maintained in the
 [`host-monitoring`](https://github.com/isarmg/host-monitoring) repository because the Agent is a
 physical remote-machine companion, not a Core business module.

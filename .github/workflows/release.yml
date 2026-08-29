@@ -139,8 +139,7 @@ jobs:
               echo "Builder distribution contains a symlink or special file: $server_target" >&2
               exit 1
             fi
-            if find "$distribution" -type f \
-              \( -name unionc-agent -o -name 'unionc-agent.*' \) -print -quit | grep -q .; then
+            if find "$distribution" -type f -name 'host-m-agent*' -print -quit | grep -q .; then
               echo "Remote Agent must not be present in a Union server distribution" >&2
               exit 1
             fi

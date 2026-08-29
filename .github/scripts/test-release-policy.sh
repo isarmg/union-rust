@@ -153,7 +153,8 @@ grep -Fq 'sha256sum --check SHA256SUMS' "$release_workflow" ||
 grep -Fq 'union-distribution-$server_target.tar' "$release_workflow" &&
   grep -Fq 'test -x "$distribution/bin/unionc"' "$release_workflow" ||
   fail 'both releases must preserve and verify executable modes across artifact transport'
-grep -Fq 'Remote Agent must not be present in a Union server distribution' "$release_workflow" ||
+grep -Fq -- "-name 'host-m-agent*'" "$release_workflow" &&
+  grep -Fq 'Remote Agent must not be present in a Union server distribution' "$release_workflow" ||
   fail 'the Server release must explicitly reject a bundled remote Agent'
 grep -Fq 'bash .github/scripts/create-reproducible-tar.sh' "$release_workflow" ||
   fail 'the Union distribution must use the reproducible archive helper'

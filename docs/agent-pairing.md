@@ -33,5 +33,5 @@ worker 不开放公网监听。
   Core SQLite 持有。
 
 具体 JSON 字段由 [`host-monitoring`](https://github.com/isarmg/host-monitoring) 仓库中的
-`protocol/src/` 和合同测试定义；同仓的 `unionc-agent` 与 Host worker 共同使用该 crate。本文不
+`protocol/src/` 和合同测试定义；同仓的 `host-m-agent` 与 Host worker 共同使用该 crate。本文不
 复制易漂移的完整 payload。

@@ -156,6 +156,10 @@ function validateActivation(activation: ActivatedWebModule, module: PlatformModu
     if (!Array.isArray(activation.primaryActions) || activation.primaryActions.some((action) => (
       !action || typeof action.component !== "string" || typeof action.label !== "string"
       || !declared.includes(action.component)
+      || (action.permission !== undefined && (
+        typeof action.permission !== "string"
+        || !module.permissions.some((permission) => permission.id === action.permission)
+      ))
     ))) throw new Error("模块入口 primaryActions 无效");
   }
 }

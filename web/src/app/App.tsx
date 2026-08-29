@@ -133,7 +133,8 @@ function AuthedApp({
   })[0];
   const matchedPermission = matched ? hasPermission(matched.route.route.permission) : false;
   const activeAction = matched?.module.activation.primaryActions?.find(
-    (action) => action.component === matched.route.route.component,
+    (action) => action.component === matched.route.route.component
+      && (!action.permission || hasPermission(action.permission)),
   );
   const actionKey = matched ? `${matched.module.manifest.id}:${matched.route.route.component}` : "";
   const services = servicesQuery.data ?? [];

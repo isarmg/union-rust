@@ -54,7 +54,7 @@ client。启停模块不需要重建 Web Console，单模块加载/渲染失败�
 
 本仓库只维护 Core 和 Web Shell。业务模块源码分别位于独立仓库：Sunshine 位于
 [`sunshine-worker`](https://github.com/isarmg/sunshine-worker)，Host worker 及双方共用的
-`unionc-protocol`、跨平台 `unionc-agent` 均位于
+`unionc-protocol`、跨平台 `host-m-agent` 均位于
 [`host-monitoring`](https://github.com/isarmg/host-monitoring)，Sentinel、Photo、Dufs 也各自位于
 模块仓库。
 

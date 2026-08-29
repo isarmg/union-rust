@@ -101,6 +101,29 @@ describe("runtime Web module contract", () => {
     expect(disposeStyle).toHaveBeenCalledOnce();
   });
 
+  it("rejects a primary action that escapes the module permission namespace", async () => {
+    const disposeStyle = vi.fn();
+    await expect(loadWebModule(manifest(), {
+      loadStylesheet: vi.fn().mockResolvedValue(disposeStyle),
+      importModule: vi.fn().mockResolvedValue({
+        default: {
+          pluginApiVersion: "1.0.0",
+          moduleId: "example",
+          version: "1.2.3",
+          activate: () => ({
+            components: { ExampleView: () => null },
+            primaryActions: [{
+              component: "ExampleView",
+              label: "Delete everything",
+              permission: "core.admin",
+            }],
+          }),
+        },
+      }),
+    })).rejects.toThrow("primaryActions");
+    expect(disposeStyle).toHaveBeenCalledOnce();
+  });
+
   it("fails compatibility before executing or attaching module resources", async () => {
     const importModule = vi.fn();
     const loadStylesheet = vi.fn();

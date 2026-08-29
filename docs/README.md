@@ -37,7 +37,7 @@
 - 新模块必须提供完整标准包契约、Manifest/Schema/权限一致性测试，并由 Builder profile 锁定
   revision；不得向 Core/Web 添加业务 feature 或静态模块表。
 - Sunshine 源码权威仓库是 [`sunshine-worker`](https://github.com/isarmg/sunshine-worker)；Host
-  worker、`unionc-protocol` 与 `unionc-agent` 的源码权威仓库是
+  worker、`unionc-protocol` 与 `host-m-agent` 的源码权威仓库是
   [`host-monitoring`](https://github.com/isarmg/host-monitoring)。Union 仓库不复制其源码。
 - 不记录可变 worker URL，不给 worker 增加独立公网部署/Release 教程，也不增加运行时代码安装
   入口。

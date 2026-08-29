@@ -7,8 +7,10 @@
 
 ### 发行
 
+- Host Monitoring 的主机侧 companion 统一更名为 `host-m-agent`；Builder 的桌面安装包、
+  移动 SDK 及文档同步采用该名称，设备网关 `/agent/v1`、`/agent/v2` 保持兼容。
 - 后续服务器发行工作流锁定 Union Builder 2.1 的不可变 revision。Builder Release
-  成为 Host Agent 和 Photo 移动客户端的唯一官方产物发布面；它们仍由各模块仓库
+  成为 host-m-agent 和 Photo 移动客户端的唯一官方产物发布面；它们仍由各模块仓库
   维护，不进入 Union Server distribution，也不由 Core supervisor 管理。
 
 ## [0.5.0] — 2026-08-28
@@ -191,7 +193,7 @@
 ### 移除
 
 - Agent 不再采集、配置或上报设备名称：移除配置文件 `host_name`、环境变量
-  `UNIONC_AGENT_HOST_NAME`、`pair --name`、Windows 托盘名称输入，以及 JSON 配对/报告和
+  `HOST_M_AGENT_HOST_NAME`、`pair --name`、Windows 托盘名称输入，以及 JSON 配对/报告和
   OTLP 资源中的 `host.name`。公开激活摘要也不再暴露设备名称。
 
 ## [0.3.2] — 2026-08-22
@@ -279,7 +281,7 @@
 
 - Windows 本机配置页可一次填写 Server 地址和管理台生成的短时授权密钥，提权
   Agent 在本机完成请求建立、授权和轮询，不再要求用户在远程激活页二次输入密钥。
-- 用户从通知区菜单选择“退出”时，经 UAC 成功停止 `UnionCAgent` 服务后再退出
+- 用户从通知区菜单选择“退出”时，经 UAC 成功停止 `HostMAgent` 服务后再退出
   托盘；安装器升级/卸载发送的 `WM_CLOSE` 只关闭托盘，服务仍由 Windows Installer
   和 SCM 按事务生命周期处理。
 
